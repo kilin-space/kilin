@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kilin-prototype",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "/tmp/kilin/prototype", "dev"],
+      "port": 5273
+    }
+  ]
+}

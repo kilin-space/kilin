@@ -1,0 +1,85 @@
+---
+title: Workflows
+description: Understand packages, nodes, edges, scopes, Schema V1, and execution.
+---
+
+## Package layout
+
+Kilin recognizes exactly two workflow roots:
+
+```text
+<project-root>/.agents/workflows/<workflow-id>/
+├── WORKFLOW.md
+└── WORKFLOW.yaml
+
+~/.agents/workflows/<workflow-id>/
+├── WORKFLOW.md
+└── WORKFLOW.yaml
+```
+
+`WORKFLOW.md` contains discovery metadata and agent-facing guidance. Its frontmatter contains
+exactly `name` and `description`. `WORKFLOW.yaml` is the executable definition.
+
+Project packages take precedence over user packages with the same ID. A malformed project package
+fails closed instead of falling back to a user package.
+
+The bundled generation skill defaults to project scope and uses user scope only when explicitly
+requested. After creation it reports the selected scope, package directory, both package files
+(`WORKFLOW.md` and `WORKFLOW.yaml`), validation hash, and execution order. Use
+`workflow validate <id> --scope user` to inspect a user package directly when a same-ID project
+package shadows it; ordinary validation and execution keep the normal project-over-user precedence.
+
+## A minimal definition
+
+```yaml
+schemaVersion: 1
+workflow:
+  id: change-review
+  name: Change review
+nodes:
+  - id: analyze
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: Analyze the proposed change.
+    output:
+      type: json
+  - id: approve
+    kind: approval
+    question: Accept the analysis?
+edges:
+  - from: analyze
+    to: approve
+```
+
+Agent nodes declare a fixed runtime, an access mode, a prompt, and optionally a typed output and
+integer `timeoutMs` from 1,000 through 86,400,000 milliseconds. When absent, the run's node-timeout
+fallback applies. Approval nodes pause attached execution until an eligible second process or the
+local Viewer records a decision; their deadline uses the independent run approval timeout.
+
+Edges express dependencies. A named input binding is required when a target agent must consume a
+source output.
+
+## Access and concurrency
+
+`read_only` nodes may overlap only when they are independent and the run uses `--max-parallel`
+greater than one. `workspace_write` nodes and approvals are exclusive barriers at every
+concurrency bound. The default bound is one.
+
+Access modes are defense in depth. They do not remove the ambient trust granted to an installed
+provider CLI. Read the [trust-boundary guide](/security/trust-boundaries).
+
+## Schema V1
+
+Schema V1 covers agents, approvals, typed outputs, bindings, Decision Packet V1, bounded retry and
+continuation, joins, named workspaces, closed choice routing, declared run parameters, and one
+finite revise-or-pass loop with a bound of one through five.
+
+Every definition compiles to a finite, acyclic execution plan. Kilin rejects other schema version
+numbers, arbitrary cycles, nested loops, and unbounded execution.
+
+## Revisions and reruns
+
+Before execution, Kilin normalizes the selected package and records an immutable revision. `rerun`
+uses that stored definition and working directory rather than reading the current package.
+`retry` and `resume` are narrower continuation operations with additional eligibility rules.

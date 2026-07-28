@@ -1,0 +1,4 @@
+# Every change to Kilin requires review from a maintainer.
+# GitHub does not let a pull request author approve their own pull request,
+# so each change is reviewed by the other maintainer.
+* @KiwiGaze @elijahqi

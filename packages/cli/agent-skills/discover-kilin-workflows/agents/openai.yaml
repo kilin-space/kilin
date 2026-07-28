@@ -1,0 +1,6 @@
+interface:
+  display_name: "Discover Kilin workflows"
+  short_description: "Infer workflows from rich scoped agent history"
+  default_prompt: "Analyze complete scoped Codex or Claude session histories qualitatively and propose evidence-backed Kilin workflow designs."
+policy:
+  allow_implicit_invocation: false

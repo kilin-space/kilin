@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:kilin:schema:workflow:1",
+  "title": "Kilin Workflow V1 structural schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "workflow", "nodes", "edges"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "workflow": {
+      "$ref": "#/$defs/workflowMetadata"
+    },
+    "parameters": {
+      "$ref": "#/$defs/parameterNameList"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "if": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "const": "approval"
+            }
+          }
+        },
+        "then": {
+          "$ref": "#/$defs/approvalNode"
+        },
+        "else": {
+          "if": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "const": "loop"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/loopNode"
+          },
+          "else": {
+            "$ref": "#/$defs/agentNode"
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "$ref": "#/$defs/dependencyEdge"
+      }
+    }
+  },
+  "$defs": {
+    "bodyNode": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/agentNode"
+        },
+        {
+          "$ref": "#/$defs/approvalNode"
+        }
+      ]
+    },
+    "loopNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "maxIterations", "body", "decision", "feedback", "result"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "const": "loop"
+        },
+        "maxIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nodes", "edges"],
+          "properties": {
+            "nodes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 128,
+              "items": {
+                "$ref": "#/$defs/bodyNode"
+              }
+            },
+            "edges": {
+              "type": "array",
+              "maxItems": 512,
+              "items": {
+                "$ref": "#/$defs/dependencyEdge"
+              }
+            }
+          }
+        },
+        "decision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["node", "passChoice", "reviseChoice"],
+          "properties": {
+            "node": {
+              "$ref": "#/$defs/identifier"
+            },
+            "passChoice": {
+              "$ref": "#/$defs/inputName"
+            },
+            "reviseChoice": {
+              "$ref": "#/$defs/inputName"
+            }
+          }
+        },
+        "feedback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["from", "to", "input"],
+          "properties": {
+            "from": {
+              "$ref": "#/$defs/identifier"
+            },
+            "to": {
+              "$ref": "#/$defs/identifier"
+            },
+            "input": {
+              "$ref": "#/$defs/inputName"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["node"],
+          "properties": {
+            "node": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        }
+      }
+    },
+    "parameterNameList": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/inputName"
+      }
+    },
+    "inputName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "workflowIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "lowercaseIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "workflowMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/workflowIdentifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "agentOutputDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["text", "json", "decision_packet", "artifact", "choice"]
+        },
+        "path": {
+          "type": "string"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "artifact"
+              }
+            }
+          },
+          "then": {
+            "required": ["path"],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "choices": false
+            }
+          },
+          "else": {
+            "if": {
+              "required": ["type"],
+              "properties": {
+                "type": {
+                  "const": "choice"
+                }
+              }
+            },
+            "then": {
+              "required": ["choices"],
+              "properties": {
+                "path": false,
+                "choices": true
+              }
+            },
+            "else": {
+              "properties": {
+                "path": false,
+                "choices": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "agentNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "runtime", "access", "prompt"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "$ref": "#/$defs/lowercaseIdentifier"
+        },
+        "runtime": {
+          "$ref": "#/$defs/lowercaseIdentifier"
+        },
+        "access": {
+          "enum": ["read_only", "workspace_write"]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 86400000
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+        },
+        "output": {
+          "$ref": "#/$defs/agentOutputDeclaration"
+        },
+        "retry": {
+          "$ref": "#/$defs/retryPolicy"
+        },
+        "join": {
+          "enum": ["all", "any"]
+        },
+        "workspace": {
+          "$ref": "#/$defs/workspaceIdentifier"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameterNameList"
+        }
+      }
+    },
+    "approvalNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "question"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "kind": {
+          "const": "approval"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "join": {
+          "enum": ["all", "any"]
+        }
+      }
+    },
+    "dependencyEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/identifier"
+        },
+        "to": {
+          "$ref": "#/$defs/identifier"
+        },
+        "input": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["choice"],
+          "properties": {
+            "choice": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,63}$"
+            }
+          }
+        }
+      }
+    },
+    "retryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxAttempts", "initialBackoffMs", "maxBackoffMs", "safeToRepeat"],
+      "properties": {
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "initialBackoffMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 300000
+        },
+        "maxBackoffMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 300000
+        },
+        "on": {
+          "type": "array",
+          "items": {
+            "enum": ["NODE_OUTPUT_INVALID", "NODE_EXIT_NONZERO", "NODE_TIMEOUT"]
+          }
+        },
+        "safeToRepeat": {
+          "const": true
+        }
+      }
+    },
+    "workspaceIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

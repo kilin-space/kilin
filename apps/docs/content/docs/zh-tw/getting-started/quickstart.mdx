@@ -1,0 +1,60 @@
+---
+title: 快速開始
+description: 建立、驗證並執行專案或使用者範圍的工作流程。
+---
+
+先進入工作流程要操作的專案：
+
+```bash
+cd /absolute/path/to/project
+
+kilin workflow init first-workflow \
+  --scope project \
+  --project-root "$PWD" \
+  --name "First workflow" \
+  --description "Inspect this project."
+```
+
+此命令會建立：
+
+```text
+.agents/workflows/first-workflow/
+├── WORKFLOW.md
+└── WORKFLOW.yaml
+```
+
+內建產生 skill 預設使用專案範圍，工作流程只屬於目前專案。需要跨專案重用時，應明確要求使用者範圍；
+package 會建立在 `~/.agents/workflows/<workflow-id>/`。專案初始化必須傳入 `--project-root`；
+使用者初始化使用 `--scope user`，且不能傳入 `--project-root`。CLI 和產生 skill 都會回報選取的
+scope 與準確檔案位置。
+
+執行前驗證 package：
+
+```bash
+kilin workflow validate first-workflow --scope project --cwd "$PWD"
+```
+
+驗證會安全解析 YAML、檢查 Schema 和圖，並輸出確定性執行順序。它不會探測 provider 驗證、建立 run 或呼叫模型。
+
+檢查兩個工作流程檔案和[安全邊界](/zh-tw/security/trust-boundaries)後，執行工作流程：
+
+```bash
+kilin run first-workflow --cwd "$PWD"
+```
+
+檢查本機執行歷程：
+
+```bash
+kilin runs list
+kilin runs show <run-id>
+```
+
+外層 Agent 使用內建執行 skill 時，只有確認請求者的瀏覽器與 Agent 在同一台主機執行後，才會啟動
+附著式 Viewer 並回傳本機 URL；否則會回傳本機啟動命令。也可以手動啟動相同的機器可讀 Viewer：
+
+```bash
+kilin ui first-workflow --cwd "$PWD" --no-open --json
+```
+
+命令會輸出一個 `viewer.started` 文件並保持附著。啟動 URL 只能兌換一次，且不會比該行程存活更久；
+兌換後的瀏覽器工作階段在行程存活期間保持可用。應將該 JSON 輸出視為秘密，不得記錄、公開或分享。

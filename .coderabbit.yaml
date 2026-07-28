@@ -1,0 +1,159 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+tone_instructions: >-
+  Focus on correctness, security, and design regressions. Skip style and
+  anything ESLint/tsc already enforces. Label theoretical races or edge cases
+  as low-probability instead of blocking. Be concise and direct; no praise,
+  no boilerplate.
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  poem: false
+  sequence_diagrams: false
+  suggested_reviewers: false
+  enable_prompt_for_ai_agents: false
+  in_progress_fortune: false
+
+  path_filters:
+    - "!**/dist/**"
+    - "!**/.next/**"
+    - "!**/.source/**"
+    - "!**/playwright-report/**"
+    - "!**/test-results/**"
+    - "!pnpm-lock.yaml"
+    - "!packages/cli/e2e/artifacts/**"
+    - "!packages/cli/docs/references/agent-runtimes/installed-help/**"
+    - "!packages/cli/docs/references/agent-runtimes/official/**"
+
+  path_instructions:
+    - path: "packages/cli/src/**/*.ts"
+      instructions: |
+        TypeScript ESM (Node >= 24) with a layered architecture:
+        domain -> application -> infrastructure -> cli/ui.
+        - Layer boundaries: `packages/cli/src/domain` stays pure (no I/O, no
+          imports from other layers); `packages/cli/src/application`
+          orchestrates use cases and must
+          not import concrete infrastructure; all I/O (filesystem,
+          better-sqlite3, child processes) lives in
+          `packages/cli/src/infrastructure`; `packages/cli/src/cli` and
+          `packages/cli/src/ui` are thin adapters. Flag violations, citing the
+          offending import.
+        - Design: flag premature abstraction (single-caller helpers,
+          speculative configurability, wrappers with no second user), dead
+          code, and backward-compatibility shims — prefer removal over
+          deprecation unless the PR states otherwise.
+        - Data crossing a process or file boundary must be validated and
+          decoded (see `packages/cli/src/domain/errors.ts` and the state
+          decoders), never cast blindly.
+        - Comments should only document public contracts; flag comments that
+          restate the code.
+        - Do not comment on typing, import style, return types, or
+          formatting — ESLint (strictTypeChecked) and tsc already enforce
+          those.
+
+    - path: "packages/cli/src/ui/*.ts"
+      instructions: |
+        The viewer client (`client.ts`, `assets.ts`) is deliberately a
+        single self-contained file served by the CLI — no bundler, no
+        frontend build. Do not suggest splitting it into modules or adding
+        build tooling. Focus instead on escaping/XSS of streamed agent
+        output, state handling, and drift from `contracts.ts`.
+
+    - path: "packages/cli/test/**/*.ts"
+      instructions: |
+        Vitest unit tests. Every test must protect a real contract
+        (behavior, data format, error handling, security); flag tests that
+        assert implementation shape, private helper names, or source text.
+        Prefer exercising real interfaces over mocking internal helpers.
+        Flag committed `.only`/`.skip`. Do not ask for tests on every
+        change — only where a real contract is at risk.
+
+    - path: "packages/cli/e2e/**/*.ts"
+      instructions: |
+        Playwright E2E against the built CLI/viewer. Tests must not depend
+        on machine-local state (absolute paths, fixed ports); use the
+        helpers in `packages/cli/e2e/fixtures.ts`. Security tests must use
+        hostile inputs or unauthorized actors, not assertions on source text.
+
+    - path: "packages/cli/{scripts,agent-skills,test/fixtures}/**/*.mjs"
+      instructions: |
+        Plain Node ESM helper scripts and fake runtime fixtures, excluded from
+        ESLint — this review is their only automated check. Flag unhandled
+        promise rejections, filesystem writes outside the repo, and unvalidated
+        input. For fake runtimes, flag behavior that no longer matches the
+        runtime adapter contract exercised by tests.
+        The agent-skills helpers ship to users and handle untrusted session
+        history and workflow publication; hold them to that standard.
+
+    - path: "apps/docs/**/*.{ts,tsx,mjs}"
+      instructions: |
+        Next.js 16 and Fumadocs documentation app.
+        - The docs app must not import or depend on `@kilin-space/cli`; public
+          documentation is curated separately from CLI internals.
+        - Preserve server/client component boundaries and flag secrets,
+          unsafe HTML, untrusted URL handling, or accidental server data
+          exposure.
+        - Review navigation, metadata, sitemap, robots, and search changes for
+          broken public routes, accessibility regressions, and build-time
+          failures.
+        - Do not request a new abstraction for a single page or component.
+
+    - path: "apps/docs/content/docs/**/*.mdx"
+      instructions: |
+        Public user documentation. Check commands, configuration fields, links,
+        and security claims against the repository's current behavior. Flag
+        documentation that exposes private implementation details or promises
+        unsupported behavior.
+
+    - path: "{package.json,pnpm-workspace.yaml,turbo.json,tsconfig.base.json,apps/*/package.json,packages/*/package.json}"
+      instructions: |
+        pnpm 11 and Turborepo monorepo configuration.
+        - Preserve dependency direction: the docs app must not depend on the
+          CLI package.
+        - Check task dependencies, cache outputs, workspace package coverage,
+          pinned direct dependencies, Node >= 24, and release/package metadata.
+        - Flag workspace cycles and commands that bypass required build or test
+          prerequisites.
+
+    - path: ".github/workflows/*.yml"
+      instructions: |
+        GitHub Actions workflows. Require least-privilege permissions and
+        full-commit-SHA action pins. Keep npm OIDC authority isolated to the
+        publishing job, and flag paths that could publish unverified,
+        non-release, or wrong-workspace artifacts.
+
+    - path: "packages/cli/agent-skills/**/SKILL.md"
+      instructions: |
+        Agent skill manifests. Instructions must be deterministic and
+        scoped; flag vague prompts, overly broad permission grants,
+        secrets, and machine-specific absolute paths.
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "warning"
+      requirements: "Concise imperative summary under 72 characters; no issue-number-only titles."
+    description:
+      mode: "warning"
+    issue_assessment:
+      mode: "warning"
+
+  tools:
+    biome:
+      enabled: false
+    oxc:
+      enabled: false
+
+chat:
+  art: false
+
+knowledge_base:
+  learnings:
+    scope: "local"

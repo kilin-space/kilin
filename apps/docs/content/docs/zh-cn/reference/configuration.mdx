@@ -1,0 +1,63 @@
+---
+title: 配置
+description: 配置工作流程作用域、状态位置、执行限制与 host trigger。
+---
+
+Kilin 有意不提供通用配置文件。工作流程行为在 package 中声明，执行选项则由明确的 CLI flag 指定。
+
+## 工作流程作用域
+
+项目工作流程位于请求工作目录或其父级最近的物理 `.agents/workflows` 目录。用户工作流程位于 `~/.agents/workflows`。
+
+项目作用域工作流程只能在其项目根目录内运行。用户作用域工作流程可跨工作目录使用。
+
+## 运行时状态
+
+默认情况下，本地状态保存在 `~/.kilin`：
+
+```text
+~/.kilin/
+├── kilin.db
+├── locks/
+├── runs/
+└── workspaces/
+```
+
+测试和隔离工具可在启动 Kilin 前设置 `KILIN_DATA_DIR`。该值会改变数据库、锁、capture 和保留 worktree 的存储位置。不要让互不相关的并发信任域共用一个 data directory。
+
+## Run 限制
+
+默认顺序执行。run 可明确设置：
+
+- `--max-parallel 1..8`：独立只读工作；
+- `--node-timeout 1s..24h`：为未声明 `timeoutMs` 的 Agent 提供回退值；
+- `--approval-timeout 1s..24h`：限制审批等待；以及
+- `--max-output-bytes 1024..104857600`。
+
+run 选项和不可变的节点声明超时会随 run 持久化。除非提供唯一受支持的并发 override，
+`rerun` 会复现这些值。
+
+## Host trigger
+
+外部 scheduler 可调用：
+
+```bash
+kilin trigger --request /absolute/path/to/request.json --json
+```
+
+Version 1 request 会记录绝对工作目录和 cron provenance：
+
+```json
+{
+  "triggerVersion": 1,
+  "workflow": "change-review",
+  "cwd": "/absolute/path/to/project",
+  "source": {
+    "kind": "cron",
+    "schedule": "0 9 * * 1-5",
+    "timezone": "America/Los_Angeles"
+  }
+}
+```
+
+Kilin 验证并记录该 metadata，但仍是前台进程。调度、重叠调用策略、host 级重试和告警均由 host 负责。

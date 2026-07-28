@@ -1,0 +1,69 @@
+---
+title: Configuration
+description: Configure workflow scope, state location, execution limits, and host triggers.
+---
+
+Kilin intentionally has no general-purpose configuration file. Workflow behavior is declared in
+the package, while execution choices are explicit CLI flags.
+
+## Workflow scope
+
+Project workflows live under the nearest physical `.agents/workflows` directory at or above the
+requested working directory. User workflows live under `~/.agents/workflows`.
+
+A project-scoped workflow may run only within its project root. User-scoped workflows are portable
+across working directories.
+
+## Runtime state
+
+By default, local state is stored under `~/.kilin`:
+
+```text
+~/.kilin/
+├── kilin.db
+├── locks/
+├── runs/
+└── workspaces/
+```
+
+Tests and isolated tooling may set `KILIN_DATA_DIR` before starting Kilin. The value changes where
+Kilin stores its database, locks, captures, and retained worktrees. Do not point concurrent,
+unrelated trust domains at the same data directory.
+
+## Run limits
+
+The default execution is sequential. A run may explicitly set:
+
+- `--max-parallel 1..8` for independent read-only work;
+- `--node-timeout 1s..24h` as the fallback for agents without authored `timeoutMs`;
+- `--approval-timeout 1s..24h` for approval waits; and
+- `--max-output-bytes 1024..104857600`.
+
+Run options and the immutable authored node timeouts are persisted with the run. `rerun` reproduces
+them unless its one supported concurrency override is supplied.
+
+## Host triggers
+
+An external scheduler may invoke:
+
+```bash
+kilin trigger --request /absolute/path/to/request.json --json
+```
+
+The version 1 request records an absolute working directory and cron provenance:
+
+```json
+{
+  "triggerVersion": 1,
+  "workflow": "change-review",
+  "cwd": "/absolute/path/to/project",
+  "source": {
+    "kind": "cron",
+    "schedule": "0 9 * * 1-5",
+    "timezone": "America/Los_Angeles"
+  }
+}
+```
+
+Kilin validates and records this metadata but remains a foreground process. Scheduling,
+overlapping-invocation policy, retries at the host level, and alerting belong to the host.

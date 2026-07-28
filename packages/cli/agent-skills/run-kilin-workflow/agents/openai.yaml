@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Kilin Workflow"
+  short_description: "Run workflows with optional local Viewer access"
+  default_prompt: "Use $run-kilin-workflow to run this Kilin workflow and return Viewer access only when it is locally reachable by the requester."

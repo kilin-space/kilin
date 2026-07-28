@@ -1,0 +1,71 @@
+---
+title: Troubleshooting
+description: Diagnose package lookup, validation, provider preflight, run, and Viewer failures.
+---
+
+## A workflow is not found
+
+Run discovery for the same working directory:
+
+```bash
+kilin workflow list --cwd /absolute/path/to/project
+```
+
+Check the exact filenames `WORKFLOW.md` and `WORKFLOW.yaml`, the lowercase workflow directory ID,
+and the nearest `.agents/workflows` root. A project package shadows a user package with the same
+ID, including when the project entry is invalid.
+
+## Validation fails
+
+Use JSON output to retain the stable error code and path:
+
+```bash
+kilin workflow validate <workflow-id> \
+  --cwd /absolute/path/to/project \
+  --json
+```
+
+Fix the first reported syntax, schema, or semantic error and validate again. Kilin intentionally
+does not coerce unknown fields or accept compatibility aliases such as `WORKFLOW.yml`.
+
+## Runtime preflight fails
+
+Confirm that every runtime named by the workflow is installed, supported, and authenticated in
+the same environment that starts Kilin. Version output alone is not sufficient: Kilin also checks
+the required non-interactive and safety capabilities.
+
+OpenCode supports only `workspace_write`. Use Codex or Claude Code when a node requires
+`read_only`.
+
+Preflight failure starts no agent process and creates no run.
+
+## A writable run rejects the workspace
+
+Named isolated workspaces require a qualified Git repository. Finish interrupted Git operations
+and review staged, tracked, or untracked changes before retrying. Kilin fails closed instead of
+silently moving or discarding workspace state.
+
+## A run needs attention
+
+Inspect its detail or wait for a meaningful state transition:
+
+```bash
+kilin runs show <run-id>
+kilin runs wait <run-id> --json
+```
+
+If an approval is waiting, record it from another local process with `runs approve` or
+`runs reject`, or use the guarded controls in the attached Viewer.
+
+## The Viewer does not open
+
+Print the launch URL without asking the operating system to open a browser:
+
+```bash
+kilin ui <workflow-id> \
+  --cwd /absolute/path/to/project \
+  --no-open
+```
+
+Open the printed URL on the same machine. Treat the fragment-bearing URL as a credential and do
+not share it.

@@ -1,0 +1,42 @@
+---
+title: 信任边界
+description: 了解 Kilin 隔离、继承、记录的内容，以及它有意不保护的范围。
+---
+
+## Provider 进程继承你的环境
+
+Kilin 会把完整的父进程环境传给 provider preflight 命令和 Agent 子进程，以保留认证、proxy、开发工具和项目命令。这也意味着 provider CLI 和启动的 Agent 可读取环境中的其他凭证。
+
+如果工作流程或 provider 不应获得常用 shell 环境，请从经过清理的环境启动 Kilin。Kilin 不提供工作流程定义的环境 override。
+
+Kilin 会在本机持久化自身的 run 状态，但发送给 provider 的 prompt、input、文件和其他内容受该 provider 的网络和保留政策约束。
+
+## 访问模式属于纵深防御
+
+Kilin 将 `read_only` 和 `workspace_write` 映射到受支持运行时的执行限制。Provider sandbox 可能因运行时和平台而异，provider 也可能连接模型服务。Kilin 不保证零网络出口、完整读取隔离或确定性模型输出。
+
+Codex 和 Claude Code 支持两种访问模式。OpenCode 只支持 `workspace_write`；请求 `read_only` 的 OpenCode 节点会被 Kilin 拒绝。
+
+运行前检查 prompt、input、provider 配置和所选工作目录。
+
+## 工作流程文件是不可信输入
+
+Kilin 会安全解析工作流程 YAML，并拒绝 alias、anchor、merge key、自定义 tag、重复 key、多文档、无效 UTF-8 和过大输入。Package 目录和必需文件必须是物理路径，不能是符号链接。
+
+发现 metadata 只帮助 Agent 找到候选项，不构成执行授权。用户或 controller 必须明确启动 run。
+
+## 本地证据私有但持久
+
+Kilin 在本地保存数据库、捕获的 stdout 与 stderr、最终结果、已解析 input 和保留 worktree。这些 artifact 可能包含私有代码或模型输出。请保护 data directory，在移除前检查保留 worktree，并应用自己的保留策略。
+
+Run parameter 不会出现在公开生命周期视图中，但 `--param` 值仍可能出现在 shell 历史和本地进程列表。不要用命令行参数传递 secret。
+
+## Viewer 边界
+
+附着式 Viewer 绑定到数字地址 `127.0.0.1` 和操作系统选择的端口，并使用一次性启动凭证。不要公开或
+复用启动 URL。Viewer 唯一的状态变更是记录符合条件的审批决策；它不是 daemon、scheduler、
+可编辑工作流程界面或公开 API。只有确认 Agent 进程与请求者的浏览器运行在同一台主机后，外层 Agent
+才可以将 URL 直接返回给请求者；双方都使用 `127.0.0.1` 并不能证明这一点。附着式 Viewer 退出后
+URL 立即失效。以下是外层 Agent 的操作指引，而非 Viewer 强制执行的行为：不得把 URL 持久化到工作流程
+文件、run event、artifact、issue、pull request 或公共日志；远程 Agent 应返回本地启动命令，不能把
+自己的 `127.0.0.1` URL 描述为用户可访问。

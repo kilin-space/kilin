@@ -1,0 +1,73 @@
+---
+title: 工作流程
+description: 了解 package、节点、边、作用域、Schema V1 和执行。
+---
+
+## Package 布局
+
+Kilin 只识别以下两个工作流程根目录：
+
+```text
+<project-root>/.agents/workflows/<workflow-id>/
+├── WORKFLOW.md
+└── WORKFLOW.yaml
+
+~/.agents/workflows/<workflow-id>/
+├── WORKFLOW.md
+└── WORKFLOW.yaml
+```
+
+`WORKFLOW.md` 包含发现 metadata 和面向 Agent 的指引；其 frontmatter 只能包含 `name` 和 `description`。`WORKFLOW.yaml` 是可执行定义。
+
+同 ID 的项目 package 优先于用户 package。项目 package 无效时会失败关闭，不会回退到用户 package。
+
+内置生成 skill 默认使用项目作用域，只有用户明确要求时才使用用户作用域。创建完成后，它会报告选中的
+scope、package 目录、两份 package 文件（`WORKFLOW.md` 与 `WORKFLOW.yaml`）、验证 hash 和执行顺序。
+同 ID 项目 package 遮蔽用户 package 时，可用 `kilin workflow validate <id> --scope user` 直接检查用户
+package；普通验证与执行仍保持项目优先规则。
+
+## 最小定义
+
+```yaml
+schemaVersion: 1
+workflow:
+  id: change-review
+  name: Change review
+nodes:
+  - id: analyze
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: Analyze the proposed change.
+    output:
+      type: json
+  - id: approve
+    kind: approval
+    question: Accept the analysis?
+edges:
+  - from: analyze
+    to: approve
+```
+
+Agent 节点声明固定运行时、访问模式、prompt，以及可选的类型化输出和 1,000 至
+86,400,000 毫秒整数 `timeoutMs`。未声明时使用 run 的节点超时回退值。审批节点会暂停
+附着式执行，直到符合条件的第二个进程或本地 Viewer 记录决策；其截止时间使用独立的
+run 审批超时。
+
+边表示依赖关系。当目标 Agent 必须使用来源输出时，需要命名 input binding。
+
+## 访问模式与并发
+
+只有彼此独立且 run 的 `--max-parallel` 大于一时，`read_only` 节点才可重叠执行。`workspace_write` 节点和审批在任何并发上限下都是独占屏障。默认上限为一。
+
+访问模式属于纵深防御，不会移除已安装 provider CLI 所获得的环境信任。请阅读[信任边界指南](/zh-cn/security/trust-boundaries)。
+
+## Schema V1
+
+Schema V1 包含 Agent、审批、类型化输出、binding、Decision Packet V1、有界重试与 continuation、join、命名 workspace、封闭 choice routing、声明式 run parameter，以及一个迭代上限为一至五的有限 revise-or-pass loop。
+
+每个定义都会编译为有限、无环的执行计划。Kilin 拒绝其他 Schema 版本号、任意环、嵌套 loop 和无界执行。
+
+## Revision 与重新执行
+
+执行前，Kilin 会规范化所选 package 并记录不可变 revision。`rerun` 使用已存储的定义和工作目录，不读取当前 package。`retry` 和 `resume` 是资格条件更严格的 continuation 操作。

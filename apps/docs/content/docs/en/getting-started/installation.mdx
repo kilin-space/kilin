@@ -1,0 +1,67 @@
+---
+title: Installation
+description: Install the Kilin CLI and prepare a supported agent runtime.
+---
+
+## Requirements
+
+- Node.js 24 or newer.
+- One supported provider CLI installed and authenticated for workflows you intend to run.
+
+Kilin supports Codex, Claude Code, and OpenCode. A workflow may use more than one runtime, and
+Kilin probes every runtime in its compiled plan before creating a run.
+
+Codex and Claude Code support `read_only` and `workspace_write`. OpenCode supports only
+`workspace_write`; definitions that pair OpenCode with `read_only` fail validation.
+
+## Install the CLI
+
+```bash
+npm install --global @kilin-space/cli
+kilin --version
+kilin --help
+```
+
+The executable is named `kilin`.
+
+## Link the bundled agent skills
+
+The npm package includes Kilin's workflow-discovery, workflow-generation, and workflow-execution
+skills. After a global installation, link all three into the provider directories you use:
+
+```bash
+kilin skills link
+```
+
+On a TTY, Kilin opens a checklist so you can choose Codex/Agents (`~/.agents/skills`), Claude Code
+(`~/.claude/skills`), or both. Space toggles a provider; Enter confirms. Non-interactive shells
+must pass providers explicitly, for example `--providers agents` or `--providers agents,claude`.
+
+The first interactive `kilin` command also offers this checklist once per data directory
+(`KILIN_DATA_DIR` or `~/.kilin`). Check current links with `kilin skills status`.
+
+For contributors working in a repository checkout, the compatibility wrapper links both providers
+without a prompt when run from the checkout root:
+
+```bash
+npm --prefix packages/cli run link:agent-skills
+```
+
+Rerun `kilin skills link` after moving or reinstalling the global package.
+
+## Update
+
+Install the intended published version explicitly:
+
+```bash
+npm install --global @kilin-space/cli@0.1.0
+kilin --version
+```
+
+Review the package changelog before changing versions. Kilin does not silently translate old state
+or workflow formats when a release intentionally changes a contract.
+
+## Next step
+
+[Create and validate your first workflow](/getting-started/quickstart). Validation is local and
+does not invoke a model.

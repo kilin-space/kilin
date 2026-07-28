@@ -1,0 +1,159 @@
+{
+  "qualificationVersion": 1,
+  "qualified": true,
+  "createdAt": "2026-07-27T05:47:27.667Z",
+  "baselineSha": "3bf8144cfdbc729d4a957e0cd2f7092eb840709a",
+  "evaluator": {
+    "commitSha": "fcb7b8fc013495a3a3e41f2c4faa35ece88f19e9",
+    "scripts": {
+      "package-artifact.mjs": "d49ad3db073f78cee2f0fe8cb33c54d972b85dfd532959b60c4eae31c998f316",
+      "qualify-release-artifact.mjs": "2a5e82b09677bedabf004c631eb5ea632fdc3944a7d8f9b9cde63e044ab0d500",
+      "smoke-real-runtimes.mjs": "be756c3269c9da27fb664a2949091f14ba41b12333e218e53e08e97e80aaa367"
+    }
+  },
+  "platform": {
+    "os": "darwin",
+    "architecture": "arm64",
+    "release": "25.5.0"
+  },
+  "tools": {
+    "node": "v24.12.0",
+    "pnpm": "11.4.0",
+    "npm": "11.6.2"
+  },
+  "artifact": {
+    "package": "@kilin-space/cli",
+    "filename": "kilin-space-cli.tgz",
+    "sha256": "76832c4032fdd24cbae31bb8532c589cc3b9335ee74892f6591e8cd9487d200e",
+    "packageVersion": "0.1.0",
+    "packedFileCount": 187,
+    "installMode": "isolated-global-prefix"
+  },
+  "modelSelection": "provider-default",
+  "commands": {
+    "pack": [
+      "pnpm",
+      "pack",
+      "--json",
+      "--out",
+      "<artifact-dir>/kilin-space-cli.tgz"
+    ],
+    "install": [
+      "npm",
+      "install",
+      "--global",
+      "--prefix",
+      "<isolated-prefix>",
+      "kilin-space-cli.tgz"
+    ],
+    "runtime": [
+      "node",
+      "scripts/smoke-real-runtimes.mjs",
+      "--allow-model-call",
+      "--cli",
+      "<installed-kilin>"
+    ]
+  },
+  "deterministicChecks": {
+    "help": true,
+    "schema": true,
+    "skillLinks": true,
+    "workflow": {
+      "eventTypes": [
+        "run.started",
+        "node.started",
+        "node.finished",
+        "run.finished"
+      ],
+      "runStatus": "succeeded",
+      "nodeStatus": "succeeded",
+      "resultVerified": true
+    }
+  },
+  "runtime": {
+    "qualificationVersion": 1,
+    "qualified": true,
+    "modelSelection": "provider-default",
+    "plannedModelCalls": 5,
+    "modelCalls": 5,
+    "runtimeVersions": {
+      "codex": "codex-cli 0.145.0",
+      "claude-code": "2.1.220 (Claude Code)",
+      "opencode": "1.18.5"
+    },
+    "scenarios": [
+      {
+        "name": "preflight",
+        "qualified": true,
+        "modelCalls": 0,
+        "checks": {
+          "codex-authFailure": true,
+          "codex-authRedaction": true,
+          "codex-authZeroRuns": true,
+          "claude-authFailure": true,
+          "claude-authRedaction": true,
+          "claude-authZeroRuns": true,
+          "opencode-read-onlyFailure": true,
+          "opencode-read-onlyRedaction": true,
+          "opencode-read-onlyZeroRuns": true,
+          "opencodeNotInvoked": true
+        }
+      },
+      {
+        "name": "mixed",
+        "qualified": true,
+        "modelCalls": 3,
+        "checks": {
+          "mixedCommand": true,
+          "approvalCommand": true,
+          "codexProofBinding": true,
+          "codexNativeDenied": true,
+          "codexShellDenied": true,
+          "codexProjectConfigIgnored": true,
+          "claudeNativeDenied": true,
+          "claudeShellDenied": true,
+          "hostileWritesAbsent": true,
+          "artifactContent": true,
+          "approvalBeforeOpenCode": true,
+          "workspaceDigest": true,
+          "publicOutputIsolation": true
+        }
+      },
+      {
+        "name": "timeout",
+        "qualified": true,
+        "modelCalls": 1,
+        "checks": {
+          "readyMarker": true,
+          "descendantStarted": true,
+          "terminalState": true,
+          "timeoutCode": true,
+          "authoredTimeoutDuration": true,
+          "durableState": true,
+          "descendantCleanup": true,
+          "publicOutputIsolation": true
+        }
+      },
+      {
+        "name": "cancellation",
+        "qualified": true,
+        "modelCalls": 1,
+        "checks": {
+          "readyMarker": true,
+          "descendantStarted": true,
+          "runStarted": true,
+          "publicCancellation": true,
+          "terminalState": true,
+          "durableState": true,
+          "descendantCleanup": true,
+          "publicOutputIsolation": true
+        }
+      }
+    ]
+  },
+  "knownLimits": [
+    "OpenCode authentication is evidenced by successful execution because its adapter has no separate authentication probe.",
+    "Process-group qualification targets POSIX hosts.",
+    "macOS declines delayed individual process signals after the original process-group leader exits because its process table lacks a stable start identifier."
+  ]
+}

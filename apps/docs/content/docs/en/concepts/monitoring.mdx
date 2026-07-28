@@ -1,0 +1,114 @@
+---
+title: Watching a run
+description: Monitor a running workflow as a person through the Viewer, or as an agent through JSON.
+---
+
+Workflow authoring, execution, monitoring, and approval are available as commands with `--json`
+forms, so the thing driving Kilin can equally be a person at a terminal or an outer agent runtime
+supervising work it delegated. Non-interactive setup uses an explicit provider selection such as
+`kilin skills link --providers agents`. The Viewer remains a human inspection surface, while an
+outer agent can launch and supervise its attached CLI process through `--json`.
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│  OUTER AGENT RUNTIME                                            │
+│  a person at a terminal  ·  or Codex / Claude Code / a script   │
+└─────────────────────────────────────────────────────────────────┘
+        │                                             ▲
+        │  create   kilin workflow init               │  monitor   runs list · runs show
+        │  update   edit WORKFLOW.yaml                │  track     runs wait --json
+        │  start    kilin run · kilin trigger         │  inspect   kilin ui
+        │  decide   runs approve · runs reject        │
+        ▼                                             │
+┌─────────────────────────────────────────────────────────────────┐
+│  KILIN                                                          │
+│  validate → compile → immutable revision → execute              │
+│  SQLite history  ·  captured logs  ·  JSONL event stream        │
+└─────────────────────────────────────────────────────────────────┘
+        │                                             ▲
+        │  spawns provider subprocesses               │  results · logs · decisions
+        ▼                                             │
+┌─────────────────────────────────────────────────────────────────┐
+│  INNER WORKFLOW — one run                                       │
+│                                                                 │
+│    analyze  ──▶  implement  ──▶  [approval]  ──▶  verify        │
+│    read_only     workspace_write   barrier        read_only     │
+│    Claude Code   Codex                            Codex         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+The outer runtime stays outside the run. It cannot reach into a running node, and no edit to
+`WORKFLOW.yaml` can change what this run executes, because Kilin records an immutable revision
+before the first node starts.
+
+Both views below read the same local SQLite history. Neither is a reduced version of the other.
+
+## As a person
+
+Open the Viewer for the workflow you are running:
+
+```bash
+kilin ui change-review --cwd /absolute/path/to/project
+```
+
+The Viewer binds numeric `127.0.0.1` on an operating-system-selected port and shows the compiled
+graph, node states as they change, the newest 50 runs for that exact workflow identity and working
+directory, lineage, approval metadata, failures, bounded captured output, and Decision Packets.
+
+When a run stops at an approval, the Viewer shows guarded Approve and Reject buttons alongside the
+equivalent CLI commands. That decision is its only state mutation: it cannot edit workflows, start
+provider runs, or schedule work. Pass `--no-open` to print the launch URL instead of opening a
+browser, and treat that URL as a credential.
+
+Without a browser, the same history is available as text:
+
+```bash
+kilin runs list
+kilin runs show <run-id>
+```
+
+## As an agent
+
+The bundled run skill validates the visible package, starts
+`kilin ui <id> --cwd <directory> --no-open --json` as a managed attached process when the
+requester's browser can reach the same loopback, and returns the `viewer.started` URL directly.
+The Viewer remains alive after run success or failure until it is stopped or the outer-agent
+session ends. If the agent runs on another machine or cannot retain the process, it returns the
+manual command with the requester's local project path instead of claiming the remote
+`127.0.0.1` URL is accessible. That local Viewer sees the same history only when it can access the
+same Kilin data.
+
+`kilin run --json` streams one JSON object per line. Every event carries `outputVersion: 1` and a `type`:
+
+```text
+run.started · node.started · node.finished · approval.requested
+approval.resolved · run.finished · error
+```
+
+Rather than polling, block until the run next needs attention or reaches a terminal state:
+
+```bash
+kilin runs wait <run-id> --json
+```
+
+A controller records its decision from a second local process while the run stays attached in the
+first, so nothing has to scrape a terminal:
+
+```bash
+kilin runs approve <run-id> <approval-node-id> --actor agent
+kilin runs cancel <run-id>
+```
+
+Failures carry stable error codes — `NODE_TIMEOUT`, `LOOP_LIMIT_REACHED`, `APPROVAL_REJECTED`, and
+the rest — so a supervising agent can branch on the code rather than parse prose. `runs list`,
+`runs show`, and `workflow validate` also accept `--json`.
+
+## What monitoring never exposes
+
+Declared run parameters are deliberately excluded from lifecycle events, `runs list`, `runs show`,
+and the Viewer. Loop iterations are grouped without exposing parameter, feedback, decision-choice,
+or result values.
+
+Captured stdout, stderr, and results remain private local files under the data directory rather
+than event payloads. See [trust boundaries](/security/trust-boundaries) for what that history can
+contain, and the [command reference](/reference/commands) for the full flag surface.

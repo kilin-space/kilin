@@ -1,0 +1,97 @@
+schemaVersion: 1
+workflow:
+  id: parallel-change-review
+  name: Parallel change review
+nodes:
+  - id: security-scan
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: >-
+      Review the entire source tree of this repository. Skip dependency
+      directories such as node_modules and .pnpm-store, build output such
+      as dist and .turbo, and lock files. Work non-interactively: read
+      the code directly and do not open interactive tools, workspaces, or
+      MCP setup flows, and never wait for user input. Report only
+      security findings: injection, unsafe file or path handling, secret
+      exposure, and trust-boundary violations. Return JSON with a
+      findings array where each finding has severity, file, line, and
+      summary. Return an empty findings array when nothing is wrong.
+    output:
+      type: json
+  - id: performance-scan
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: >-
+      Review the entire source tree of this repository. Skip dependency
+      directories such as node_modules and .pnpm-store, build output such
+      as dist and .turbo, and lock files. Work non-interactively: read
+      the code directly and do not open interactive tools, workspaces, or
+      MCP setup flows, and never wait for user input. Report only
+      performance findings: unnecessary I/O, blocking work on hot paths,
+      quadratic algorithms, and avoidable allocations. Return JSON with a
+      findings array where each finding has severity, file, line, and
+      summary. Return an empty findings array when nothing is wrong.
+    output:
+      type: json
+  - id: maintainability-scan
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: >-
+      Review the entire source tree of this repository. Skip dependency
+      directories such as node_modules and .pnpm-store, build output such
+      as dist and .turbo, and lock files. Work non-interactively: read
+      the code directly and do not open interactive tools, workspaces, or
+      MCP setup flows, and never wait for user input. Report only
+      maintainability findings: dead code, duplicated logic, unclear
+      naming, missing tests, and layer-boundary violations. Return JSON
+      with a findings array where each finding has severity, file, line,
+      and summary. Return an empty findings array when nothing is wrong.
+    output:
+      type: json
+  - id: summarize
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: >-
+      Combine the security, performance, and maintainability findings into
+      one Decision Packet V1 for this codebase. Return exactly one JSON
+      object with this shape: subject is an object with type and name
+      strings; objective is a string; observations is an array of objects
+      with id, summary, and metrics, where each metric has name, value,
+      source as an object with a label string, asOf as a UTC RFC 3339
+      timestamp ending in Z, and maturity of preliminary, directional,
+      mature, or unknown; evaluation is an object with summary, inferences
+      as an array of objects with summary and basedOn citing observation
+      IDs, and guardrails as an array of objects with name, status of
+      pass, fail, or unknown, detail, and basedOn citing observation IDs;
+      recommendation is an object with summary and rationale; alternatives
+      is an array of objects with summary and tradeoffs; risks is an array
+      of objects with summary and severity of low, medium, or high;
+      unknowns is an array of objects with summary; proposedActions is an
+      array of objects with id, summary, and rationale; review is an
+      object with recommendedAt as a UTC RFC 3339 timestamp ending in Z
+      and reason. Include at least one observation, one metric, one
+      guardrail, one alternative, and one proposed action, and use the
+      current UTC time for asOf and recommendedAt. Weigh the findings by
+      severity, state a clear accept-or-reject judgment in the
+      recommendation, and list the blocking findings as proposedActions.
+    output:
+      type: decision_packet
+  - id: approve
+    kind: approval
+    question: Accept the consolidated review outcome for this codebase?
+edges:
+  - from: security-scan
+    to: summarize
+    input: security
+  - from: performance-scan
+    to: summarize
+    input: performance
+  - from: maintainability-scan
+    to: summarize
+    input: maintainability
+  - from: summarize
+    to: approve

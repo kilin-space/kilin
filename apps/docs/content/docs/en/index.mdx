@@ -1,0 +1,28 @@
+---
+title: Kilin
+description: Deterministic, inspectable workflows for coding agents.
+---
+
+Kilin is a local, CLI-first workflow runtime. You define a finite workflow in ordinary files,
+validate it before execution, and run it through supported Codex, Claude Code, or OpenCode
+installations.
+
+Kilin keeps orchestration explicit:
+
+- workflows are scope-based files in project or user locations;
+- execution stays attached to the foreground CLI;
+- approvals are explicit barriers;
+- writable work never overlaps another node;
+- results, logs, decisions, and lineage remain inspectable locally; and
+- the optional Viewer binds only to the local loopback interface.
+
+## Start here
+
+1. [Install Kilin](/getting-started/installation).
+2. [Create and validate a workflow](/getting-started/quickstart).
+3. Learn the [workflow model](/concepts/workflows).
+4. See how to [watch a run](/concepts/monitoring) as a person or as an agent.
+5. Keep the [security boundaries](/security/trust-boundaries) in view before a provider run.
+
+Use the [command reference](/reference/commands) when integrating Kilin into a script or external
+scheduler.

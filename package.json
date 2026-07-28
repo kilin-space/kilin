@@ -1,0 +1,26 @@
+{
+  "name": "@kilin-space/workspace",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.4.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --filter=@kilin-space/docs",
+    "dev:cli": "pnpm --filter @kilin-space/cli dev",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:e2e": "turbo run test:e2e",
+    "verify": "pnpm format:check && turbo run lint typecheck test test:e2e pack:check --concurrency=1",
+    "prepare": "git config core.hooksPath .githooks || true"
+  },
+  "devDependencies": {
+    "prettier": "3.9.6",
+    "turbo": "2.10.6"
+  }
+}

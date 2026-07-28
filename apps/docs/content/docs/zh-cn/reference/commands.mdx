@@ -1,0 +1,78 @@
+---
+title: 命令参考
+description: 受支持的 Kilin 命令与主要执行控制。
+---
+
+## 工作流程 package
+
+```text
+kilin workflow init <name> --scope <project|user> --name <display-name>
+  --description <description> [--project-root <directory>] [--json]
+kilin workflow list [--cwd <directory>] [--json]
+kilin workflow validate <name> [--scope <project|user>] [--cwd <directory>] [--json]
+```
+
+项目初始化必须传入 `--project-root`；用户初始化不能传入该参数，并写入
+`~/.agents/workflows`。`workflow init` 不会覆盖现有 package。`workflow validate`
+没有持久化副作用，也不会调用 provider。不传 `--scope` 时，验证采用普通的项目优先解析；
+显式 scope 只验证该 scope，绝不回退。
+
+## 执行
+
+```text
+kilin run <name> --cwd <directory>
+  [--param <name=value>]...
+  [--node-timeout <duration>]
+  [--approval-timeout <duration>]
+  [--max-output-bytes <bytes>]
+  [--max-parallel <count>]
+  [--json]
+
+kilin trigger --request <absolute-file> [--json]
+kilin rerun <run-id> [--max-parallel <count>] [--json]
+kilin retry <run-id> [--node <node-id>] [--json]
+kilin resume <run-id> [--json]
+```
+
+`--node-timeout` 为未声明 `timeoutMs` 的 Agent 提供进程超时回退值。
+`--approval-timeout` 独立限制审批等待。两者都接受一秒至 24 小时的正整数加 `s`、`m`
+或 `h`。`--max-output-bytes` 接受 1,024 至 104,857,600 bytes。`--max-parallel`
+接受一至八，只限制独立 `read_only` 工作。
+
+`--param` 可重复使用，且只属于 `run`。参数可能出现在 shell 历史和本地进程列表中；不要通过 `--param` 传递 secret。
+
+`trigger` 读取由 host scheduler 提供的严格 request file。Kilin 记录 trigger provenance，但不安装、拥有或计算 schedule。
+
+## Run 历史与决策
+
+```text
+kilin runs list [--limit <count>] [--status <status>] [--json]
+kilin runs show <run-id> [--json]
+kilin runs wait <run-id> [--json]
+kilin runs cancel <run-id> [--json]
+kilin runs approve <run-id> <node-id> --actor <agent|human> [--note <text>] [--json]
+kilin runs reject <run-id> <node-id> --actor <agent|human> [--note <text>] [--json]
+```
+
+取消操作会记录持久请求；前台 owner 观察该请求并终止活动 provider 工作。确认只表示请求已记录，不代表所有进程已停止。
+
+## 本地 Viewer
+
+```text
+kilin ui <name> --cwd <directory> [--no-open] [--json]
+```
+
+Viewer 显示编译后的工作流程与本地历史。它可为符合条件的等待中审批记录受保护决策，但不能编辑工作流程、
+启动 provider run 或作为公开 API。`--no-open` 禁止启动浏览器。`--json` 会输出一个
+`viewer.started` 文档，其中包含解析后的标识、canonical 工作目录和带凭证的 URL，然后保持附着直到停止。
+应将该 JSON 输出视为秘密，不得记录、公开或分享。
+
+## 全局 flags
+
+```text
+kilin -h
+kilin --help
+kilin --version
+```
+
+`-h` 与 `--help` 会输出相同的命令摘要和说明。这些全局 flags 仍只接受精确调用。命令会拒绝未知 flag、重复使用不可重复的 flag、缺失值及多余位置参数。

@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in the Kilin CLI or Viewer behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report suspected security vulnerabilities here. Use
+        [private reporting](https://github.com/kilin-space/kilin/security/advisories/new)
+        instead.
+
+        This report is public. Before submitting it, redact tokens, API keys, environment values,
+        cookies, personal data, and other secrets from workflows, prompts, paths, and command
+        output.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: |
+        The smallest sequence of `kilin` commands that shows the problem. Include the relevant
+        `WORKFLOW.yaml` if the workflow definition matters. Redact secrets and any prompts, paths,
+        or personal data you cannot share.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Kilin version
+      description: Output of `kilin --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider CLI involved
+      options:
+        - Codex
+        - Claude Code
+        - OpenCode
+        - None / not provider-specific
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and Node.js version
+      placeholder: macOS 15.2, Node 24.4.0
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: |
+        Command output or the failing error code. Re-run with `--json` when available, and redact
+        secrets, environment values, cookies, and personal data.
+      render: shell

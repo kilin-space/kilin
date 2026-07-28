@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+.next/
+.source/
+.turbo/
+.vercel/
+*.tsbuildinfo
+
+# Test & coverage artifacts
+coverage/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Logs
+*.log
+
+# Runtime databases (better-sqlite3)
+*.sqlite
+*.sqlite3
+*.db
+
+# Environment / secrets
+.env
+.env.*
+
+# Agent-owned scratch checkouts
+.claude/worktrees/
+
+# macOS / editor cruft
+.DS_Store
+*.swp

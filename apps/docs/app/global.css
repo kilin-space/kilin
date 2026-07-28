@@ -1,0 +1,25 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+:root {
+  --kilin-accent: #7a5c1f;
+}
+
+.dark {
+  --kilin-accent: #d8b978;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--kilin-accent) 28%, transparent);
+}
+
+.prose a:not([data-card]) {
+  color: var(--kilin-accent);
+  text-decoration-color: color-mix(in oklab, var(--kilin-accent) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+.prose a:not([data-card]):hover {
+  text-decoration-color: var(--kilin-accent);
+}

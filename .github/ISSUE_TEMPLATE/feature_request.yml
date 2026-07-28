@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a capability or change to Kilin.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Kilin deliberately excludes some capabilities — a daemon, a public HTTP API, a built-in
+        scheduler, nested or unbounded loops, and cloud execution among them. See the scope
+        boundary in the [package README](https://github.com/kilin-space/kilin/blob/main/packages/cli/README.md)
+        before filing.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and where does Kilin get in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should Kilin do instead? Include the command or workflow shape you imagine.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including any workaround you are using now.

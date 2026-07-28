@@ -1,0 +1,23 @@
+# Build output & reports
+**/dist
+**/.next
+**/.source
+.turbo
+coverage
+playwright-report
+test-results
+blob-report
+
+# Generated / vendored / runtime state
+pnpm-lock.yaml
+.pnpm-store
+e2e/artifacts
+.kilin
+.conductor
+
+# Agent-owned files (skills, worktrees, launch configs)
+.agents
+.claude
+
+# Documentation (design docs with hand-tuned layout, official snapshots)
+packages/cli/docs

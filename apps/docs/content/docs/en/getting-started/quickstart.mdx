@@ -1,0 +1,65 @@
+---
+title: Quickstart
+description: Create, validate, and run a project- or user-scoped workflow.
+---
+
+Start in the project that the workflow should operate on:
+
+```bash
+cd /absolute/path/to/project
+
+kilin workflow init first-workflow \
+  --scope project \
+  --project-root "$PWD" \
+  --name "First workflow" \
+  --description "Inspect this project."
+```
+
+This creates:
+
+```text
+.agents/workflows/first-workflow/
+├── WORKFLOW.md
+└── WORKFLOW.yaml
+```
+
+Project scope is the default for the bundled generation skill and stays within this project. Ask
+for user scope explicitly when the workflow must be portable across projects; that package is
+created under `~/.agents/workflows/<workflow-id>/`. Project initialization requires
+`--project-root`; user initialization uses `--scope user` and forbids `--project-root`. The CLI and
+generation skill report the selected scope and exact package files.
+
+Validate the package before execution:
+
+```bash
+kilin workflow validate first-workflow --scope project --cwd "$PWD"
+```
+
+Validation safely parses the YAML, verifies the schema and graph, and prints a deterministic
+execution order. It does not probe provider authentication, create a run, or invoke a model.
+
+After reviewing both workflow files and the [security boundaries](/security/trust-boundaries), run
+the workflow:
+
+```bash
+kilin run first-workflow --cwd "$PWD"
+```
+
+Inspect the resulting local history:
+
+```bash
+kilin runs list
+kilin runs show <run-id>
+```
+
+An outer agent using the bundled run skill starts the attached Viewer and returns its local URL only
+after confirming that the requester's browser runs on the same host. Otherwise, it returns a local
+startup command. To start the same machine-readable Viewer yourself:
+
+```bash
+kilin ui first-workflow --cwd "$PWD" --no-open --json
+```
+
+The command emits one `viewer.started` document and remains attached. Its launch URL can be
+redeemed once and never outlives that process; the redeemed browser session remains usable while
+the process lives. Treat the JSON output as a secret: do not log, publish, or share it.

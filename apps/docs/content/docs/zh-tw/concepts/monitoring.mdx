@@ -1,0 +1,106 @@
+---
+title: 觀察執行
+description: 以人類身分透過 Viewer 監控執行中的工作流程，或以 Agent 身分透過 JSON 監控。
+---
+
+工作流程的撰寫、執行、觀察與審批都以命令形式提供 `--json` 輸出，因此驅動 Kilin 的既可以是終端機
+前的人，也可以是監督其委派工作的外層 Agent 執行環境。非互動式安裝需要明確指定提供方，例如
+`kilin skills link --providers agents`。Viewer 仍是面向人類的檢視介面，外層 Agent 可以透過
+`--json` 啟動並監管其附著式 CLI 行程。
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│  OUTER AGENT RUNTIME                                            │
+│  a person at a terminal  ·  or Codex / Claude Code / a script   │
+└─────────────────────────────────────────────────────────────────┘
+        │                                             ▲
+        │  create   kilin workflow init               │  monitor   runs list · runs show
+        │  update   edit WORKFLOW.yaml                │  track     runs wait --json
+        │  start    kilin run · kilin trigger         │  inspect   kilin ui
+        │  decide   runs approve · runs reject        │
+        ▼                                             │
+┌─────────────────────────────────────────────────────────────────┐
+│  KILIN                                                          │
+│  validate → compile → immutable revision → execute              │
+│  SQLite history  ·  captured logs  ·  JSONL event stream        │
+└─────────────────────────────────────────────────────────────────┘
+        │                                             ▲
+        │  spawns provider subprocesses               │  results · logs · decisions
+        ▼                                             │
+┌─────────────────────────────────────────────────────────────────┐
+│  INNER WORKFLOW — one run                                       │
+│                                                                 │
+│    analyze  ──▶  implement  ──▶  [approval]  ──▶  verify        │
+│    read_only     workspace_write   barrier        read_only     │
+│    Claude Code   Codex                            Codex         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+外層執行環境始終位於執行之外。它無法伸手干預正在執行的節點，對 `WORKFLOW.yaml` 的任何修改也無法
+改變本次執行所執行的內容，因為 Kilin 在第一個節點啟動前就已記錄了不可變修訂。
+
+下面兩種檢視讀取的是同一份本機 SQLite 歷史，兩者都不是對方的簡化版本。
+
+## 以人類身分
+
+為正在執行的工作流程開啟 Viewer：
+
+```bash
+kilin ui change-review --cwd /absolute/path/to/project
+```
+
+Viewer 只繫結數字形式的 `127.0.0.1`，連接埠由作業系統選擇。它呈現已編譯的圖、隨時間變化的節點狀態、
+該工作流程識別與工作目錄下最新的 50 次執行、血緣關係、審批中繼資料、失敗資訊、有界的擷取輸出，
+以及 Decision Packet。
+
+當執行停在審批節點時，Viewer 會顯示受保護的 Approve 與 Reject 按鈕，並同時給出等價的 CLI 命令。
+該決策是它唯一的狀態變更：它不能編輯工作流程、啟動 provider 執行，也不能排程任務。加上 `--no-open`
+可只列印啟動 URL 而不開啟瀏覽器；請將該 URL 視為憑證。
+
+不使用瀏覽器時，同一份歷史也可以用文字檢視：
+
+```bash
+kilin runs list
+kilin runs show <run-id>
+```
+
+## 以 Agent 身分
+
+內建執行 skill 會先驗證目前可見的 package；當請求者的瀏覽器可存取相同 loopback 時，它會將
+`kilin ui <id> --cwd <directory> --no-open --json` 作為受管理的附著式行程啟動，並直接回傳
+`viewer.started` URL。無論 run 成功或失敗，Viewer 都會保持執行，直到被停止或外層 Agent
+工作階段結束。如果 Agent 在另一台機器上執行或無法保留該行程，它會使用請求者的本機專案路徑
+回傳手動命令，不會聲稱遠端 `127.0.0.1` URL 可存取。只有本機 Viewer 能存取同一份 Kilin 資料時，
+它才會顯示相同的歷史紀錄。
+
+`kilin run --json` 以每行一個 JSON 物件的形式串流輸出。每個事件都帶有 `outputVersion: 1` 與 `type`：
+
+```text
+run.started · node.started · node.finished · approval.requested
+approval.resolved · run.finished · error
+```
+
+不必輪詢，直接阻塞等待執行下一次需要關注或進入終態：
+
+```bash
+kilin runs wait <run-id> --json
+```
+
+控制方可以在第二個本機行程中記錄決策，同時執行仍附著於第一個行程，因此無需擷取終端機輸出：
+
+```bash
+kilin runs approve <run-id> <approval-node-id> --actor agent
+kilin runs cancel <run-id>
+```
+
+失敗會帶有穩定的錯誤碼 —— `NODE_TIMEOUT`、`LOOP_LIMIT_REACHED`、`APPROVAL_REJECTED` 等 ——
+因此監督方 Agent 可以依錯誤碼分支，而不必解析散文。`runs list`、`runs show` 與 `workflow validate`
+同樣接受 `--json`。
+
+## 監控不會揭露的內容
+
+宣告的執行參數被刻意排除在生命週期事件、`runs list`、`runs show` 與 Viewer 之外。迴圈迭代依迭代分組，
+但不會揭露參數、回饋、決策選項或結果值。
+
+擷取的 stdout、stderr 與結果保留為資料目錄下的私有本機檔案，而非事件酬載。關於這些歷史可能包含
+什麼，參見[信任邊界](/zh-tw/security/trust-boundaries)；完整的參數面參見[命令參考](/zh-tw/reference/commands)。

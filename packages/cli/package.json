@@ -1,0 +1,77 @@
+{
+  "name": "@kilin-space/cli",
+  "version": "0.1.0",
+  "description": "CLI-first workflow runtime for agents to discover, create, validate, and run reusable workflows",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kilin-space/kilin.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://docs.kilin.space",
+  "bugs": {
+    "url": "https://github.com/kilin-space/kilin/issues"
+  },
+  "keywords": [
+    "workflow",
+    "agent",
+    "orchestration",
+    "cli",
+    "codex",
+    "claude-code",
+    "opencode"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "kilin": "dist/cli/main.js"
+  },
+  "files": [
+    "agent-skills",
+    "dist",
+    "scripts/link-agent-skills.mjs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json",
+    "dev": "tsx src/cli/main.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "link:agent-skills": "node scripts/link-agent-skills.mjs",
+    "pack:check": "node scripts/check-package.mjs",
+    "qualify:release": "node scripts/qualify-release-artifact.mjs",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm test:e2e && pnpm pack:check",
+    "smoke:runtimes": "pnpm build && node scripts/smoke-real-runtimes.mjs",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "@clack/prompts": "1.7.0",
+    "ajv": "8.18.0",
+    "better-sqlite3": "12.10.0",
+    "fs-native-extensions": "1.5.0",
+    "yaml": "2.8.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@playwright/test": "1.55.0",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.10.1",
+    "eslint": "9.39.1",
+    "prettier": "3.9.6",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.3",
+    "vitest": "3.2.4"
+  }
+}

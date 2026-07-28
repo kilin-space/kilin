@@ -1,0 +1,59 @@
+---
+title: Trust boundaries
+description: Understand what Kilin isolates, inherits, records, and deliberately does not secure.
+---
+
+## Provider processes inherit your environment
+
+Kilin passes its complete parent-process environment to provider preflight commands and agent
+subprocesses. This preserves authentication, proxies, developer tools, and project commands. It
+also means the provider CLI and launched agent can read unrelated credentials present in that
+environment.
+
+Start Kilin from a deliberately sanitized environment when a workflow or provider should not
+receive your normal shell environment. Kilin does not offer workflow-defined environment
+overrides.
+
+Kilin persists its own run state locally, but prompts, inputs, files, and other content sent to a
+provider follow that provider's network and retention policies.
+
+## Access modes are defense in depth
+
+Kilin maps `read_only` and `workspace_write` to the supported runtime's enforcement surface.
+Provider sandboxes may vary by runtime and platform, and a provider may contact its model service.
+Kilin does not claim zero network egress, complete read isolation, or deterministic model output.
+
+Codex and Claude Code support both access modes. OpenCode supports only `workspace_write`; Kilin
+rejects OpenCode nodes that request `read_only`.
+
+Review prompts, inputs, provider configuration, and the selected working directory before a run.
+
+## Workflow files are untrusted input
+
+Kilin safely parses workflow YAML and rejects aliases, anchors, merge keys, custom tags, duplicate
+keys, multiple documents, invalid UTF-8, and oversized input. Package directories and required
+files must be physical paths rather than symbolic links.
+
+Discovery metadata helps agents find a candidate. It is not authorization to execute it. A user or
+controller must explicitly invoke a run.
+
+## Local evidence is private but durable
+
+Kilin stores its database, captured stdout and stderr, final results, resolved inputs, and retained
+worktrees locally. These artifacts may contain private code or model output. Protect the data
+directory, inspect retained worktrees before removal, and apply your own retention policy.
+
+Run parameters are excluded from public lifecycle views, but `--param` values can still appear in
+shell history and local process listings. Do not use command-line parameters for secrets.
+
+## Viewer boundary
+
+The attached Viewer binds to numeric `127.0.0.1` on an operating-system-selected port and uses a
+one-use launch credential. Do not publish or reuse its launch URL. The Viewer's only state mutation
+is recording an eligible approval decision; it is not a daemon, scheduler, editable workflow
+surface, or public API. An outer agent may return the URL directly to the requester only after
+confirming that the agent process and the requester's browser run on the same host. Sharing the
+`127.0.0.1` address alone does not establish this. The URL stops working when the attached Viewer
+exits. As operational guidance for outer agents, do not persist the URL in workflow files, run
+events, artifacts, issues, pull requests, or public logs. A remote agent should return a local
+launch command instead of presenting its own `127.0.0.1` URL as user-accessible.

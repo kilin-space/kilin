@@ -1,0 +1,61 @@
+---
+title: 疑難排解
+description: 診斷 package 尋找、驗證、provider preflight、run 和 Viewer 失敗。
+---
+
+## 找不到工作流程
+
+使用相同工作目錄執行探索命令：
+
+```bash
+kilin workflow list --cwd /absolute/path/to/project
+```
+
+檢查精確檔名 `WORKFLOW.md` 和 `WORKFLOW.yaml`、小寫工作流程目錄 ID，以及最近的 `.agents/workflows` 根目錄。專案 package 會遮蔽同 ID 的使用者 package，即使專案項目無效。
+
+## 驗證失敗
+
+使用 JSON 輸出保留穩定 error code 和 path：
+
+```bash
+kilin workflow validate <workflow-id> \
+  --cwd /absolute/path/to/project \
+  --json
+```
+
+修正第一個語法、Schema 或語意錯誤後重新驗證。Kilin 不會強制轉換未知欄位，也不接受 `WORKFLOW.yml` 等相容 alias。
+
+## 執行環境 preflight 失敗
+
+確認工作流程指定的每個執行環境都已安裝、受支援，並在啟動 Kilin 的相同環境中完成驗證。只有版本輸出並不足夠；Kilin 也會檢查必要的非互動和安全能力。
+
+OpenCode 只支援 `workspace_write`。節點需要 `read_only` 時，請使用 Codex 或 Claude Code。
+
+Preflight 失敗不會啟動 Agent 行程，也不會建立 run。
+
+## 可寫 run 拒絕 workspace
+
+具名隔離 workspace 需要合格的 Git repository。完成中斷的 Git 操作，並在重試前檢查 staged、tracked 或 untracked 變更。Kilin 會失敗關閉，不會靜默移動或捨棄 workspace 狀態。
+
+## Run 需要處理
+
+檢查詳情或等待有意義的狀態變更：
+
+```bash
+kilin runs show <run-id>
+kilin runs wait <run-id> --json
+```
+
+核准等待時，可從另一個本機行程使用 `runs approve` 或 `runs reject`，也可使用附著式 Viewer 的受保護控制項。
+
+## Viewer 未開啟
+
+輸出啟動 URL，不讓作業系統開啟瀏覽器：
+
+```bash
+kilin ui <workflow-id> \
+  --cwd /absolute/path/to/project \
+  --no-open
+```
+
+在同一台機器上開啟輸出的 URL。含 fragment 的 URL 是憑證，請勿分享。

@@ -1,0 +1,58 @@
+---
+title: 安裝
+description: 安裝 Kilin CLI 並準備支援的 Agent 執行環境。
+---
+
+## 需求
+
+- Node.js 24 或更新版本。
+- 已安裝並驗證工作流程所需的 provider CLI。
+
+Kilin 支援 Codex、Claude Code 和 OpenCode。一個工作流程可以使用多個執行環境；Kilin 會在建立 run 前探測編譯計畫中的每個執行環境。
+
+Codex 和 Claude Code 支援 `read_only` 與 `workspace_write`。OpenCode 只支援 `workspace_write`；OpenCode 與 `read_only` 的組合無法通過驗證。
+
+## 安裝 CLI
+
+```bash
+npm install --global @kilin-space/cli
+kilin --version
+kilin --help
+```
+
+可執行檔名稱為 `kilin`。
+
+## 連結內建 Agent skills
+
+npm package 包含 Kilin 的工作流程探索、產生和執行 skills。全域安裝後，將三套 skill 連結到你使用的 provider 目錄：
+
+```bash
+kilin skills link
+```
+
+在 TTY 中，Kilin 會顯示多選清單，供你選擇 Codex/Agents（`~/.agents/skills`）、Claude Code（`~/.claude/skills`），或兩者都選。空白鍵切換，Enter 確認。非互動環境必須明確傳入 provider，例如 `--providers agents` 或 `--providers agents,claude`。
+
+每個資料目錄（`KILIN_DATA_DIR` 或 `~/.kilin`）下，首次互動式 `kilin` 命令也會詢問一次。可用 `kilin skills status` 查看目前連結狀態。
+
+對於在 repository checkout 中工作的貢獻者，可從 checkout 根目錄執行相容 wrapper；它會在無提示的情況下連結兩個 provider：
+
+```bash
+npm --prefix packages/cli run link:agent-skills
+```
+
+移動或重新安裝全域 package 後，請再次執行 `kilin skills link`。
+
+## 更新
+
+明確安裝目標發布版本：
+
+```bash
+npm install --global @kilin-space/cli@0.1.0
+kilin --version
+```
+
+變更版本前請查閱 package changelog。發布版本有意變更合約時，Kilin 不會靜默轉換舊狀態或工作流程格式。
+
+## 下一步
+
+[建立並驗證第一個工作流程](/zh-tw/getting-started/quickstart)。驗證只在本機執行，不會呼叫模型。

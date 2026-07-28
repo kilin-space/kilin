@@ -1,0 +1,93 @@
+name: Publish CLI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: >-
+      ${{ !github.event.release.draft &&
+          !github.event.release.prerelease &&
+          startsWith(github.event.release.tag_name, 'cli-v') }}
+    runs-on: ubuntu-latest
+    outputs:
+      package_file: ${{ steps.package.outputs.file }}
+      package_sha256: ${{ steps.package.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release source
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          test "$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")" = "${RELEASE_SHA}"
+          git merge-base --is-ancestor "${RELEASE_SHA}" refs/remotes/origin/main
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.4.0
+          run_install: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: node scripts/assert-cli-release.mjs
+      - run: pnpm --filter @kilin-space/cli exec playwright install --with-deps chromium
+      - run: pnpm verify
+      - name: Reject an existing npm version
+        run: node scripts/check-cli-version-unpublished.mjs
+      - name: Create verified package
+        id: package
+        run: |
+          mkdir release-artifact
+          npm pack ./packages/cli --ignore-scripts --pack-destination release-artifact
+          mapfile -t PACKAGE_FILES < <(find release-artifact -maxdepth 1 -type f -name '*.tgz' -print)
+          test "${#PACKAGE_FILES[@]}" -eq 1
+          PACKAGE_PATH="${PACKAGE_FILES[0]}"
+          echo "file=${PACKAGE_PATH##*/}" >> "${GITHUB_OUTPUT}"
+          echo "sha256=$(sha256sum "${PACKAGE_PATH}" | cut -d ' ' -f 1)" >> "${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-package-${{ github.run_id }}
+          path: release-artifact/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.12.0
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: cli-package-${{ github.run_id }}
+          path: release-artifact
+      - name: Verify package digest
+        env:
+          PACKAGE_FILE: ${{ needs.verify.outputs.package_file }}
+          PACKAGE_SHA256: ${{ needs.verify.outputs.package_sha256 }}
+        run: |
+          test "${PACKAGE_FILE}" = "${PACKAGE_FILE##*/}"
+          test -f "release-artifact/${PACKAGE_FILE}"
+          test "$(sha256sum "release-artifact/${PACKAGE_FILE}" | cut -d ' ' -f 1)" = "${PACKAGE_SHA256}"
+      - name: Publish
+        env:
+          PACKAGE_FILE: ${{ needs.verify.outputs.package_file }}
+        run: npm publish "release-artifact/${PACKAGE_FILE}" --access public --ignore-scripts

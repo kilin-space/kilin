@@ -1,0 +1,13 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
+
+minimumReleaseAge: 1440
+disallowWorkspaceCycles: true
+failIfNoMatch: true

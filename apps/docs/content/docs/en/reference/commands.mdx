@@ -1,0 +1,86 @@
+---
+title: Command reference
+description: The supported Kilin command surface and its main execution controls.
+---
+
+## Workflow packages
+
+```text
+kilin workflow init <name> --scope <project|user> --name <display-name>
+  --description <description> [--project-root <directory>] [--json]
+kilin workflow list [--cwd <directory>] [--json]
+kilin workflow validate <name> [--scope <project|user>] [--cwd <directory>] [--json]
+```
+
+Project initialization requires `--project-root`; user initialization forbids it and writes under
+`~/.agents/workflows`. `workflow init` never overwrites an existing package. `workflow validate`
+has no persistent side effects and does not invoke a provider. Without `--scope`, validation uses
+normal project-over-user resolution. Explicit scope validates only that scope and never falls back.
+
+## Execution
+
+```text
+kilin run <name> --cwd <directory>
+  [--param <name=value>]...
+  [--node-timeout <duration>]
+  [--approval-timeout <duration>]
+  [--max-output-bytes <bytes>]
+  [--max-parallel <count>]
+  [--json]
+
+kilin trigger --request <absolute-file> [--json]
+kilin rerun <run-id> [--max-parallel <count>] [--json]
+kilin retry <run-id> [--node <node-id>] [--json]
+kilin resume <run-id> [--json]
+```
+
+`--node-timeout` supplies the process fallback for agents without authored `timeoutMs`.
+`--approval-timeout` independently bounds approval waits. Both accept a positive integer followed
+by `s`, `m`, or `h`, from one second through 24 hours. `--max-output-bytes` accepts 1,024 through
+104,857,600 bytes. `--max-parallel` accepts one through eight and bounds only independent
+`read_only` work.
+
+`--param` is repeatable and belongs only to `run`. Arguments can appear in shell history and local
+process listings, so do not pass secrets through `--param`.
+
+`trigger` consumes a strict request file supplied by a host scheduler. Kilin records the trigger
+provenance but does not install, own, or evaluate a schedule.
+
+## Run history and decisions
+
+```text
+kilin runs list [--limit <count>] [--status <status>] [--json]
+kilin runs show <run-id> [--json]
+kilin runs wait <run-id> [--json]
+kilin runs cancel <run-id> [--json]
+kilin runs approve <run-id> <node-id> --actor <agent|human> [--note <text>] [--json]
+kilin runs reject <run-id> <node-id> --actor <agent|human> [--note <text>] [--json]
+```
+
+Cancellation records a durable request; the foreground owner observes it and terminates active
+provider work. An acknowledgement means the request was recorded, not that every process already
+stopped.
+
+## Local Viewer
+
+```text
+kilin ui <name> --cwd <directory> [--no-open] [--json]
+```
+
+The Viewer shows the compiled workflow and local history. It can record a guarded decision for an
+eligible waiting approval, but it cannot edit workflows, start provider runs, or act as a public
+API. `--no-open` suppresses browser launch. `--json` emits one `viewer.started` document containing
+the resolved identity, canonical working directory, and credential-bearing URL, then remains
+attached until stopped. Treat that JSON output as a secret: do not log, publish, or share it.
+
+## Global flags
+
+```text
+kilin -h
+kilin --help
+kilin --version
+```
+
+`-h` and `--help` print the same command summary and descriptions. These global flags remain
+exact-only invocations. Commands reject unknown flags, duplicate non-repeatable flags, missing
+values, and extra positional arguments.

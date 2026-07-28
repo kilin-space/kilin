@@ -1,0 +1,17 @@
+<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kilin">
+  <rect width="128" height="128" rx="24" fill="#24262B"/>
+  <rect x="7" y="7" width="114" height="114" rx="18" fill="none" stroke="#C9A25E" stroke-width="2" opacity="0.45"/>
+  <g stroke="#FAFBFC" stroke-width="8" fill="none">
+    <path d="M47 30 L47 55"/>
+    <path d="M47 73 L47 98"/>
+    <path d="M81 30 L53.36 57.64"/>
+    <path d="M53.36 70.36 L81 98"/>
+  </g>
+  <g fill="#FAFBFC">
+    <circle cx="47" cy="30" r="9"/>
+    <circle cx="47" cy="98" r="9"/>
+    <circle cx="81" cy="30" r="9"/>
+    <circle cx="81" cy="98" r="9"/>
+  </g>
+  <circle cx="47" cy="64" r="10" fill="none" stroke="#C9A25E" stroke-width="5.5"/>
+</svg>
