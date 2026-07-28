@@ -117,6 +117,24 @@ describe("CLI package publication check", () => {
     );
   });
 
+  it("bounds a stalled registry request", async () => {
+    const fetchPackageVersion = async (_url, { signal }) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+
+    await assert.rejects(
+      checkPackagePublication({
+        fetchPackageVersion,
+        packageName: PACKAGE_NAME,
+        registryTimeoutMs: 1,
+        tarballPath,
+        version: PACKAGE_VERSION,
+      }),
+      /npm registry request failed/u,
+    );
+  });
+
   it("formats the exact GitHub output consumed by the workflow", () => {
     assert.equal(formatPublicationStateOutput("published"), "state=published\n");
     assert.equal(formatPublicationStateOutput("unpublished"), "state=unpublished\n");

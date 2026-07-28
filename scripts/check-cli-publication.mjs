@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const workspaceRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const NPM_REGISTRY_TIMEOUT_MS = 30_000;
 
 const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -42,16 +43,23 @@ const readRegistryDigests = async (response, registryUrl) => {
 export const checkPackagePublication = async ({
   fetchPackageVersion = fetch,
   packageName,
+  registryTimeoutMs = NPM_REGISTRY_TIMEOUT_MS,
   tarballPath,
   version,
 }) => {
   const encodedPackageName = encodeURIComponent(packageName);
   const registryUrl = `https://registry.npmjs.org/${encodedPackageName}/${version}`;
-  const response = await fetchPackageVersion(registryUrl, {
-    headers: {
-      accept: "application/json",
-    },
-  });
+  let response;
+  try {
+    response = await fetchPackageVersion(registryUrl, {
+      headers: {
+        accept: "application/json",
+      },
+      signal: AbortSignal.timeout(registryTimeoutMs),
+    });
+  } catch (error) {
+    throw new Error(`npm registry request failed for ${registryUrl}.`, { cause: error });
+  }
 
   if (response.status === 404) {
     return { packageName, state: "unpublished", version };
