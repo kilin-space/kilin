@@ -56,7 +56,9 @@ The CLI publishes from `packages/cli` through `.github/workflows/publish-cli.yml
 Releases must use a `cli-vX.Y.Z` tag matching the package version exactly. The workflow verifies
 that the release commit belongs to `main`, tests and packs without OIDC authority, then passes the
 digest-verified tarball to a separate environment-protected publishing job. No long-lived registry
-token is used.
+token is used. Runs for the same release tag are serialized. A retry skips the publishing job when
+npm already contains the same tarball. If the version exists with different package digests, the
+workflow fails before it requests publishing authority.
 
 Configuring trusted publishing requires package write access, account-level two-factor
 authentication, and npm 11.15.0 or newer:

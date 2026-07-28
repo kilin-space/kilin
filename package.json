@@ -15,8 +15,9 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "test:release": "node --test scripts/check-cli-publication.test.mjs",
     "test:e2e": "turbo run test:e2e",
-    "verify": "pnpm format:check && turbo run lint typecheck test test:e2e pack:check --concurrency=1",
+    "verify": "pnpm format:check && pnpm test:release && turbo run lint typecheck test test:e2e pack:check --concurrency=1",
     "prepare": "git config core.hooksPath .githooks || true"
   },
   "devDependencies": {
