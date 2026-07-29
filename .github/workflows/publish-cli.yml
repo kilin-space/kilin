@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: publish-cli-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     if: >-
@@ -17,6 +21,7 @@ jobs:
     outputs:
       package_file: ${{ steps.package.outputs.file }}
       package_sha256: ${{ steps.package.outputs.sha256 }}
+      publication_state: ${{ steps.publication.outputs.state }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -45,8 +50,6 @@ jobs:
         run: node scripts/assert-cli-release.mjs
       - run: pnpm --filter @kilin-space/cli exec playwright install --with-deps chromium
       - run: pnpm verify
-      - name: Reject an existing npm version
-        run: node scripts/check-cli-version-unpublished.mjs
       - name: Create verified package
         id: package
         run: |
@@ -57,6 +60,11 @@ jobs:
           PACKAGE_PATH="${PACKAGE_FILES[0]}"
           echo "file=${PACKAGE_PATH##*/}" >> "${GITHUB_OUTPUT}"
           echo "sha256=$(sha256sum "${PACKAGE_PATH}" | cut -d ' ' -f 1)" >> "${GITHUB_OUTPUT}"
+      - name: Check npm publication state
+        id: publication
+        env:
+          PACKAGE_FILE: ${{ steps.package.outputs.file }}
+        run: node scripts/check-cli-publication.mjs "release-artifact/${PACKAGE_FILE}" >> "${GITHUB_OUTPUT}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cli-package-${{ github.run_id }}
@@ -66,6 +74,7 @@ jobs:
 
   publish:
     needs: verify
+    if: needs.verify.outputs.publication_state == 'unpublished'
     runs-on: ubuntu-latest
     environment: npm
     permissions:
