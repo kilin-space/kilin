@@ -18,7 +18,7 @@ CLI. Its only local-server surface is the attached, authenticated Viewer, whose 
 approving or rejecting an eligible waiting approval.
 
 Full documentation, including guides and the command reference, is at
-[docs.kilin.space](https://docs.kilin.space).
+[docs.kilin.space](https://docs.kilin.space/en).
 
 ## Driven by a person or by an agent
 
@@ -160,7 +160,8 @@ kilin trigger --request /absolute/path/to/change-review-trigger.json --json
 
 The host still owns when and how often that command runs. Kilin validates and records the cron
 provenance, then reuses its normal package resolution, runtime preflight, workspace lock, execution,
-and event stream. See [host triggers](https://docs.kilin.space/reference/configuration#host-triggers).
+and event stream. See
+[host triggers](https://docs.kilin.space/en/reference/configuration#host-triggers).
 
 `workflow init` creates both exact package files and a minimal Codex definition. Every authored
 definition uses `schemaVersion: 1`:
@@ -207,7 +208,8 @@ edges: []
 
 Host cron triggers stay parameterless: `triggerVersion: 1` rejects `--param` and a root `parameters`
 request field, and a triggered workflow declaring required parameters fails before any run or cron
-provenance is recorded. See [host triggers](https://docs.kilin.space/reference/configuration#host-triggers).
+provenance is recorded. See
+[host triggers](https://docs.kilin.space/en/reference/configuration#host-triggers).
 
 Each declared parameter is required, must have at least one consumer, and reaches only its declared
 consumers through the same fenced untrusted-data envelope as an edge binding. Values stay out of
@@ -377,16 +379,16 @@ provider's required capability and authentication probes also pass.
 ## Documentation
 
 Guides, the full command reference, and configuration are at
-[docs.kilin.space](https://docs.kilin.space), also available in
+[docs.kilin.space](https://docs.kilin.space/en), also available in
 [简体中文](https://docs.kilin.space/zh-cn) and [繁體中文](https://docs.kilin.space/zh-tw).
 
-- [Installation](https://docs.kilin.space/getting-started/installation)
-- [Quickstart](https://docs.kilin.space/getting-started/quickstart)
-- [Workflow model](https://docs.kilin.space/concepts/workflows)
-- [Command reference](https://docs.kilin.space/reference/commands)
-- [Configuration](https://docs.kilin.space/reference/configuration)
-- [Trust boundaries](https://docs.kilin.space/security/trust-boundaries)
-- [Troubleshooting](https://docs.kilin.space/troubleshooting)
+- [Installation](https://docs.kilin.space/en/getting-started/installation)
+- [Quickstart](https://docs.kilin.space/en/getting-started/quickstart)
+- [Workflow model](https://docs.kilin.space/en/concepts/workflows)
+- [Command reference](https://docs.kilin.space/en/reference/commands)
+- [Configuration](https://docs.kilin.space/en/reference/configuration)
+- [Trust boundaries](https://docs.kilin.space/en/security/trust-boundaries)
+- [Troubleshooting](https://docs.kilin.space/en/troubleshooting)
 
 The workflow JSON Schema is bundled with the published runtime at
 `dist/infrastructure/workflow-v1.schema.json`.

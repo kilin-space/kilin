@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://docs.kilin.space
+    url: https://docs.kilin.space/en
     about: Installation, quickstart, command reference, configuration, and troubleshooting.
   - name: Report a security vulnerability
     url: https://github.com/kilin-space/kilin/security/advisories/new

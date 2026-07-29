@@ -4,11 +4,12 @@ import type { ReactElement } from "react";
 import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/layouts/docs/page";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 
-import { locales, resolveDocumentationPath } from "@/lib/i18n";
+import { isLocale, locales } from "@/lib/i18n";
 import { source } from "@/lib/source";
 
 interface PageProperties {
   params: Promise<{
+    locale: string;
     slug?: string[];
   }>;
 }
@@ -38,8 +39,11 @@ function getLanguageAlternates(slug: string[]): Record<string, string> {
 }
 
 export default async function DocumentationPage({ params }: PageProperties): Promise<ReactElement> {
-  const { slug: publicSlug } = await params;
-  const { locale, slug } = resolveDocumentationPath(publicSlug);
+  const { locale, slug = [] } = await params;
+  if (!isLocale(locale)) {
+    notFound();
+  }
+
   const page = source.getPage(slug, locale);
   if (page === undefined) {
     notFound();
@@ -60,17 +64,26 @@ export default async function DocumentationPage({ params }: PageProperties): Pro
   );
 }
 
-export function generateStaticParams(): Array<{ slug: string[] }> {
-  return source.getLanguages().flatMap(({ language, pages }) =>
-    pages.map((page) => ({
-      slug: language === "en" ? page.slugs : [language, ...page.slugs],
-    })),
-  );
+export function generateStaticParams({
+  params,
+}: {
+  params: {
+    locale: string;
+  };
+}): Array<{ slug: string[] }> {
+  if (!isLocale(params.locale)) {
+    return [];
+  }
+
+  return source.getPages(params.locale).map((page) => ({ slug: page.slugs }));
 }
 
 export async function generateMetadata({ params }: PageProperties): Promise<Metadata> {
-  const { slug: publicSlug } = await params;
-  const { locale, slug } = resolveDocumentationPath(publicSlug);
+  const { locale, slug = [] } = await params;
+  if (!isLocale(locale)) {
+    notFound();
+  }
+
   const page = source.getPage(slug, locale);
   if (page === undefined) {
     notFound();

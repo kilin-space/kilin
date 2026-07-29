@@ -9,7 +9,7 @@
     "url": "git+https://github.com/kilin-space/kilin.git",
     "directory": "packages/cli"
   },
-  "homepage": "https://docs.kilin.space",
+  "homepage": "https://docs.kilin.space/en",
   "bugs": {
     "url": "https://github.com/kilin-space/kilin/issues"
   },

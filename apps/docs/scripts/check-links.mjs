@@ -5,7 +5,7 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const locales = ["en", "zh-cn", "zh-tw"];
-const defaultLocale = "en";
+const documentationOrigin = "https://docs.kilin.space";
 const expectedRoutes = [
   "/",
   "/concepts/monitoring",
@@ -33,6 +33,9 @@ const markdownLinkPattern = /\[[^\]]*\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/gu;
 const codeBlockPattern = /```[^\n]*\n([\s\S]*?)```/gu;
 const cliPinPattern =
   /@kilin-space\/cli@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?![0-9A-Za-z.-])/gu;
+const allowedLinkProtocols = new Set(["http:", "https:", "mailto:"]);
+const unlocalizedRoutes = new Set(["/icon.svg", "/opengraph-image", "/robots.txt", "/sitemap.xml"]);
+const unlocalizedRoutePrefixes = ["/api/", "/brand/", "/screenshots/"];
 
 const collectFiles = async (directory, predicate) => {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -62,15 +65,12 @@ const routeForFile = (localeRoot, file) => {
 };
 
 const publicRoute = (locale, route) => {
-  if (locale === defaultLocale) {
-    return route;
-  }
   return route === "/" ? `/${locale}` : `/${locale}${route}`;
 };
 
 const routeLocale = (route) => {
   for (const locale of locales) {
-    if (locale !== defaultLocale && (route === `/${locale}` || route.startsWith(`/${locale}/`))) {
+    if (route === `/${locale}` || route.startsWith(`/${locale}/`)) {
       const localizedRoute = route.slice(locale.length + 1);
       return {
         locale,
@@ -78,14 +78,22 @@ const routeLocale = (route) => {
       };
     }
   }
-  return { locale: defaultLocale, route };
+  return undefined;
 };
 
 const normalizeTarget = (value, sourceRoute) => {
-  const absoluteUrl = new URL(value, `https://docs.kilin.space${sourceRoute}`);
+  const absoluteUrl = new URL(value, `${documentationOrigin}${sourceRoute}`);
   const route = absoluteUrl.pathname;
-  return route.length > 1 && route.endsWith("/") ? route.slice(0, -1) : route;
+  return {
+    origin: absoluteUrl.origin,
+    protocol: absoluteUrl.protocol,
+    route: route.length > 1 && route.endsWith("/") ? route.slice(0, -1) : route,
+  };
 };
+
+const isUnlocalizedRoute = (route) =>
+  unlocalizedRoutes.has(route) ||
+  unlocalizedRoutePrefixes.some((prefix) => route.startsWith(prefix));
 
 const extractCodeBlocks = (source) =>
   [...source.matchAll(codeBlockPattern)].map((match) => match[1]?.trimEnd() ?? "");
@@ -169,24 +177,40 @@ for (const locale of locales) {
 
     for (const match of source.matchAll(markdownLinkPattern)) {
       const target = match[1];
+      if (target === undefined || target.startsWith("#")) {
+        continue;
+      }
+
+      const normalizedTarget = normalizeTarget(target, sourcePublicRoute);
+      if (!allowedLinkProtocols.has(normalizedTarget.protocol)) {
+        failures.push(
+          `${locale}${sourceRoute} uses unsupported link protocol ${normalizedTarget.protocol}`,
+        );
+        continue;
+      }
       if (
-        target === undefined ||
-        target.startsWith("#") ||
-        target.startsWith("http://") ||
-        target.startsWith("https://") ||
-        target.startsWith("mailto:")
+        normalizedTarget.protocol === "mailto:" ||
+        normalizedTarget.origin !== documentationOrigin ||
+        isUnlocalizedRoute(normalizedTarget.route)
       ) {
         continue;
       }
 
-      const targetPublicRoute = normalizeTarget(target, sourcePublicRoute);
-      const localizedTarget = routeLocale(targetPublicRoute);
+      const localizedTarget = routeLocale(normalizedTarget.route);
+      if (localizedTarget === undefined) {
+        failures.push(
+          `${locale}${sourceRoute} links to unprefixed document route ${normalizedTarget.route}`,
+        );
+        continue;
+      }
       if (localizedTarget.locale !== locale) {
-        failures.push(`${locale}${sourceRoute} crosses locale boundary to ${targetPublicRoute}`);
+        failures.push(
+          `${locale}${sourceRoute} crosses locale boundary to ${normalizedTarget.route}`,
+        );
         continue;
       }
       if (!routes.has(localizedTarget.route)) {
-        failures.push(`${locale}${sourceRoute} links to missing route ${targetPublicRoute}`);
+        failures.push(`${locale}${sourceRoute} links to missing route ${normalizedTarget.route}`);
       }
     }
 
@@ -222,5 +246,5 @@ if (failures.length > 0) {
 }
 
 process.stdout.write(
-  `Validated ${locales.length} locales, ${expectedRoutes.length} routes per locale, localized links, matching examples, and metadata topology.\n`,
+  `Validated ${locales.length} locales, ${expectedRoutes.length} routes per locale, locale-prefixed links, matching examples, and metadata topology.\n`,
 );

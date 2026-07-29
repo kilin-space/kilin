@@ -1,23 +1,25 @@
-import { headers } from "next/headers";
+import { notFound } from "next/navigation";
 import type { ReactElement, ReactNode } from "react";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 
-import { getLocaleRoot, i18nConfig, isLocale, type Locale } from "@/lib/i18n";
+import { i18nConfig, isLocale } from "@/lib/i18n";
 import { source } from "@/lib/source";
 
-const localeRequestHeader = "x-kilin-locale";
-
-async function getRequestLocale(): Promise<Locale> {
-  const requestedLocale = (await headers()).get(localeRequestHeader);
-  return requestedLocale !== null && isLocale(requestedLocale) ? requestedLocale : "en";
+interface DocumentationLayoutProperties {
+  children: ReactNode;
+  params: Promise<{
+    locale: string;
+  }>;
 }
 
 export default async function DocumentationLayout({
   children,
-}: {
-  children: ReactNode;
-}): Promise<ReactElement> {
-  const locale = await getRequestLocale();
+  params,
+}: DocumentationLayoutProperties): Promise<ReactElement> {
+  const { locale } = await params;
+  if (!isLocale(locale)) {
+    notFound();
+  }
 
   return (
     <DocsLayout
@@ -42,7 +44,7 @@ export default async function DocumentationLayout({
             Kilin
           </>
         ),
-        url: getLocaleRoot(locale),
+        url: `/${locale}`,
       }}
       githubUrl="https://github.com/kilin-space/kilin"
       i18n={i18nConfig}
