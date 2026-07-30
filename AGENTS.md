@@ -8,7 +8,7 @@ business rules live in `src/domain`, use cases in `src/application`, external ad
 CLI tests mirror this structure under `packages/cli/test`; browser tests are in
 `packages/cli/e2e`, and packaged workflow skills are in `packages/cli/agent-skills`.
 
-Dependencies point inward: `domain` imports nothing, `application` imports `domain` and
+Layer import directions: `domain` imports nothing, `application` imports `domain` and
 `infrastructure`, and `cli` imports all three as the composition root. `src/ui` imports `domain`
 only—the client is browser code and cannot pull in `application`, which transitively imports
 `better-sqlite3`, and the viewer server lives in `src/infrastructure/viewer-server.ts`. The
