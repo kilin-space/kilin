@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
+import { notFound } from "next/navigation";
 import type { ReactElement, ReactNode } from "react";
 import { RootProvider } from "fumadocs-ui/provider/next";
 
 import { i18nUi, isLocale, type Locale } from "@/lib/i18n";
+import { source } from "@/lib/source";
 
-import "./global.css";
+import "../global.css";
 
 const siteUrl = new URL("https://docs.kilin.space");
 const socialImageUrl = new URL("/opengraph-image", siteUrl).toString();
-const localeRequestHeader = "x-kilin-locale";
 
 const localeMetadata = {
   en: {
@@ -39,13 +39,33 @@ const localeMetadata = {
   },
 } as const;
 
-async function getRequestLocale(): Promise<Locale> {
-  const requestedLocale = (await headers()).get(localeRequestHeader);
-  return requestedLocale !== null && isLocale(requestedLocale) ? requestedLocale : "en";
+interface LocaleRouteProperties {
+  params: Promise<{
+    locale: string;
+  }>;
 }
 
-export async function generateMetadata(): Promise<Metadata> {
-  const locale = await getRequestLocale();
+interface RootLayoutProperties extends LocaleRouteProperties {
+  children: ReactNode;
+}
+
+export const dynamicParams = false;
+
+export function generateStaticParams(): Array<{ locale: Locale }> {
+  return source.getLanguages().map(({ language }) => {
+    if (!isLocale(language)) {
+      throw new Error(`Unsupported documentation source locale: ${language}.`);
+    }
+    return { locale: language };
+  });
+}
+
+export async function generateMetadata({ params }: LocaleRouteProperties): Promise<Metadata> {
+  const { locale } = await params;
+  if (!isLocale(locale)) {
+    notFound();
+  }
+
   const content = localeMetadata[locale];
 
   return {
@@ -72,12 +92,14 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export default async function RootLayout({
+export default async function LocaleLayout({
   children,
-}: {
-  children: ReactNode;
-}): Promise<ReactElement> {
-  const locale = await getRequestLocale();
+  params,
+}: RootLayoutProperties): Promise<ReactElement> {
+  const { locale } = await params;
+  if (!isLocale(locale)) {
+    notFound();
+  }
 
   return (
     <html lang={locale} suppressHydrationWarning>

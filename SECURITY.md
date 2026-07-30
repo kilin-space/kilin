@@ -28,7 +28,7 @@ Access modes (`read_only` and `workspace_write`) map onto each provider's own en
 They are defense in depth rather than a sandbox Kilin controls, and Kilin does not claim zero
 network egress, complete read isolation, or deterministic model output.
 
-Full detail: [trust boundaries](https://docs.kilin.space/security/trust-boundaries).
+Full detail: [trust boundaries](https://docs.kilin.space/en/security/trust-boundaries).
 
 ## Documented behavior, not vulnerabilities
 

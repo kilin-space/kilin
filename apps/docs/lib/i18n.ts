@@ -8,7 +8,7 @@ export type Locale = (typeof locales)[number];
 export const i18nConfig = {
   languages: [...locales],
   defaultLanguage: "en",
-  hideLocale: "default-locale",
+  hideLocale: "never",
   parser: "dir",
   fallbackLanguage: null,
 } satisfies I18nConfig<Locale>;
@@ -131,26 +131,4 @@ export const i18nUi = defineI18nUI(i18nConfig, {
 
 export function isLocale(value: string): value is Locale {
   return locales.some((locale) => locale === value);
-}
-
-export function getLocaleRoot(locale: Locale): string {
-  return locale === "en" ? "/" : `/${locale}`;
-}
-
-export function resolveDocumentationPath(path: readonly string[] | undefined): {
-  locale: Locale;
-  slug: string[];
-} {
-  const segments = path ?? [];
-  const pathLocale = segments[0];
-  if (pathLocale === "zh-cn" || pathLocale === "zh-tw") {
-    return {
-      locale: pathLocale,
-      slug: segments.slice(1),
-    };
-  }
-  return {
-    locale: "en",
-    slug: [...segments],
-  };
 }

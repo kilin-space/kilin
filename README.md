@@ -6,7 +6,7 @@ Deterministic, inspectable workflows for coding agents.
 
 [![npm](https://img.shields.io/npm/v/@kilin-space/cli.svg)](https://www.npmjs.com/package/@kilin-space/cli)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-docs.kilin.space-0b7285.svg)](https://docs.kilin.space)
+[![Documentation](https://img.shields.io/badge/docs-docs.kilin.space-0b7285.svg)](https://docs.kilin.space/en)
 
 Kilin is a local, CLI-first workflow runtime. You describe a finite workflow in two ordinary files,
 validate it before anything runs, and execute it through the coding agents you already have
@@ -102,7 +102,7 @@ kilin workflow init first-workflow \
 kilin workflow validate first-workflow --scope project --cwd "$PWD"
 ```
 
-Review the [trust boundaries](https://docs.kilin.space/security/trust-boundaries), then run the
+Review the [trust boundaries](https://docs.kilin.space/en/security/trust-boundaries), then run the
 workflow and inspect what happened:
 
 ```bash
@@ -210,16 +210,16 @@ are deliberately excluded from the event stream, `runs list`, `runs show`, and t
 
 ## Documentation
 
-Full documentation lives at **[docs.kilin.space](https://docs.kilin.space)**, also available in
+Full documentation lives at **[docs.kilin.space](https://docs.kilin.space/en)**, also available in
 [简体中文](https://docs.kilin.space/zh-cn) and [繁體中文](https://docs.kilin.space/zh-tw).
 
-- [Installation](https://docs.kilin.space/getting-started/installation)
-- [Quickstart](https://docs.kilin.space/getting-started/quickstart)
-- [Workflow model](https://docs.kilin.space/concepts/workflows)
-- [Command reference](https://docs.kilin.space/reference/commands)
-- [Configuration](https://docs.kilin.space/reference/configuration)
-- [Trust boundaries](https://docs.kilin.space/security/trust-boundaries)
-- [Troubleshooting](https://docs.kilin.space/troubleshooting)
+- [Installation](https://docs.kilin.space/en/getting-started/installation)
+- [Quickstart](https://docs.kilin.space/en/getting-started/quickstart)
+- [Workflow model](https://docs.kilin.space/en/concepts/workflows)
+- [Command reference](https://docs.kilin.space/en/reference/commands)
+- [Configuration](https://docs.kilin.space/en/reference/configuration)
+- [Trust boundaries](https://docs.kilin.space/en/security/trust-boundaries)
+- [Troubleshooting](https://docs.kilin.space/en/troubleshooting)
 
 ## Security
 
@@ -227,7 +227,7 @@ Kilin launches provider CLIs as subprocesses and passes them the complete enviro
 that started it. Exported API keys, access tokens, and other secrets are therefore inherited by
 every provider you invoke. Start Kilin from a deliberately minimal or sanitized environment that
 contains only the credentials the selected provider needs. Read
-[trust boundaries](https://docs.kilin.space/security/trust-boundaries) before your first provider
+[trust boundaries](https://docs.kilin.space/en/security/trust-boundaries) before your first provider
 run. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Contributing
