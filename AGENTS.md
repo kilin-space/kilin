@@ -8,10 +8,13 @@ business rules live in `src/domain`, use cases in `src/application`, external ad
 CLI tests mirror this structure under `packages/cli/test`; browser tests are in
 `packages/cli/e2e`, and packaged workflow skills are in `packages/cli/agent-skills`.
 
-Dependencies point inward: `cli` and `ui` depend on `application`, which depends on `domain`.
-`application` orchestrates through ports and never imports `infrastructure`. The viewer client
-`src/ui/client.ts` is one self-contained file that the CLI serves from `dist/ui/client.js`—the
-package `tsc` build emits it, and there is no bundler and no separate frontend build.
+Layer import directions: `domain` imports nothing, `application` imports `domain` and
+`infrastructure`, and `cli` imports all three as the composition root. `src/ui` imports `domain`
+only—the client is browser code and cannot pull in `application`, which transitively imports
+`better-sqlite3`, and the viewer server lives in `src/infrastructure/viewer-server.ts`. The
+viewer client `src/ui/client.ts` is one self-contained file that the CLI serves from
+`dist/ui/client.js`—the package `tsc` build emits it, and there is no bundler and no separate
+frontend build.
 Read `packages/cli/docs/agents/system-design.md` before you change architecture or workflow-runtime
 behavior.
 
