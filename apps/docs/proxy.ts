@@ -15,5 +15,5 @@ export default function proxy(request: NextRequest): NextResponse {
 }
 
 export const config = {
-  matcher: ["/:locale/:path*"],
+  matcher: ["/([eE][nN]|[zZ][hH]-[cC][nN]|[zZ][hH]-[tT][wW])/:path*"],
 };

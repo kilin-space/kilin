@@ -1,13 +1,13 @@
 import { ImageResponse } from "next/og";
 
-export const alt = "Kilin Documentation";
-export const size = {
+const IMAGE_SIZE = {
   width: 1200,
   height: 630,
 };
-export const contentType = "image/png";
 
-export default function OpenGraphImage(): ImageResponse {
+export const dynamic = "force-static";
+
+export function GET(): ImageResponse {
   return new ImageResponse(
     <div
       style={{
@@ -53,6 +53,6 @@ export default function OpenGraphImage(): ImageResponse {
         <div style={{ color: "#6E737D", fontSize: 22, marginTop: 26 }}>docs.kilin.space</div>
       </div>
     </div>,
-    size,
+    IMAGE_SIZE,
   );
 }

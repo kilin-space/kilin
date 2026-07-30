@@ -265,6 +265,17 @@ const assertInvalidRoutes = async (serverOrigin, routes) => {
   }
 };
 
+const assertNotFoundMetadata = async (serverOrigin) => {
+  const response = await fetch(`${serverOrigin}/fr`, { redirect: "manual" });
+  const html = await response.text();
+  assert.equal(response.status, 404, "/fr must return HTTP 404");
+  assert.doesNotMatch(
+    html,
+    /https?:\/\/localhost(?::\d+)?\//u,
+    "404 metadata must not contain localhost URLs",
+  );
+};
+
 const assertPublicFiles = async (serverOrigin) => {
   for (const publicFileCase of publicFileCases) {
     const response = await fetch(`${serverOrigin}${publicFileCase.path}`);
@@ -431,6 +442,7 @@ const assertPrimaryProductionServer = async () => {
     await assertDocumentationRoutes(server.origin, server.output);
     await assertInvalidRoutes(server.origin, unsupportedRoutes);
     await assertInvalidRoutes(server.origin, caseInvalidRoutes);
+    await assertNotFoundMetadata(server.origin);
     await assertSearch(server.origin);
     await assertPublicFiles(server.origin);
     await assertRobots(server.origin);
