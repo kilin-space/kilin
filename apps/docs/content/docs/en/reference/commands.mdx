@@ -67,9 +67,10 @@ stopped.
 kilin ui <name> --cwd <directory> [--no-open] [--json]
 ```
 
-The Viewer shows the compiled workflow and local history. It can record a guarded decision for an
-eligible waiting approval, but it cannot edit workflows, start provider runs, or act as a public
-API. `--no-open` suppresses browser launch. `--json` emits one `viewer.started` document containing
+The Viewer shows the compiled workflow and local history. On load it opens the most relevant
+stored run and the node that explains its status, and it restores the run, node, stream, and view
+encoded in the URL hash after a reload. It can record a guarded decision for an eligible waiting
+approval, but it cannot edit workflows, start provider runs, or act as a public API. `--no-open` suppresses browser launch. `--json` emits one `viewer.started` document containing
 the resolved identity, canonical working directory, and credential-bearing URL, then remains
 attached until stopped. Treat that JSON output as a secret: do not log, publish, or share it.
 

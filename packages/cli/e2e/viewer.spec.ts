@@ -68,7 +68,14 @@ test("desktop viewer exposes the graph, stored states, bounded output, and linea
   const invocationCount = await scenario.runtimeInvocationCount();
   await openViewer(page, viewer.launchUrl);
 
-  expect(new URL(page.url()).hash).toBe("");
+  expect(new URL(page.url()).hash).not.toContain("token");
+  await expect(page.locator("#graph-context")).toHaveText("Stored revision");
+  await expect(
+    page.getByRole("button", { name: new RegExp(`Run ${scenario.interruptedRunId}, interrupted`) }),
+  ).toHaveAttribute("aria-current", "true");
+
+  await page.locator("#current-workflow-button").click();
+  await expect(page.locator("#graph-context")).toHaveText("Current workflow");
   await expect(page.locator("#workflow-graph title")).toHaveText(
     "Release readiness workflow graph",
   );
@@ -105,13 +112,17 @@ test("desktop viewer exposes the graph, stored states, bounded output, and linea
   await expect(page.locator(".dag-node.succeeded")).toHaveCount(1);
   await expect(page.locator(".dag-node.failed")).toHaveCount(1);
   await expect(page.locator(".dag-node.skipped")).toHaveCount(1);
-  await expect(page.locator("#run-inspector .failure-copy")).toContainText("NODE_EXIT_NONZERO");
-  await expect(page.locator("#run-inspector .failure-reference")).toHaveCount(0);
+  await expect(page.locator("#run-inspector .failure-reference")).toContainText(
+    "NODE_EXIT_NONZERO at node change",
+  );
+  await expect(page.locator("#run-inspector .failure-copy")).toHaveCount(0);
 
   const analyzeNode = page.getByRole("button", { name: /^analyze, step 1,/u });
   const changeNode = page.getByRole("button", { name: /^change, step 2,/u });
   await analyzeNode.click();
   await expect(page.locator("#output-panel")).toContainText("result:analyze");
+  await expect(page.locator("#run-inspector .failure-copy")).toContainText("NODE_EXIT_NONZERO");
+  await expect(page.locator("#run-inspector .failure-reference")).toHaveCount(0);
   await analyzeNode.focus();
   await analyzeNode.press("ArrowRight");
   await expect(changeNode).toBeFocused();
@@ -399,6 +410,8 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
   });
 
   await openViewer(page, viewer.launchUrl);
+  await page.locator("#current-workflow-button").click();
+  await expect(page.locator("#graph-context")).toHaveText("Current workflow");
   await expect(page.locator("#workflow-graph desc")).toContainText(
     "1 nodes in execution order: refine",
   );
@@ -555,9 +568,9 @@ test("permanent approval evidence failures stop after bounded retries", async ({
       .click();
     await page.locator(".dag-node.waiting_for_approval").click();
 
-    await expect.poll(() => upstreamEvidenceRequests, { timeout: 8_000 }).toBe(4);
+    await expect.poll(() => upstreamEvidenceRequests, { timeout: 8_000 }).toBe(3);
     await page.waitForTimeout(2_500);
-    expect(upstreamEvidenceRequests).toBe(4);
+    expect(upstreamEvidenceRequests).toBe(3);
   } finally {
     approvalRun.cancel();
   }
@@ -684,6 +697,12 @@ test("the newest output selection wins an out-of-order same-stream response race
   const firstResultRoute = deferred<Route>();
   const secondResultRoute = deferred<Route>();
   let requestCount = 0;
+  await openViewer(page, viewer.launchUrl);
+  await page
+    .getByRole("button", { name: new RegExp(`Run ${scenario.failedRunId}, failed`) })
+    .click();
+  await page.getByRole("button", { name: /^analyze, step 1,/u }).click();
+  await expect(page.locator("#output-panel")).toContainText("result:analyze");
   await page.route(
     `${viewer.origin}/api/runs/${scenario.failedRunId}/nodes/1/output/result`,
     async (route) => {
@@ -699,10 +718,6 @@ test("the newest output selection wins an out-of-order same-stream response race
       await route.continue();
     },
   );
-  await openViewer(page, viewer.launchUrl);
-  await page
-    .getByRole("button", { name: new RegExp(`Run ${scenario.failedRunId}, failed`) })
-    .click();
   await page.getByRole("button", { name: /^change, step 2,/u }).click();
   const firstRoute = await firstResultRoute.promise;
 

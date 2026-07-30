@@ -55,6 +55,11 @@ The Viewer binds numeric `127.0.0.1` on an operating-system-selected port and sh
 graph, node states as they change, the newest 50 runs for that exact workflow identity and working
 directory, lineage, approval metadata, failures, bounded captured output, and Decision Packets.
 
+On load the Viewer opens the most relevant stored run — one waiting for approval first, then a
+running run, then the newest finished run — and selects the node that explains the run status.
+With no stored runs it keeps the current definition view. The selected run, node, stream, and
+rendered or raw view persist in the URL hash, so a reload restores your place.
+
 When a run stops at an approval, the Viewer shows guarded Approve and Reject buttons alongside the
 equivalent CLI commands. That decision is its only state mutation: it cannot edit workflows, start
 provider runs, or schedule work. Pass `--no-open` to print the launch URL instead of opening a

@@ -146,13 +146,27 @@ const elements = {
   outputSection: requiredElement("#output-section", HTMLElement),
   outputTabs: requiredElement("#output-tabs", HTMLElement),
   runInspector: requiredElement("#run-inspector", HTMLElement),
+  selectionAnnouncement: requiredElement("#selection-announcement", HTMLElement),
 };
+
+type HashSelection =
+  | { readonly kind: "definition" }
+  | {
+      readonly kind: "run";
+      readonly runId: string;
+      readonly nodeId?: string;
+      readonly stream?: OutputStream;
+      readonly view?: EvidenceView;
+    };
 
 let pollTimer: number | undefined;
 let pollController: AbortController | undefined;
 let pollInProgress = false;
 let runDetailRequestGeneration = 0;
 let outputRequestGeneration = 0;
+let pendingRestore: HashSelection | undefined;
+let initialSelectionPending = true;
+let announceInitialSelection = false;
 let renderedEvidence:
   { readonly key: string; readonly view: EvidenceView; readonly text: string } | undefined;
 
@@ -2830,7 +2844,7 @@ const renderPresentation = (): void => {
   restoreViewerFocus(focusTarget);
 };
 
-const resetExecutionSelection = (): readonly OutputStream[] => {
+const resetExecutionSelection = (preferredStream?: OutputStream): readonly OutputStream[] => {
   outputRequestGeneration += 1;
   state.output = undefined;
   state.outputError = undefined;
@@ -2841,19 +2855,35 @@ const resetExecutionSelection = (): readonly OutputStream[] => {
   state.decisionSubmitting = false;
   const nodeRun = selectedNodeRun();
   const availableOutputs = nodeAvailableOutputs(nodeRun);
-  state.selectedOutputStream = availableOutputs.includes("result") ? "result" : "stdout";
+  state.selectedOutputStream =
+    preferredStream !== undefined && availableOutputs.includes(preferredStream)
+      ? preferredStream
+      : availableOutputs.includes("result")
+        ? "result"
+        : "stdout";
   renderPresentation();
   return availableOutputs;
 };
 
-const selectNode = (nodeId: string, restoreGraphFocus: boolean): void => {
-  state.selectedNodeId = nodeId;
-  state.selectedExecutionId = nodeId;
-  const availableOutputs = resetExecutionSelection();
+interface NodeSelectionTarget {
+  readonly nodeId: string;
+  readonly executionId: string;
+}
+
+const applyNodeSelection = (
+  target: NodeSelectionTarget,
+  restoreGraphFocus: boolean,
+  preferredStream?: OutputStream,
+): void => {
+  state.selectedNodeId = target.nodeId;
+  state.selectedExecutionId = target.executionId;
+  const availableOutputs = resetExecutionSelection(preferredStream);
   if (restoreGraphFocus) {
     const graph = currentGraph();
     const index =
-      graph === undefined ? -1 : orderedGraphNodes(graph).findIndex((node) => node.id === nodeId);
+      graph === undefined
+        ? -1
+        : orderedGraphNodes(graph).findIndex((node) => node.id === target.nodeId);
     const groups = Array.from(elements.graph.querySelectorAll<SVGGElement>(".dag-node"));
     if (index >= 0) {
       updateGraphRovingFocus(groups, index);
@@ -2862,6 +2892,11 @@ const selectNode = (nodeId: string, restoreGraphFocus: boolean): void => {
   if (availableOutputs.length > 0) {
     void selectOutput(state.selectedOutputStream, false);
   }
+  writeRunLocationHash();
+};
+
+const selectNode = (nodeId: string, restoreGraphFocus: boolean): void => {
+  applyNodeSelection({ nodeId, executionId: nodeId }, restoreGraphFocus);
 };
 
 const selectExecution = (executionId: string): void => {
@@ -2890,6 +2925,7 @@ const selectOutput = async (
   outputRequestGeneration = requestGeneration;
   const fetchedWhileRunning = nodeRun.kind === "agent" && nodeRun.status === "running";
   state.selectedOutputStream = stream;
+  writeRunLocationHash();
   if (!silentRefresh) {
     state.outputLoading = true;
     state.output = undefined;
@@ -2953,10 +2989,113 @@ const maybeRefreshEvidence = (): void => {
   }
 };
 
+const definitionViewHash = "current";
+
+const parseHashSelection = (): HashSelection | undefined => {
+  const fragment = window.location.hash.slice(1);
+  if (fragment === definitionViewHash) {
+    return { kind: "definition" };
+  }
+  const params = new URLSearchParams(fragment);
+  const runId = params.get("run");
+  if (runId === null || runId === "") {
+    return undefined;
+  }
+  const nodeId = params.get("node");
+  const stream = params.get("stream");
+  const view = params.get("view");
+  return {
+    kind: "run",
+    runId,
+    ...(nodeId === null || nodeId === "" ? {} : { nodeId }),
+    ...(stream === "result" || stream === "stdout" || stream === "stderr" ? { stream } : {}),
+    ...(view === "rendered" || view === "raw" ? { view } : {}),
+  };
+};
+
+const replaceLocationHash = (fragment: string): void => {
+  if (window.location.hash === `#${fragment}`) {
+    return;
+  }
+  window.history.replaceState(null, "", `#${fragment}`);
+};
+
+const writeRunLocationHash = (): void => {
+  if (state.viewMode !== "run" || state.selectedRunId === undefined) {
+    return;
+  }
+  const params = new URLSearchParams({ run: state.selectedRunId });
+  if (state.selectedNodeId !== undefined) {
+    params.set("node", state.selectedNodeId);
+  }
+  params.set("stream", state.selectedOutputStream);
+  params.set("view", state.evidenceView);
+  replaceLocationHash(params.toString());
+};
+
+const nodeSelectionTarget = (nodeRun: NodeRunDto): NodeSelectionTarget => ({
+  nodeId: nodeRun.loopNodeId ?? nodeRun.nodeId,
+  executionId: nodeRun.executionId,
+});
+
+const statusExplainingTarget = (
+  detail: ScopedRunDetailResponse,
+): NodeSelectionTarget | undefined => {
+  const waiting = detail.nodes.find((node) => node.status === "waiting_for_approval");
+  if (waiting !== undefined) {
+    return nodeSelectionTarget(waiting);
+  }
+  const runStatus = detail.run.status;
+  if (runStatus === "failed" || runStatus === "interrupted") {
+    const failed =
+      detail.nodes.find((node) => sameFailure(node.failure, detail.run.failure)) ??
+      detail.nodes.find((node) => node.status === "failed" || node.status === "interrupted");
+    if (failed !== undefined) {
+      return nodeSelectionTarget(failed);
+    }
+  }
+  if (runStatus === "running") {
+    const running = detail.nodes.find((node) => node.status === "running");
+    if (running !== undefined) {
+      return nodeSelectionTarget(running);
+    }
+  }
+  return undefined;
+};
+
+const restoredNodeTarget = (
+  detail: ScopedRunDetailResponse,
+  nodeId: string | undefined,
+): NodeSelectionTarget | undefined => {
+  if (nodeId === undefined) {
+    return undefined;
+  }
+  return detail.revision.workflow.nodes.some((node) => node.id === nodeId)
+    ? { nodeId, executionId: nodeId }
+    : undefined;
+};
+
+const firstNodeTarget = (detail: ScopedRunDetailResponse): NodeSelectionTarget | undefined => {
+  const firstNodeId = detail.revision.workflow.executionOrder[0];
+  return firstNodeId === undefined ? undefined : { nodeId: firstNodeId, executionId: firstNodeId };
+};
+
+const announceAutomaticSelection = (detail: ScopedRunDetailResponse): void => {
+  const status = presentedRunStatus(detail.run.status);
+  const nodeCopy =
+    state.selectedNodeId === undefined ? "" : ` Selected node ${state.selectedNodeId}.`;
+  setText(
+    elements.selectionAnnouncement,
+    `Opened run ${detail.run.runId}, ${statusLabel(status).toLowerCase()}.${nodeCopy}`,
+  );
+};
+
 const selectRun = async (runId: string): Promise<void> => {
   const requestGeneration = runDetailRequestGeneration + 1;
   runDetailRequestGeneration = requestGeneration;
   outputRequestGeneration += 1;
+  const announceSelection = announceInitialSelection;
+  announceInitialSelection = false;
   state.viewMode = "run";
   state.selectedRunId = runId;
   state.runDetail = undefined;
@@ -2970,6 +3109,7 @@ const selectRun = async (runId: string): Promise<void> => {
   state.decisionSubmitting = false;
   dockEvidenceCache.clear();
   renderPresentation();
+  writeRunLocationHash();
   setText(elements.connectionStatus, "Loading stored revision…");
   try {
     const detail = await apiGet<ScopedRunDetailResponse>(routes.run(runId));
@@ -2977,13 +3117,27 @@ const selectRun = async (runId: string): Promise<void> => {
       state.runDetail = detail;
       state.pollFailures = 0;
       setText(elements.connectionStatus, "Attached · guarded approval");
-      const firstNodeId = detail.revision.workflow.executionOrder[0];
-      if (firstNodeId === undefined) {
+      const restore =
+        pendingRestore?.kind === "run" && pendingRestore.runId === runId
+          ? pendingRestore
+          : undefined;
+      pendingRestore = undefined;
+      if (restore?.view !== undefined) {
+        state.evidenceView = restore.view;
+      }
+      const target =
+        restoredNodeTarget(detail, restore?.nodeId) ??
+        statusExplainingTarget(detail) ??
+        firstNodeTarget(detail);
+      if (target === undefined) {
         state.selectedNodeId = undefined;
         state.selectedExecutionId = undefined;
         renderPresentation();
       } else {
-        selectNode(firstNodeId, false);
+        applyNodeSelection(target, true, restore?.stream);
+      }
+      if (announceSelection) {
+        announceAutomaticSelection(detail);
       }
     }
   } catch (error: unknown) {
@@ -3011,6 +3165,37 @@ const selectCurrentWorkflow = (): void => {
   state.decisionSubmitting = false;
   dockEvidenceCache.clear();
   renderPresentation();
+  replaceLocationHash(definitionViewHash);
+};
+
+const applyInitialSelectionOnce = (): void => {
+  if (!initialSelectionPending) {
+    return;
+  }
+  initialSelectionPending = false;
+  if (state.viewMode === "run") {
+    return;
+  }
+  const restore = pendingRestore;
+  if (restore?.kind === "definition") {
+    pendingRestore = undefined;
+    return;
+  }
+  const runs = state.runList?.runs ?? [];
+  const restoredRunId =
+    restore !== undefined && runs.some((run) => run.runId === restore.runId)
+      ? restore.runId
+      : undefined;
+  if (restoredRunId === undefined) {
+    pendingRestore = undefined;
+  }
+  const targetRunId =
+    restoredRunId ?? (runs.find((run) => run.status === "running") ?? runs[0])?.runId;
+  if (targetRunId === undefined) {
+    return;
+  }
+  announceInitialSelection = true;
+  void selectRun(targetRunId);
 };
 
 const clearPollTimer = (): void => {
@@ -3072,6 +3257,7 @@ const pollViewer = async (): Promise<void> => {
     elements.appShell.setAttribute("aria-busy", "false");
     renderPresentation();
     maybeRefreshEvidence();
+    applyInitialSelectionOnce();
   } catch (error: unknown) {
     if (!(error instanceof DOMException && error.name === "AbortError")) {
       state.pollFailures += 1;
@@ -3110,6 +3296,7 @@ const showFatalError = (error: unknown): void => {
 
 const start = async (): Promise<void> => {
   state.session = await establishSession();
+  pendingRestore = parseHashSelection();
   await pollViewer();
 };
 
@@ -3118,6 +3305,7 @@ const setEvidenceView = (view: EvidenceView): void => {
     return;
   }
   state.evidenceView = view;
+  writeRunLocationHash();
   renderOutput();
 };
 

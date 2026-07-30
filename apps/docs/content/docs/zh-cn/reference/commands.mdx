@@ -62,8 +62,9 @@ kilin runs reject <run-id> <node-id> --actor <agent|human> [--note <text>] [--js
 kilin ui <name> --cwd <directory> [--no-open] [--json]
 ```
 
-Viewer 显示编译后的工作流程与本地历史。它可为符合条件的等待中审批记录受保护决策，但不能编辑工作流程、
-启动 provider run 或作为公开 API。`--no-open` 禁止启动浏览器。`--json` 会输出一个
+Viewer 显示编译后的工作流程与本地历史。加载时，它会打开最相关的已存储运行并选中最能解释其状态的
+节点；重新加载后会根据 URL 哈希恢复所选运行、节点、输出流与视图。它可为符合条件的等待中审批记录
+受保护决策，但不能编辑工作流程、启动 provider run 或作为公开 API。`--no-open` 禁止启动浏览器。`--json` 会输出一个
 `viewer.started` 文档，其中包含解析后的标识、canonical 工作目录和带凭证的 URL，然后保持附着直到停止。
 应将该 JSON 输出视为秘密，不得记录、公开或分享。
 

@@ -19,6 +19,7 @@ export const viewerHtml = `<!doctype html>
           </div>
         </div>
         <p id="connection-status" class="connection-status" role="status" aria-live="polite">Connecting…</p>
+        <p id="selection-announcement" class="sr-only" role="status" aria-live="polite"></p>
       </header>
 
       <div class="viewer-layout">
