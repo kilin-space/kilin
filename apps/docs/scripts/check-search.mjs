@@ -128,6 +128,10 @@ const waitForReady = async (serverProcess, output) =>
 
     serverProcess.stdout.on("data", inspectOutput);
     serverProcess.stderr.on("data", inspectOutput);
+    serverProcess.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
     serverProcess.once("exit", (code) => {
       clearTimeout(timeout);
       reject(
