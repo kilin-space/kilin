@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 
+import type { ScopedRunListResponse } from "../src/ui/contracts.js";
 import { expect, test } from "./fixtures.js";
 
 const openViewer = async (page: Page, launchUrl: string): Promise<void> => {
@@ -11,14 +12,18 @@ const openViewer = async (page: Page, launchUrl: string): Promise<void> => {
   await expect(page.locator("#connection-status")).toHaveText("Attached · guarded approval");
 };
 
+const reloadViewer = async (page: Page): Promise<void> => {
+  await page.reload();
+  await expect(page.locator("#app-shell")).toHaveAttribute("aria-busy", "false");
+};
+
 const reloadViewerWithHash = async (
   page: Page,
   origin: string,
   fragment: string,
 ): Promise<void> => {
   await page.goto(`${origin}/#${fragment}`);
-  await page.reload();
-  await expect(page.locator("#app-shell")).toHaveAttribute("aria-busy", "false");
+  await reloadViewer(page);
 };
 
 const activeGraphNodeId = async (page: Page): Promise<string | null> =>
@@ -104,8 +109,7 @@ test("the location hash restores the run, node, stream, and view after reload", 
   expect(hash).toContain("node=analyze");
   expect(hash).toContain("stream=stdout");
 
-  await page.reload();
-  await expect(page.locator("#app-shell")).toHaveAttribute("aria-busy", "false");
+  await reloadViewer(page);
   const analyzeNode = page.getByRole("button", { name: /^analyze, step 1,/u });
   await expect(analyzeNode).toHaveAttribute("aria-selected", "true");
   await expect.poll(() => activeGraphNodeId(page)).toBe("analyze");
@@ -131,23 +135,23 @@ test("a stale hash run id falls back without an error state and Current persists
 
   await page.locator("#current-workflow-button").click();
   await expect.poll(() => new URL(page.url()).hash).toBe("#current");
-  await page.reload();
-  await expect(page.locator("#app-shell")).toHaveAttribute("aria-busy", "false");
+  await reloadViewer(page);
   await expect(page.locator("#current-workflow-button")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#graph-context")).toHaveText("Current workflow");
 });
 
 test("with no stored runs the viewer keeps the definition view", async ({ page, viewer }) => {
+  const emptyRunList: ScopedRunListResponse = {
+    outputVersion: 1,
+    workflowId: "viewer-release",
+    workflowScope: "project",
+    runs: [],
+  };
   await page.route(`${viewer.origin}/api/runs`, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        outputVersion: 1,
-        workflowId: "viewer-release",
-        workflowScope: "project",
-        runs: [],
-      }),
+      body: JSON.stringify(emptyRunList),
     });
   });
   await openViewer(page, viewer.launchUrl);

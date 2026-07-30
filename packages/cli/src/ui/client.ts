@@ -149,24 +149,22 @@ const elements = {
   selectionAnnouncement: requiredElement("#selection-announcement", HTMLElement),
 };
 
+interface HashRunSelection {
+  readonly runId: string;
+  readonly nodeId?: string;
+  readonly stream?: OutputStream;
+  readonly view?: EvidenceView;
+}
+
 type HashSelection =
-  | { readonly kind: "definition" }
-  | {
-      readonly kind: "run";
-      readonly runId: string;
-      readonly nodeId?: string;
-      readonly stream?: OutputStream;
-      readonly view?: EvidenceView;
-    };
+  { readonly kind: "definition" } | ({ readonly kind: "run" } & HashRunSelection);
 
 let pollTimer: number | undefined;
 let pollController: AbortController | undefined;
 let pollInProgress = false;
 let runDetailRequestGeneration = 0;
 let outputRequestGeneration = 0;
-let pendingRestore: HashSelection | undefined;
 let initialSelectionPending = true;
-let announceInitialSelection = false;
 let renderedEvidence:
   { readonly key: string; readonly view: EvidenceView; readonly text: string } | undefined;
 
@@ -238,7 +236,7 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
     return { type: "loop-execution", executionId: loopExecutionId };
   }
   const outputStream = focusedAttribute(activeElement, "output-tab", "data-output-stream");
-  if (outputStream === "stdout" || outputStream === "stderr" || outputStream === "result") {
+  if (isOutputStream(outputStream)) {
     return { type: "output", stream: outputStream };
   }
   if (activeElement === elements.evidenceViewRendered) {
@@ -1431,6 +1429,9 @@ const handleLineageKeydown = (event: KeyboardEvent): void => {
 
 const outputKey = (runId: string, ordinal: number, stream: OutputStream): string =>
   `${runId}:${String(ordinal)}:${stream}`;
+
+const isOutputStream = (value: string | null | undefined): value is OutputStream =>
+  value === "result" || value === "stdout" || value === "stderr";
 
 const nodeAvailableOutputs = (nodeRun: NodeRunDto | undefined): readonly OutputStream[] =>
   nodeRun?.kind === "agent" ? nodeRun.availableOutputs : [];
@@ -2734,6 +2735,7 @@ const renderOutput = (): void => {
     elements.evidenceBanner.hidden = true;
     renderedEvidence = undefined;
     restoreViewerFocus(focusTarget);
+    writeRunLocationHash();
     return;
   }
   const orderedStreams = streamPresentationOrder.filter((stream) =>
@@ -2776,6 +2778,7 @@ const renderOutput = (): void => {
     elements.outputMeta.textContent = "";
   }
   restoreViewerFocus(focusTarget);
+  writeRunLocationHash();
 };
 
 const handleOutputTabKeydown = (event: KeyboardEvent): void => {
@@ -2799,7 +2802,7 @@ const handleOutputTabKeydown = (event: KeyboardEvent): void => {
   }
   event.preventDefault();
   const stream = tabs[nextIndex]?.getAttribute("data-output-stream");
-  if (stream === "stdout" || stream === "stderr" || stream === "result") {
+  if (isOutputStream(stream)) {
     void selectOutput(stream, true);
   }
 };
@@ -2855,19 +2858,18 @@ const resetExecutionSelection = (preferredStream?: OutputStream): readonly Outpu
   state.decisionSubmitting = false;
   const nodeRun = selectedNodeRun();
   const availableOutputs = nodeAvailableOutputs(nodeRun);
+  const fallbackStream = availableOutputs.includes("result") ? "result" : "stdout";
   state.selectedOutputStream =
     preferredStream !== undefined && availableOutputs.includes(preferredStream)
       ? preferredStream
-      : availableOutputs.includes("result")
-        ? "result"
-        : "stdout";
+      : fallbackStream;
   renderPresentation();
   return availableOutputs;
 };
 
 interface NodeSelectionTarget {
   readonly nodeId: string;
-  readonly executionId: string;
+  readonly executionId?: string;
 }
 
 const applyNodeSelection = (
@@ -2876,7 +2878,7 @@ const applyNodeSelection = (
   preferredStream?: OutputStream,
 ): void => {
   state.selectedNodeId = target.nodeId;
-  state.selectedExecutionId = target.executionId;
+  state.selectedExecutionId = target.executionId ?? target.nodeId;
   const availableOutputs = resetExecutionSelection(preferredStream);
   if (restoreGraphFocus) {
     const graph = currentGraph();
@@ -2892,11 +2894,10 @@ const applyNodeSelection = (
   if (availableOutputs.length > 0) {
     void selectOutput(state.selectedOutputStream, false);
   }
-  writeRunLocationHash();
 };
 
 const selectNode = (nodeId: string, restoreGraphFocus: boolean): void => {
-  applyNodeSelection({ nodeId, executionId: nodeId }, restoreGraphFocus);
+  applyNodeSelection({ nodeId }, restoreGraphFocus);
 };
 
 const selectExecution = (executionId: string): void => {
@@ -2925,7 +2926,6 @@ const selectOutput = async (
   outputRequestGeneration = requestGeneration;
   const fetchedWhileRunning = nodeRun.kind === "agent" && nodeRun.status === "running";
   state.selectedOutputStream = stream;
-  writeRunLocationHash();
   if (!silentRefresh) {
     state.outputLoading = true;
     state.output = undefined;
@@ -3008,7 +3008,7 @@ const parseHashSelection = (): HashSelection | undefined => {
     kind: "run",
     runId,
     ...(nodeId === null || nodeId === "" ? {} : { nodeId }),
-    ...(stream === "result" || stream === "stdout" || stream === "stderr" ? { stream } : {}),
+    ...(isOutputStream(stream) ? { stream } : {}),
     ...(view === "rendered" || view === "raw" ? { view } : {}),
   };
 };
@@ -3070,32 +3070,22 @@ const restoredNodeTarget = (
   if (nodeId === undefined) {
     return undefined;
   }
-  return detail.revision.workflow.nodes.some((node) => node.id === nodeId)
-    ? { nodeId, executionId: nodeId }
-    : undefined;
+  return detail.revision.workflow.nodes.some((node) => node.id === nodeId) ? { nodeId } : undefined;
 };
 
 const firstNodeTarget = (detail: ScopedRunDetailResponse): NodeSelectionTarget | undefined => {
   const firstNodeId = detail.revision.workflow.executionOrder[0];
-  return firstNodeId === undefined ? undefined : { nodeId: firstNodeId, executionId: firstNodeId };
+  return firstNodeId === undefined ? undefined : { nodeId: firstNodeId };
 };
 
-const announceAutomaticSelection = (detail: ScopedRunDetailResponse): void => {
-  const status = presentedRunStatus(detail.run.status);
-  const nodeCopy =
-    state.selectedNodeId === undefined ? "" : ` Selected node ${state.selectedNodeId}.`;
-  setText(
-    elements.selectionAnnouncement,
-    `Opened run ${detail.run.runId}, ${statusLabel(status).toLowerCase()}.${nodeCopy}`,
-  );
-};
+interface InitialRunSelection {
+  readonly restore: HashRunSelection | undefined;
+}
 
-const selectRun = async (runId: string): Promise<void> => {
+const selectRun = async (runId: string, initial?: InitialRunSelection): Promise<void> => {
   const requestGeneration = runDetailRequestGeneration + 1;
   runDetailRequestGeneration = requestGeneration;
   outputRequestGeneration += 1;
-  const announceSelection = announceInitialSelection;
-  announceInitialSelection = false;
   state.viewMode = "run";
   state.selectedRunId = runId;
   state.runDetail = undefined;
@@ -3109,7 +3099,6 @@ const selectRun = async (runId: string): Promise<void> => {
   state.decisionSubmitting = false;
   dockEvidenceCache.clear();
   renderPresentation();
-  writeRunLocationHash();
   setText(elements.connectionStatus, "Loading stored revision…");
   try {
     const detail = await apiGet<ScopedRunDetailResponse>(routes.run(runId));
@@ -3117,11 +3106,7 @@ const selectRun = async (runId: string): Promise<void> => {
       state.runDetail = detail;
       state.pollFailures = 0;
       setText(elements.connectionStatus, "Attached · guarded approval");
-      const restore =
-        pendingRestore?.kind === "run" && pendingRestore.runId === runId
-          ? pendingRestore
-          : undefined;
-      pendingRestore = undefined;
+      const restore = initial?.restore;
       if (restore?.view !== undefined) {
         state.evidenceView = restore.view;
       }
@@ -3136,8 +3121,13 @@ const selectRun = async (runId: string): Promise<void> => {
       } else {
         applyNodeSelection(target, true, restore?.stream);
       }
-      if (announceSelection) {
-        announceAutomaticSelection(detail);
+      if (initial !== undefined) {
+        const status = presentedRunStatus(detail.run.status);
+        const nodeCopy = target === undefined ? "" : ` Selected node ${target.nodeId}.`;
+        setText(
+          elements.selectionAnnouncement,
+          `Opened run ${detail.run.runId}, ${formatStatus(status)}.${nodeCopy}`,
+        );
       }
     }
   } catch (error: unknown) {
@@ -3173,29 +3163,19 @@ const applyInitialSelectionOnce = (): void => {
     return;
   }
   initialSelectionPending = false;
-  if (state.viewMode === "run") {
-    return;
-  }
-  const restore = pendingRestore;
-  if (restore?.kind === "definition") {
-    pendingRestore = undefined;
+  const parsed = parseHashSelection();
+  if (parsed?.kind === "definition") {
     return;
   }
   const runs = state.runList?.runs ?? [];
-  const restoredRunId =
-    restore !== undefined && runs.some((run) => run.runId === restore.runId)
-      ? restore.runId
-      : undefined;
-  if (restoredRunId === undefined) {
-    pendingRestore = undefined;
-  }
+  const restore =
+    parsed !== undefined && runs.some((run) => run.runId === parsed.runId) ? parsed : undefined;
   const targetRunId =
-    restoredRunId ?? (runs.find((run) => run.status === "running") ?? runs[0])?.runId;
+    restore?.runId ?? (runs.find((run) => run.status === "running") ?? runs[0])?.runId;
   if (targetRunId === undefined) {
     return;
   }
-  announceInitialSelection = true;
-  void selectRun(targetRunId);
+  void selectRun(targetRunId, { restore });
 };
 
 const clearPollTimer = (): void => {
@@ -3296,7 +3276,6 @@ const showFatalError = (error: unknown): void => {
 
 const start = async (): Promise<void> => {
   state.session = await establishSession();
-  pendingRestore = parseHashSelection();
   await pollViewer();
 };
 
@@ -3305,7 +3284,6 @@ const setEvidenceView = (view: EvidenceView): void => {
     return;
   }
   state.evidenceView = view;
-  writeRunLocationHash();
   renderOutput();
 };
 
