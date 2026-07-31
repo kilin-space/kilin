@@ -170,7 +170,11 @@ summary and approval gate:
 The Viewer opens on `127.0.0.1` and shows the compiled graph, node states as they change, the
 newest 50 runs for that workflow and working directory, lineage, approval metadata, failures,
 bounded captured output, and Decision Packets. When a run stops at an approval, it shows guarded
-Approve and Reject buttons. `--json` prints one `viewer.started` document before the process waits;
+Approve and Reject buttons. On load it opens the most relevant stored run — waiting for approval
+first, then running, then the newest finished run — and selects the node that explains the run
+status; with no stored runs it keeps the current definition view. The selected run, node, stream,
+and rendered or raw view persist in the URL hash, so a reload restores them. `--json` prints one
+`viewer.started` document before the process waits;
 its launch credential can be redeemed once and never outlives the attached process. After
 redemption, that browser session remains usable while the process lives.
 

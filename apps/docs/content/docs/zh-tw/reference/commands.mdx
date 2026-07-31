@@ -62,9 +62,11 @@ kilin runs reject <run-id> <node-id> --actor <agent|human> [--note <text>] [--js
 kilin ui <name> --cwd <directory> [--no-open] [--json]
 ```
 
-Viewer 顯示編譯後的工作流程與本機歷程。它可為符合條件的等待中核准記錄受保護決策，但不能編輯工作流程、
-啟動 provider run 或作為公開 API。`--no-open` 禁止啟動瀏覽器。`--json` 會輸出一個
-`viewer.started` 文件，其中包含解析後的識別、canonical 工作目錄和帶憑證的 URL，然後保持附著直到停止。
+Viewer 顯示編譯後的工作流程與本機歷程。載入時，它會開啟最相關的已儲存執行並選取最能解釋其狀態的
+節點；重新載入後會依 URL 雜湊還原所選執行、節點、輸出串流與視圖。它可為符合條件的等待中核准記錄
+受保護決策，但不能編輯工作流程、啟動 provider run 或作為公開 API。`--no-open` 禁止啟動瀏覽器。
+`--json` 會輸出一個 `viewer.started` 文件，其中包含解析後的識別、canonical 工作目錄和帶憑證的
+URL，然後保持附著直到停止。
 應將該 JSON 輸出視為秘密，不得記錄、公開或分享。
 
 ## 全域 flags

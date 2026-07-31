@@ -146,13 +146,25 @@ const elements = {
   outputSection: requiredElement("#output-section", HTMLElement),
   outputTabs: requiredElement("#output-tabs", HTMLElement),
   runInspector: requiredElement("#run-inspector", HTMLElement),
+  selectionAnnouncement: requiredElement("#selection-announcement", HTMLElement),
 };
+
+interface HashRunSelection {
+  readonly runId: string;
+  readonly nodeId?: string;
+  readonly stream?: OutputStream;
+  readonly view?: EvidenceView;
+}
+
+type HashSelection =
+  { readonly kind: "definition" } | ({ readonly kind: "run" } & HashRunSelection);
 
 let pollTimer: number | undefined;
 let pollController: AbortController | undefined;
 let pollInProgress = false;
 let runDetailRequestGeneration = 0;
 let outputRequestGeneration = 0;
+let initialSelectionPending = true;
 let renderedEvidence:
   { readonly key: string; readonly view: EvidenceView; readonly text: string } | undefined;
 
@@ -224,7 +236,7 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
     return { type: "loop-execution", executionId: loopExecutionId };
   }
   const outputStream = focusedAttribute(activeElement, "output-tab", "data-output-stream");
-  if (outputStream === "stdout" || outputStream === "stderr" || outputStream === "result") {
+  if (isOutputStream(outputStream)) {
     return { type: "output", stream: outputStream };
   }
   if (activeElement === elements.evidenceViewRendered) {
@@ -1417,6 +1429,9 @@ const handleLineageKeydown = (event: KeyboardEvent): void => {
 
 const outputKey = (runId: string, ordinal: number, stream: OutputStream): string =>
   `${runId}:${String(ordinal)}:${stream}`;
+
+const isOutputStream = (value: string | null | undefined): value is OutputStream =>
+  value === "result" || value === "stdout" || value === "stderr";
 
 const nodeAvailableOutputs = (nodeRun: NodeRunDto | undefined): readonly OutputStream[] =>
   nodeRun?.kind === "agent" ? nodeRun.availableOutputs : [];
@@ -2720,6 +2735,7 @@ const renderOutput = (): void => {
     elements.evidenceBanner.hidden = true;
     renderedEvidence = undefined;
     restoreViewerFocus(focusTarget);
+    writeRunLocationHash();
     return;
   }
   const orderedStreams = streamPresentationOrder.filter((stream) =>
@@ -2762,6 +2778,7 @@ const renderOutput = (): void => {
     elements.outputMeta.textContent = "";
   }
   restoreViewerFocus(focusTarget);
+  writeRunLocationHash();
 };
 
 const handleOutputTabKeydown = (event: KeyboardEvent): void => {
@@ -2785,7 +2802,7 @@ const handleOutputTabKeydown = (event: KeyboardEvent): void => {
   }
   event.preventDefault();
   const stream = tabs[nextIndex]?.getAttribute("data-output-stream");
-  if (stream === "stdout" || stream === "stderr" || stream === "result") {
+  if (isOutputStream(stream)) {
     void selectOutput(stream, true);
   }
 };
@@ -2830,7 +2847,7 @@ const renderPresentation = (): void => {
   restoreViewerFocus(focusTarget);
 };
 
-const resetExecutionSelection = (): readonly OutputStream[] => {
+const resetExecutionSelection = (preferredStream?: OutputStream): readonly OutputStream[] => {
   outputRequestGeneration += 1;
   state.output = undefined;
   state.outputError = undefined;
@@ -2841,19 +2858,34 @@ const resetExecutionSelection = (): readonly OutputStream[] => {
   state.decisionSubmitting = false;
   const nodeRun = selectedNodeRun();
   const availableOutputs = nodeAvailableOutputs(nodeRun);
-  state.selectedOutputStream = availableOutputs.includes("result") ? "result" : "stdout";
+  const fallbackStream = availableOutputs.includes("result") ? "result" : "stdout";
+  state.selectedOutputStream =
+    preferredStream !== undefined && availableOutputs.includes(preferredStream)
+      ? preferredStream
+      : fallbackStream;
   renderPresentation();
   return availableOutputs;
 };
 
-const selectNode = (nodeId: string, restoreGraphFocus: boolean): void => {
-  state.selectedNodeId = nodeId;
-  state.selectedExecutionId = nodeId;
-  const availableOutputs = resetExecutionSelection();
+interface NodeSelectionTarget {
+  readonly nodeId: string;
+  readonly executionId?: string;
+}
+
+const applyNodeSelection = (
+  target: NodeSelectionTarget,
+  restoreGraphFocus: boolean,
+  preferredStream?: OutputStream,
+): void => {
+  state.selectedNodeId = target.nodeId;
+  state.selectedExecutionId = target.executionId ?? target.nodeId;
+  const availableOutputs = resetExecutionSelection(preferredStream);
   if (restoreGraphFocus) {
     const graph = currentGraph();
     const index =
-      graph === undefined ? -1 : orderedGraphNodes(graph).findIndex((node) => node.id === nodeId);
+      graph === undefined
+        ? -1
+        : orderedGraphNodes(graph).findIndex((node) => node.id === target.nodeId);
     const groups = Array.from(elements.graph.querySelectorAll<SVGGElement>(".dag-node"));
     if (index >= 0) {
       updateGraphRovingFocus(groups, index);
@@ -2862,6 +2894,10 @@ const selectNode = (nodeId: string, restoreGraphFocus: boolean): void => {
   if (availableOutputs.length > 0) {
     void selectOutput(state.selectedOutputStream, false);
   }
+};
+
+const selectNode = (nodeId: string, restoreGraphFocus: boolean): void => {
+  applyNodeSelection({ nodeId }, restoreGraphFocus);
 };
 
 const selectExecution = (executionId: string): void => {
@@ -2953,7 +2989,100 @@ const maybeRefreshEvidence = (): void => {
   }
 };
 
-const selectRun = async (runId: string): Promise<void> => {
+const definitionViewHash = "current";
+
+const parseHashSelection = (): HashSelection | undefined => {
+  const fragment = window.location.hash.slice(1);
+  if (fragment === definitionViewHash) {
+    return { kind: "definition" };
+  }
+  const params = new URLSearchParams(fragment);
+  const runId = params.get("run");
+  if (runId === null || runId === "") {
+    return undefined;
+  }
+  const nodeId = params.get("node");
+  const stream = params.get("stream");
+  const view = params.get("view");
+  return {
+    kind: "run",
+    runId,
+    ...(nodeId === null || nodeId === "" ? {} : { nodeId }),
+    ...(isOutputStream(stream) ? { stream } : {}),
+    ...(view === "rendered" || view === "raw" ? { view } : {}),
+  };
+};
+
+const replaceLocationHash = (fragment: string): void => {
+  if (window.location.hash === `#${fragment}`) {
+    return;
+  }
+  window.history.replaceState(null, "", `#${fragment}`);
+};
+
+const writeRunLocationHash = (): void => {
+  if (state.viewMode !== "run" || state.selectedRunId === undefined) {
+    return;
+  }
+  const params = new URLSearchParams({ run: state.selectedRunId });
+  if (state.selectedNodeId !== undefined) {
+    params.set("node", state.selectedNodeId);
+  }
+  params.set("stream", state.selectedOutputStream);
+  params.set("view", state.evidenceView);
+  replaceLocationHash(params.toString());
+};
+
+const nodeSelectionTarget = (nodeRun: NodeRunDto): NodeSelectionTarget => ({
+  nodeId: nodeRun.loopNodeId ?? nodeRun.nodeId,
+  executionId: nodeRun.executionId,
+});
+
+const statusExplainingTarget = (
+  detail: ScopedRunDetailResponse,
+): NodeSelectionTarget | undefined => {
+  const waiting = detail.nodes.find((node) => node.status === "waiting_for_approval");
+  if (waiting !== undefined) {
+    return nodeSelectionTarget(waiting);
+  }
+  const runStatus = detail.run.status;
+  if (runStatus === "failed" || runStatus === "interrupted") {
+    const failed =
+      detail.nodes.find((node) => sameFailure(node.failure, detail.run.failure)) ??
+      detail.nodes.find((node) => node.status === "failed" || node.status === "interrupted");
+    if (failed !== undefined) {
+      return nodeSelectionTarget(failed);
+    }
+  }
+  if (runStatus === "running") {
+    const running = detail.nodes.find((node) => node.status === "running");
+    if (running !== undefined) {
+      return nodeSelectionTarget(running);
+    }
+  }
+  return undefined;
+};
+
+const restoredNodeTarget = (
+  detail: ScopedRunDetailResponse,
+  nodeId: string | undefined,
+): NodeSelectionTarget | undefined => {
+  if (nodeId === undefined) {
+    return undefined;
+  }
+  return detail.revision.workflow.nodes.some((node) => node.id === nodeId) ? { nodeId } : undefined;
+};
+
+const firstNodeTarget = (detail: ScopedRunDetailResponse): NodeSelectionTarget | undefined => {
+  const firstNodeId = detail.revision.workflow.executionOrder[0];
+  return firstNodeId === undefined ? undefined : { nodeId: firstNodeId };
+};
+
+interface InitialRunSelection {
+  readonly restore: HashRunSelection | undefined;
+}
+
+const selectRun = async (runId: string, initial?: InitialRunSelection): Promise<void> => {
   const requestGeneration = runDetailRequestGeneration + 1;
   runDetailRequestGeneration = requestGeneration;
   outputRequestGeneration += 1;
@@ -2977,13 +3106,28 @@ const selectRun = async (runId: string): Promise<void> => {
       state.runDetail = detail;
       state.pollFailures = 0;
       setText(elements.connectionStatus, "Attached · guarded approval");
-      const firstNodeId = detail.revision.workflow.executionOrder[0];
-      if (firstNodeId === undefined) {
+      const restore = initial?.restore;
+      if (restore?.view !== undefined) {
+        state.evidenceView = restore.view;
+      }
+      const target =
+        restoredNodeTarget(detail, restore?.nodeId) ??
+        statusExplainingTarget(detail) ??
+        firstNodeTarget(detail);
+      if (target === undefined) {
         state.selectedNodeId = undefined;
         state.selectedExecutionId = undefined;
         renderPresentation();
       } else {
-        selectNode(firstNodeId, false);
+        applyNodeSelection(target, true, restore?.stream);
+      }
+      if (initial !== undefined) {
+        const status = presentedRunStatus(detail.run.status);
+        const nodeCopy = target === undefined ? "" : ` Selected node ${target.nodeId}.`;
+        setText(
+          elements.selectionAnnouncement,
+          `Opened run ${detail.run.runId}, ${formatStatus(status)}.${nodeCopy}`,
+        );
       }
     }
   } catch (error: unknown) {
@@ -3011,6 +3155,27 @@ const selectCurrentWorkflow = (): void => {
   state.decisionSubmitting = false;
   dockEvidenceCache.clear();
   renderPresentation();
+  replaceLocationHash(definitionViewHash);
+};
+
+const applyInitialSelectionOnce = (): void => {
+  if (!initialSelectionPending) {
+    return;
+  }
+  initialSelectionPending = false;
+  const parsed = parseHashSelection();
+  if (parsed?.kind === "definition") {
+    return;
+  }
+  const runs = state.runList?.runs ?? [];
+  const restore =
+    parsed !== undefined && runs.some((run) => run.runId === parsed.runId) ? parsed : undefined;
+  const targetRunId =
+    restore?.runId ?? (runs.find((run) => run.status === "running") ?? runs[0])?.runId;
+  if (targetRunId === undefined) {
+    return;
+  }
+  void selectRun(targetRunId, { restore });
 };
 
 const clearPollTimer = (): void => {
@@ -3072,6 +3237,7 @@ const pollViewer = async (): Promise<void> => {
     elements.appShell.setAttribute("aria-busy", "false");
     renderPresentation();
     maybeRefreshEvidence();
+    applyInitialSelectionOnce();
   } catch (error: unknown) {
     if (!(error instanceof DOMException && error.name === "AbortError")) {
       state.pollFailures += 1;

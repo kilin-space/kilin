@@ -45,7 +45,7 @@ test("viewer authentication and routes enforce the local guarded boundary", asyn
   page.on("request", (request) => requestedUrls.push(request.url()));
   const { navigation, session } = await openViewerWithSession(page, viewer.launchUrl);
 
-  expect(new URL(page.url()).hash).toBe("");
+  expect(new URL(page.url()).hash).not.toContain("token");
   expect(requestedUrls.every((url) => url.startsWith(viewer.origin))).toBe(true);
   expect(requestedUrls.every((url) => !url.includes(viewer.launchToken))).toBe(true);
   const csp = navigation.headers()["content-security-policy"] ?? "";
