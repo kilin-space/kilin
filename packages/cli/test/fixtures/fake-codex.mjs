@@ -242,14 +242,25 @@ if (
 
   if (behavior === "wait" || behavior === "cancel-child") {
     if (behavior === "cancel-child") {
-      const descendant = spawn(
+      if (process.env.FAKE_CODEX_DESCENDANT_PID === undefined) {
+        process.exit(64);
+      }
+      spawn(
         process.execPath,
-        ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},60000)"],
+        [
+          "-e",
+          [
+            'const { renameSync, writeFileSync } = require("node:fs");',
+            "process.on('SIGTERM',()=>{});",
+            "const pidPath = process.env.FAKE_CODEX_DESCENDANT_PID;",
+            'const pendingPidPath = pidPath + ".pending";',
+            "writeFileSync(pendingPidPath, String(process.pid));",
+            "renameSync(pendingPidPath, pidPath);",
+            "setInterval(()=>{},60000);",
+          ].join(""),
+        ],
         { stdio: "ignore" },
       );
-      if (process.env.FAKE_CODEX_DESCENDANT_PID !== undefined) {
-        writeFileSync(process.env.FAKE_CODEX_DESCENDANT_PID, String(descendant.pid));
-      }
     }
     await new Promise(() => {
       setInterval(() => undefined, 60_000);

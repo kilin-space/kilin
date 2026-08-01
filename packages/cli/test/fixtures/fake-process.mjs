@@ -63,21 +63,30 @@ if (scenario === "wait") {
 
 if (scenario === "descendant" || scenario === "detached-descendant") {
   const pidPath = valueAfter("--pid-file");
-  const descendant = spawn(
+  if (pidPath === undefined) {
+    process.exit(64);
+  }
+  spawn(
     process.execPath,
     [
       "--input-type=module",
       "--eval",
-      "process.on('SIGTERM', () => {}); setInterval(() => {}, 60000)",
+      [
+        'import { renameSync, writeFileSync } from "node:fs";',
+        "process.on('SIGTERM', () => {});",
+        "const pidPath = process.env.FAKE_PID_PATH;",
+        'const pendingPidPath = pidPath + ".pending";',
+        "writeFileSync(pendingPidPath, String(process.pid));",
+        "renameSync(pendingPidPath, pidPath);",
+        "setInterval(() => undefined, 60_000);",
+      ].join(" "),
     ],
     {
       detached: scenario === "detached-descendant",
+      env: { ...process.env, FAKE_PID_PATH: pidPath },
       stdio: "ignore",
     },
   );
-  if (pidPath !== undefined && descendant.pid !== undefined) {
-    await writeFile(pidPath, String(descendant.pid));
-  }
   await new Promise(() => setInterval(() => undefined, 60_000));
 }
 
