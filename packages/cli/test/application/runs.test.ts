@@ -2022,7 +2022,7 @@ describe("workflow run lifecycle", () => {
       { nodeId: "on-pass", status: "skipped" },
       { nodeId: "on-revise", status: "succeeded" },
     ]);
-    expect(detail.attempts?.filter(({ nodeId }) => nodeId === "decide") ?? []).toMatchObject([
+    expect(detail.attempts).toMatchObject([
       { nodeId: "decide", attempt: 1, status: "failed", failure: { code: "NODE_OUTPUT_INVALID" } },
       { nodeId: "decide", attempt: 2, status: "succeeded" },
     ]);
@@ -2530,14 +2530,7 @@ describe("workflow run lifecycle", () => {
         { from: "right", to: "join" },
       ],
     };
-    const choicePrompt = [
-      "choose",
-      "",
-      "KILIN_DECLARED_OUTPUT_V1",
-      "Satisfy this Kilin output contract in addition to the authored task.",
-      '{"choices":["left","right"],"type":"choice"}',
-      choiceOutputInstructions,
-    ].join("\n");
+    const choicePrompt = choiceOutputPrompt("choose", ["left", "right"]);
     const context = await createContext(definition, {
       FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: '{"choice":"left"}' }),
     });
@@ -2608,14 +2601,7 @@ describe("workflow run lifecycle", () => {
         { from: "choose", to: "right", input: "selection", when: { choice: "right" } },
       ],
     };
-    const choicePrompt = [
-      "choose mutated branch",
-      "",
-      "KILIN_DECLARED_OUTPUT_V1",
-      "Satisfy this Kilin output contract in addition to the authored task.",
-      '{"choices":["left","right"],"type":"choice"}',
-      choiceOutputInstructions,
-    ].join("\n");
+    const choicePrompt = choiceOutputPrompt("choose mutated branch", ["left", "right"]);
     const context = await createContext(definition, {
       FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: '{"choice":"left"}' }),
     });
@@ -2679,14 +2665,7 @@ describe("workflow run lifecycle", () => {
         { from: "choose", to: "target", when: { choice: "right" } },
       ],
     };
-    const choicePrompt = [
-      "choose reused route",
-      "",
-      "KILIN_DECLARED_OUTPUT_V1",
-      "Satisfy this Kilin output contract in addition to the authored task.",
-      '{"choices":["left","right"],"type":"choice"}',
-      choiceOutputInstructions,
-    ].join("\n");
+    const choicePrompt = choiceOutputPrompt("choose reused route", ["left", "right"]);
     const context = await createContext(definition, {
       FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: '{"choice":"left"}' }),
     });
@@ -2754,14 +2733,7 @@ describe("workflow run lifecycle", () => {
           { from: "choose", to: "target", when: { choice: "right" } },
         ],
       };
-      const choicePrompt = [
-        "choose shared target",
-        "",
-        "KILIN_DECLARED_OUTPUT_V1",
-        "Satisfy this Kilin output contract in addition to the authored task.",
-        '{"choices":["left","right"],"type":"choice"}',
-        choiceOutputInstructions,
-      ].join("\n");
+      const choicePrompt = choiceOutputPrompt("choose shared target", ["left", "right"]);
       const context = await createContext(definition, {
         FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: JSON.stringify({ choice }) }),
       });
@@ -3130,14 +3102,7 @@ describe("workflow run lifecycle", () => {
       nodes: [{ ...legacy.nodes[0], output: { type: "json" } }],
     } as WorkflowDefinitionV1;
     const context = await createContext(definition, { FAKE_CODEX_RESULT: result });
-    const expectedPrompt = [
-      "return json",
-      "",
-      "KILIN_DECLARED_OUTPUT_V1",
-      "Satisfy this Kilin output contract in addition to the authored task.",
-      '{"type":"json"}',
-      jsonOutputInstructions,
-    ].join("\n");
+    const expectedPrompt = declaredOutputPrompt("return json", "json");
 
     const detail = await runWorkflow(
       context.workflowName,
@@ -6195,14 +6160,7 @@ describe("bounded read-only frontier", () => {
         { from: "choose", to: "target", when: { choice: "right" } },
       ],
     };
-    const choicePrompt = [
-      "choose",
-      "",
-      "KILIN_DECLARED_OUTPUT_V1",
-      "Satisfy this Kilin output contract in addition to the authored task.",
-      '{"choices":["left","right"],"type":"choice"}',
-      choiceOutputInstructions,
-    ].join("\n");
+    const choicePrompt = choiceOutputPrompt("choose", ["left", "right"]);
     const context = await createFrontierContext(routed, {
       FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: '{"choice":"left"}' }),
       FAKE_CODEX_BEHAVIORS: JSON.stringify({ held: "nonzero", target: "nonzero" }),

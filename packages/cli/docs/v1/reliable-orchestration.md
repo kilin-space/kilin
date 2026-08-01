@@ -23,10 +23,11 @@ status, timestamps, runtime metadata, error, and private capture paths. Kilin re
 declared node occurrence. It does not resume a provider session.
 
 Without a declared `retry`, a `read_only` agent with a declared output retries
-`NODE_OUTPUT_INVALID` once — two attempts in total, with no backoff. Read-only re-execution cannot mutate the workspace, so the built-in
-second attempt is safe by construction; the retry prompt carries the validation failure so the
-runtime can correct the serialization. A declared `retry` replaces this default. `workspace_write`
-agents never retry without an explicit `safeToRepeat: true`.
+`NODE_OUTPUT_INVALID` once — two attempts in total, with no backoff. Read-only re-execution
+cannot mutate the workspace, so the built-in second attempt is safe by construction; the retry
+prompt carries the validation failure so the runtime can correct the serialization. A declared
+`retry` replaces this default. `workspace_write` agents never retry without an explicit
+`safeToRepeat: true`.
 
 ## Join and choice routing
 
