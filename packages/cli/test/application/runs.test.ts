@@ -2085,9 +2085,15 @@ describe("workflow run lifecycle", () => {
   });
 
   it("does not default-retry a read_only process failure", async () => {
-    const definition = workflow(["exit nonzero"]);
+    const legacy = workflow(["exit nonzero"]);
+    const definition = {
+      ...legacy,
+      nodes: [{ ...legacy.nodes[0], output: { type: "json" } }],
+    } as WorkflowDefinitionV1;
     const context = await createContext(definition, {
-      FAKE_CODEX_BEHAVIORS: JSON.stringify({ "exit nonzero": "nonzero" }),
+      FAKE_CODEX_BEHAVIORS: JSON.stringify({
+        [declaredOutputPrompt("exit nonzero", "json")]: "nonzero",
+      }),
     });
 
     const detail = await runWorkflow(
