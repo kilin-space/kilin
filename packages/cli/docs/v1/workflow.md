@@ -98,6 +98,10 @@ declared `choice` output. Approval nodes may have dependency edges but cannot pr
 binding.
 
 An agent declares at most one `text`, `json`, `decision_packet`, `artifact`, or `choice` output.
+A `choice` node must answer with exactly one JSON object `{"choice":"<value>"}` naming a declared
+choice, and a `json` node must answer with exactly one JSON document and no surrounding text; the
+injected output contract states these requirements to the runtime, and a violation fails the
+attempt with `NODE_OUTPUT_INVALID`.
 Artifacts are live workspace-relative references and require `workspace_write`; Kilin does not
 copy them into managed storage. Bound text, JSON, Decision Packets, choices, and run parameters
 reach only declared consumers through the `KILIN_RESOLVED_INPUTS_V1` untrusted-data envelope.

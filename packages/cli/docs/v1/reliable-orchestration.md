@@ -10,12 +10,24 @@ An agent may declare:
 ```yaml
 retry:
   maxAttempts: 3
-  backoffMs: 1000
+  initialBackoffMs: 1000
+  maxBackoffMs: 30000
+  safeToRepeat: true
 ```
 
-`maxAttempts` is 1 through 5. `backoffMs` is 0 through 30000. An attempt records its own status,
-timestamps, runtime metadata, error, and private capture paths. Kilin retries only the declared
-node occurrence. It does not resume a provider session.
+`maxAttempts` is 1 through 5. `initialBackoffMs` and `maxBackoffMs` are 0 through 300000
+milliseconds with exponential growth between attempts. `safeToRepeat: true` is required. An
+optional `on` list restricts the retryable failure codes (`NODE_OUTPUT_INVALID`,
+`NODE_EXIT_NONZERO`, `NODE_TIMEOUT`); omitting it retries all three. An attempt records its own
+status, timestamps, runtime metadata, error, and private capture paths. Kilin retries only the
+declared node occurrence. It does not resume a provider session.
+
+Without a declared `retry`, a `read_only` agent with a declared output retries
+`NODE_OUTPUT_INVALID` once — two attempts in total, with no backoff. Read-only re-execution
+cannot mutate the workspace, so the built-in second attempt is safe by construction; the retry
+prompt carries the validation failure so the runtime can correct the serialization. A declared
+`retry` replaces this default. `workspace_write` agents never retry without an explicit
+`safeToRepeat: true`.
 
 ## Join and choice routing
 

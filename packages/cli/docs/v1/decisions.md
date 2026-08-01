@@ -91,8 +91,11 @@ fails without creating a run.
 **Reason:** Retrying agent side effects without explicit bounds or workspace ownership can make
 damage worse.
 
-**Consequence:** Per-node attempts are bounded. `retry` and `resume` create continuation runs only
-when every writer uses an isolated workspace. Partial changes and logs remain for inspection.
+**Consequence:** Per-node attempts are bounded. A `read_only` agent without an authored `retry`
+receives one automatic retry for `NODE_OUTPUT_INVALID`; read-only re-execution has no workspace
+side effects, so the explicit-bounds reason is preserved, and an authored `retry` replaces the
+default. `retry` and `resume` create continuation runs only when every writer uses an isolated
+workspace. Partial changes and logs remain for inspection.
 
 ### D-010 — SQLite stores metadata; files store streams
 
