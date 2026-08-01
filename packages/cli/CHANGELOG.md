@@ -4,6 +4,11 @@ All notable changes to `@kilin-space/cli` are documented here.
 
 ## Unreleased
 
+- Retry `NODE_OUTPUT_INVALID` once by default for `read_only` agents with a declared output, so
+  one serialization slip no longer fails the whole run; an authored `retry` replaces the default
+  (#28).
+- State the required wire shape for `choice` and `json` outputs in the injected output contract
+  and in the choice JSON-parse failure message (#28).
 - Open the Viewer on the most relevant stored run — waiting for approval first, then running,
   then the newest finished run — and select the node that explains the run status; with no stored
   runs the definition view is unchanged (#14, #15).

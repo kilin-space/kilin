@@ -131,6 +131,12 @@ const resolvedEnvironment = (
 
 const defaultAttentionPollIntervalMs = 250;
 
+const choiceOutputInstructions =
+  'Return exactly one JSON object {"choice":"<value>"} where <value> is one of the declared choices. Output no other text.';
+
+const jsonOutputInstructions =
+  "Return exactly one JSON document as the final message, without Markdown fences, explanation, or trailing text.";
+
 const resolvedAgentPrompt = (
   node: AgentNode,
   resolvedInputs?: string,
@@ -145,6 +151,12 @@ const resolvedAgentPrompt = (
           ? serializeCanonicalJson({ choices: node.output.choices, type: node.output.type })
           : serializeCanonicalJson({ type: node.output.type });
     prompt += `\n\nKILIN_DECLARED_OUTPUT_V1\nSatisfy this Kilin output contract in addition to the authored task.\n${serializedOutput}`;
+    if (node.output.type === "choice") {
+      prompt += `\n${choiceOutputInstructions}`;
+    }
+    if (node.output.type === "json") {
+      prompt += `\n${jsonOutputInstructions}`;
+    }
     if (node.output.type === "decision_packet") {
       prompt += `\n\n${decisionPacketOutputInstructions}`;
     }
@@ -179,7 +191,7 @@ const parseChoiceOutput = (node: OutputExecutionNode, finalMessage: string): { c
   } catch {
     throw new KilinError(
       "NODE_OUTPUT_INVALID",
-      `Node "${node.id}" did not return valid JSON for its choice output.`,
+      `Node "${node.id}" did not return valid JSON for its choice output. Return exactly {"choice":"<declared-choice>"} with no additional text, then retry the run.`,
     );
   }
   if (
@@ -1001,6 +1013,17 @@ const defaultRetryableFailureCodes: ReadonlySet<FailureInfo["code"]> = new Set(
   retryableFailureCodes,
 );
 
+const defaultDeclaredOutputRetryPolicy: AgentRetryPolicy = {
+  maxAttempts: 2,
+  initialBackoffMs: 0,
+  maxBackoffMs: 0,
+  on: ["NODE_OUTPUT_INVALID"],
+  safeToRepeat: true,
+};
+
+const effectiveRetryPolicy = (node: AgentNode): AgentRetryPolicy | undefined =>
+  node.retry ?? (node.access === "read_only" ? defaultDeclaredOutputRetryPolicy : undefined);
+
 const shouldRetryNode = (
   policy: AgentRetryPolicy | undefined,
   failure: FailureInfo,
@@ -1013,11 +1036,11 @@ const shouldRetryNode = (
     : policy.on.some((code) => code === failure.code));
 
 const retryAttemptEventDetails = (
-  policy: AgentRetryPolicy | undefined,
+  authoredRetry: AgentRetryPolicy | undefined,
   attempt: number,
   willRetry = false,
 ): AttemptEventDetails | undefined =>
-  policy === undefined
+  authoredRetry === undefined && attempt === 1 && !willRetry
     ? undefined
     : {
         attempt,
@@ -1152,7 +1175,11 @@ const executeAgentNode = async (
       // A cancellation request committed before this admission, so no process starts.
       return { plannedNode, record: runningNode, admitted: false };
     }
-    emitNodeStarted(delivery, runningNode, node.retry === undefined ? undefined : attempt);
+    emitNodeStarted(
+      delivery,
+      runningNode,
+      node.retry === undefined && attempt === 1 ? undefined : attempt,
+    );
 
     let outcome: ProcessRunOutcome | undefined;
     let executionFailure: FailureInfo | undefined;
@@ -1334,15 +1361,15 @@ const settleFailedAttempt = async (
     failure,
     ...(runtimeVersion === undefined ? {} : { runtimeVersion }),
   });
-  const retryPolicy = node.retry;
+  const retryPolicy = effectiveRetryPolicy(node);
   if (failedNode.status !== "failed") {
     // A cancellation request committed first, so this occurrence settled cancelled and no further
     // attempt may be scheduled. The terminal event still carries the attempt it settled.
-    emitNodeFinished(delivery, failedNode, retryAttemptEventDetails(retryPolicy, attempt));
+    emitNodeFinished(delivery, failedNode, retryAttemptEventDetails(node.retry, attempt));
     return { execution: { plannedNode, record: failedNode, admitted: true } };
   }
   const willRetry = shouldRetryNode(retryPolicy, failure, attempt);
-  emitNodeFinished(delivery, failedNode, retryAttemptEventDetails(retryPolicy, attempt, willRetry));
+  emitNodeFinished(delivery, failedNode, retryAttemptEventDetails(node.retry, attempt, willRetry));
   if (!willRetry) {
     return { execution: { plannedNode, record: failedNode, admitted: true } };
   }

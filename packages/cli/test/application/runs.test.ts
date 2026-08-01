@@ -72,6 +72,12 @@ const options: RunOptions = {
 const promptDigest = (prompt: string): string =>
   createHash("sha256").update(prompt, "utf8").digest("hex").slice(0, 32);
 
+const jsonOutputInstructions =
+  "Return exactly one JSON document as the final message, without Markdown fences, explanation, or trailing text.";
+
+const choiceOutputInstructions =
+  'Return exactly one JSON object {"choice":"<value>"} where <value> is one of the declared choices. Output no other text.';
+
 const declaredOutputPrompt = (prompt: string, type: "text" | "json"): string =>
   [
     prompt,
@@ -79,6 +85,7 @@ const declaredOutputPrompt = (prompt: string, type: "text" | "json"): string =>
     "KILIN_DECLARED_OUTPUT_V1",
     "Satisfy this Kilin output contract in addition to the authored task.",
     `{"type":"${type}"}`,
+    ...(type === "json" ? [jsonOutputInstructions] : []),
   ].join("\n");
 
 const retryFeedbackPrompt = (
@@ -334,6 +341,7 @@ const choiceOutputPrompt = (prompt: string, choices: readonly string[]): string 
     "KILIN_DECLARED_OUTPUT_V1",
     "Satisfy this Kilin output contract in addition to the authored task.",
     JSON.stringify({ choices, type: "choice" }),
+    choiceOutputInstructions,
   ].join("\n");
 
 const resolvedInputPrompt = (prompt: string, inputName: string, value: string): string =>
@@ -1953,6 +1961,216 @@ describe("workflow run lifecycle", () => {
     ).toEqual([initialPrompt, feedbackPrompt]);
   });
 
+  it("retries a malformed choice output once by default and succeeds", async () => {
+    const initialPrompt = choiceOutputPrompt("decide", ["pass", "revise"]);
+    const feedbackPrompt = retryFeedbackPrompt(
+      initialPrompt,
+      "NODE_OUTPUT_INVALID",
+      'Node "decide" did not return valid JSON for its choice output. Return exactly {"choice":"<declared-choice>"} with no additional text, then retry the run.',
+    );
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "default-output-retry", name: "Default output retry" },
+      nodes: [
+        {
+          id: "decide",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "decide",
+          output: { type: "choice", choices: ["pass", "revise"] },
+        },
+        {
+          id: "on-pass",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "on pass",
+        },
+        {
+          id: "on-revise",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "on revise",
+        },
+      ],
+      edges: [
+        { from: "decide", to: "on-pass", when: { choice: "pass" } },
+        { from: "decide", to: "on-revise", when: { choice: "revise" } },
+      ],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({
+        [initialPrompt]: "revise",
+        [feedbackPrompt]: '{"choice":"revise"}',
+      }),
+    });
+    const { control, events } = eventControl();
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      control,
+      context.environment,
+    );
+
+    expect(detail.run.status).toBe("succeeded");
+    expect(detail.nodes).toMatchObject([
+      { nodeId: "decide", status: "succeeded", attempt: 2 },
+      { nodeId: "on-pass", status: "skipped" },
+      { nodeId: "on-revise", status: "succeeded" },
+    ]);
+    expect(detail.attempts?.filter(({ nodeId }) => nodeId === "decide") ?? []).toMatchObject([
+      { nodeId: "decide", attempt: 1, status: "failed", failure: { code: "NODE_OUTPUT_INVALID" } },
+      { nodeId: "decide", attempt: 2, status: "succeeded" },
+    ]);
+    expect(
+      (await readJsonLines<{ prompt: string }>(context.executionLog)).map(({ prompt }) => prompt),
+    ).toEqual([initialPrompt, feedbackPrompt, "on revise"]);
+    expect(
+      events
+        .filter(
+          (event) =>
+            (event.type === "node.started" || event.type === "node.finished") &&
+            event.nodeId === "decide",
+        )
+        .map((event) => ({
+          type: event.type,
+          ...("status" in event ? { status: event.status } : {}),
+          ...("attempt" in event ? { attempt: event.attempt } : {}),
+          ...("willRetry" in event ? { willRetry: event.willRetry } : {}),
+        })),
+    ).toEqual([
+      { type: "node.started" },
+      { type: "node.finished", status: "failed", attempt: 1, willRetry: true },
+      { type: "node.started", attempt: 2 },
+      { type: "node.finished", status: "succeeded", attempt: 2 },
+    ]);
+  });
+
+  it("keeps one attempt for a workspace_write node without an authored retry", async () => {
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "write-no-default-retry", name: "Write no default retry" },
+      nodes: [
+        {
+          id: "writer",
+          kind: "agent",
+          runtime: "codex",
+          access: "workspace_write",
+          prompt: "write json",
+          output: { type: "json" },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, { FAKE_CODEX_RESULT: "not-json" });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run).toMatchObject({
+      status: "failed",
+      failure: { code: "NODE_OUTPUT_INVALID" },
+    });
+    expect(detail.nodes).toMatchObject([{ nodeId: "writer", status: "failed" }]);
+    expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(1);
+  });
+
+  it("does not default-retry a read_only process failure", async () => {
+    const definition = workflow(["exit nonzero"]);
+    const context = await createContext(definition, {
+      FAKE_CODEX_BEHAVIORS: JSON.stringify({ "exit nonzero": "nonzero" }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run).toMatchObject({
+      status: "failed",
+      failure: { code: "NODE_EXIT_NONZERO" },
+    });
+    expect(detail.nodes).toMatchObject([{ nodeId: "node-0", status: "failed" }]);
+    expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(1);
+  });
+
+  it("lets an authored retry policy replace the default declared-output retry", async () => {
+    const initialPrompt = choiceOutputPrompt("decide once", ["pass", "revise"]);
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "authored-retry-precedence", name: "Authored retry precedence" },
+      nodes: [
+        {
+          id: "decide",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "decide once",
+          output: { type: "choice", choices: ["pass", "revise"] },
+          retry: {
+            maxAttempts: 3,
+            initialBackoffMs: 0,
+            maxBackoffMs: 0,
+            on: ["NODE_EXIT_NONZERO"],
+            safeToRepeat: true,
+          },
+        },
+        {
+          id: "on-pass",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "on pass",
+        },
+        {
+          id: "on-revise",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "on revise",
+        },
+      ],
+      edges: [
+        { from: "decide", to: "on-pass", when: { choice: "pass" } },
+        { from: "decide", to: "on-revise", when: { choice: "revise" } },
+      ],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({ [initialPrompt]: "revise" }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run).toMatchObject({
+      status: "failed",
+      failure: { code: "NODE_OUTPUT_INVALID" },
+    });
+    expect(detail.nodes).toMatchObject([
+      { nodeId: "decide", status: "failed" },
+      { nodeId: "on-pass", status: "skipped" },
+      { nodeId: "on-revise", status: "skipped" },
+    ]);
+    expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(1);
+  });
+
   it("exhausts the declared attempt bound and keeps every failed attempt", async () => {
     const definition: WorkflowDefinitionV1 = {
       schemaVersion: 1,
@@ -2318,6 +2536,7 @@ describe("workflow run lifecycle", () => {
       "KILIN_DECLARED_OUTPUT_V1",
       "Satisfy this Kilin output contract in addition to the authored task.",
       '{"choices":["left","right"],"type":"choice"}',
+      choiceOutputInstructions,
     ].join("\n");
     const context = await createContext(definition, {
       FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: '{"choice":"left"}' }),
@@ -2395,6 +2614,7 @@ describe("workflow run lifecycle", () => {
       "KILIN_DECLARED_OUTPUT_V1",
       "Satisfy this Kilin output contract in addition to the authored task.",
       '{"choices":["left","right"],"type":"choice"}',
+      choiceOutputInstructions,
     ].join("\n");
     const context = await createContext(definition, {
       FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: '{"choice":"left"}' }),
@@ -2465,6 +2685,7 @@ describe("workflow run lifecycle", () => {
       "KILIN_DECLARED_OUTPUT_V1",
       "Satisfy this Kilin output contract in addition to the authored task.",
       '{"choices":["left","right"],"type":"choice"}',
+      choiceOutputInstructions,
     ].join("\n");
     const context = await createContext(definition, {
       FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: '{"choice":"left"}' }),
@@ -2539,6 +2760,7 @@ describe("workflow run lifecycle", () => {
         "KILIN_DECLARED_OUTPUT_V1",
         "Satisfy this Kilin output contract in addition to the authored task.",
         '{"choices":["left","right"],"type":"choice"}',
+        choiceOutputInstructions,
       ].join("\n");
       const context = await createContext(definition, {
         FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: JSON.stringify({ choice }) }),
@@ -2914,6 +3136,7 @@ describe("workflow run lifecycle", () => {
       "KILIN_DECLARED_OUTPUT_V1",
       "Satisfy this Kilin output contract in addition to the authored task.",
       '{"type":"json"}',
+      jsonOutputInstructions,
     ].join("\n");
 
     const detail = await runWorkflow(
@@ -2967,10 +3190,11 @@ describe("workflow run lifecycle", () => {
       expect(detail.nodes.map(({ status }) => status)).toEqual(["failed", "skipped"]);
       expect(detail.nodes[0]).toMatchObject({
         exitCode: 0,
+        attempt: 2,
         failure: { code: "NODE_OUTPUT_INVALID" },
       });
       expect(detail.run.failure?.message).toContain('Node "node-0"');
-      expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(1);
+      expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(2);
       await expect(
         readFile(detail.nodes[0]?.outputPaths?.resultPath ?? "missing", "utf8"),
       ).resolves.toBe(result);
@@ -3159,7 +3383,7 @@ describe("workflow run lifecycle", () => {
     });
     expect(detail.run.failure?.message).toContain("Decision Packet V1");
     expect(detail.run.failure?.message).not.toContain("OUTPUT_SECRET_SENTINEL");
-    expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(1);
+    expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(2);
   });
 
   it("revalidates a mutated Decision Packet before consumer spawn", async () => {
@@ -5977,6 +6201,7 @@ describe("bounded read-only frontier", () => {
       "KILIN_DECLARED_OUTPUT_V1",
       "Satisfy this Kilin output contract in addition to the authored task.",
       '{"choices":["left","right"],"type":"choice"}',
+      choiceOutputInstructions,
     ].join("\n");
     const context = await createFrontierContext(routed, {
       FAKE_CODEX_RESULTS: JSON.stringify({ [choicePrompt]: '{"choice":"left"}' }),
