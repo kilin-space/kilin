@@ -23,11 +23,11 @@ configuration cannot replace the adapter-owned permission profile. Its SHA-256 r
 after evidence was written.
 
 Process cleanup snapshots the provider process tree before termination and targets the captured
-processes in addition to the provider process group. Delayed individual signals require a stable
+processes in addition to the provider process group. Delayed signals require a stable
 process-start identity. Linux uses kernel start ticks; macOS exposes only whole-second start times
-and therefore declines delayed individual signals after the original leader exits. A
-TERM-resistant descendant that detaches or forks after the snapshot is outside the macOS
-foreground-executor guarantee.
+and therefore declines every delayed signal after the original leader exits. Any TERM-resistant
+descendant that outlives its leader is outside the macOS foreground-executor guarantee, whether it
+detached, forked after the snapshot, or was captured in it.
 
 ## Evidence policy
 

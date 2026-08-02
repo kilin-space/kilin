@@ -155,10 +155,12 @@ initial termination signal to the current process tree, retains captured output,
 later node. Delayed signals require a process identity that remains safe after PID reuse.
 
 Linux revalidates delayed signals with the kernel start ticks from `/proc/<pid>/stat`. macOS
-`/bin/ps` exposes process starts only to whole-second resolution, so Kilin declines delayed
-individual signals after the original leader exits. A TERM-resistant descendant that detaches,
-outlives its leader, and requires forced termination may therefore remain on macOS. BusyBox-only
-Linux environments and other hosts without stable process-start identity have the same limit.
+`/bin/ps` exposes process starts only to whole-second resolution. After the original leader exits,
+Kilin therefore declines every delayed signal on macOS, both to the original process group and to
+individually captured processes. Any TERM-resistant descendant that outlives its leader and
+requires forced termination may therefore remain on macOS. The descendant does not have to detach
+first. BusyBox-only Linux environments and other hosts without stable process-start identity have
+the same limit.
 
 If the Kilin parent is killed before cleanup completes, the next command marks stale records interrupted. It does not assume the external process or workspace side effects were rolled back.
 
