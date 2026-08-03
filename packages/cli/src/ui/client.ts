@@ -147,6 +147,7 @@ const elements = {
   outputPanel: requiredElement("#output-panel", HTMLElement),
   outputSection: requiredElement("#output-section", HTMLElement),
   outputTabs: requiredElement("#output-tabs", HTMLElement),
+  refreshButton: requiredElement("#refresh-button", HTMLButtonElement),
   runInspector: requiredElement("#run-inspector", HTMLElement),
   selectionAnnouncement: requiredElement("#selection-announcement", HTMLElement),
 };
@@ -179,6 +180,7 @@ type ViewerFocusTarget =
   | { readonly type: "loop-execution"; readonly executionId: string }
   | { readonly type: "output"; readonly stream: OutputStream }
   | { readonly type: "evidence-view"; readonly view: EvidenceView }
+  | { readonly type: "evidence-retry" }
   | { readonly type: "decision-note" }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
   | { readonly type: "decision-copy"; readonly command: string }
@@ -255,6 +257,9 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   }
   if (activeElement === elements.evidenceViewRaw) {
     return { type: "evidence-view", view: "raw" };
+  }
+  if (activeElement?.classList.contains("evidence-retry") === true) {
+    return { type: "evidence-retry" };
   }
   if (activeElement instanceof HTMLElement && activeElement.id === "decision-note") {
     return { type: "decision-note" };
@@ -367,6 +372,11 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     if (!toggle.disabled) {
       toggle.focus();
     }
+    return;
+  }
+  if (target.type === "evidence-retry") {
+    const retry = elements.outputPanel.querySelector<HTMLButtonElement>(".evidence-retry");
+    (retry ?? elements.outputPanel).focus();
     return;
   }
   if (target.type === "decision-note") {
@@ -2814,10 +2824,32 @@ const announceApprovalGateTransitions = (): void => {
   }
 };
 
-const resetEvidencePanel = (message: string): void => {
+const resetEvidencePanel = (content: Node | string): void => {
   renderedEvidence = undefined;
-  setText(elements.outputPanel, message);
+  elements.outputPanel.replaceChildren(content);
   elements.evidenceBanner.hidden = true;
+};
+
+const showEvidenceError = (message: string): void => {
+  const rendered = elements.outputPanel.querySelector(".evidence-error-message");
+  if (rendered?.textContent === message) {
+    return;
+  }
+  const failure = document.createElement("div");
+  failure.className = "evidence-error";
+  failure.setAttribute("role", "alert");
+  const description = document.createElement("p");
+  description.className = "failure-copy evidence-error-message";
+  setText(description, message);
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "quiet-button evidence-retry";
+  setText(retry, "Retry");
+  retry.addEventListener("click", () => {
+    void selectOutput(state.selectedOutputStream, false);
+  });
+  failure.append(description, retry);
+  resetEvidencePanel(failure);
 };
 
 const renderEvidenceSelection = (selection: OutputSelection, liveNode: boolean): void => {
@@ -2934,8 +2966,11 @@ const renderOutput = (): void => {
   if (state.output?.key === key) {
     renderEvidenceSelection(state.output, nodeRun.kind === "agent" && nodeRun.status === "running");
   } else if (state.outputError !== undefined) {
-    resetEvidencePanel(state.outputError);
-    setText(elements.outputMeta, "Inspect the terminal or restart Kilin UI, then try again.");
+    showEvidenceError(state.outputError);
+    setText(
+      elements.outputMeta,
+      "If Retry fails again, examine the terminal output, then run kilin ui again.",
+    );
   } else {
     resetEvidencePanel("Loading captured output…");
     elements.outputMeta.textContent = "";
@@ -3423,6 +3458,14 @@ const pollViewer = async (): Promise<void> => {
   }
 };
 
+const refreshNow = (): void => {
+  state.pollFailures = 0;
+  state.outputError = undefined;
+  clearPollTimer();
+  setText(elements.connectionStatus, "Refreshing…");
+  void pollViewer();
+};
+
 const launchToken = (): string | undefined => {
   if (window.location.hash.length <= 1) {
     return undefined;
@@ -3462,6 +3505,7 @@ const setEvidenceView = (view: EvidenceView): void => {
 window.setInterval(updateLiveElements, liveTickIntervalMs);
 
 elements.currentWorkflowButton.addEventListener("click", selectCurrentWorkflow);
+elements.refreshButton.addEventListener("click", refreshNow);
 elements.decisionNeededBanner.addEventListener("click", () => {
   const waitingNode = waitingApprovalNodeRun();
   if (waitingNode === undefined) {

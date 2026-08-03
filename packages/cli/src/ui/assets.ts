@@ -19,7 +19,10 @@ export const viewerHtml = `<!doctype html>
           </div>
         </div>
         <button type="button" id="decision-needed-banner" class="decision-needed-banner" hidden></button>
-        <p id="connection-status" class="connection-status" role="status" aria-live="polite">Connecting…</p>
+        <div class="connection-block">
+          <p id="connection-status" class="connection-status" role="status" aria-live="polite">Connecting…</p>
+          <button type="button" id="refresh-button" class="quiet-button">Refresh</button>
+        </div>
         <p id="selection-announcement" class="sr-only" role="status" aria-live="polite"></p>
         <p id="approval-status" class="sr-only" role="status" aria-live="polite"></p>
       </header>
@@ -193,7 +196,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  row-gap: 4px;
+  gap: 4px 12px;
   min-width: 0;
   min-height: 56px;
   padding: 4px 16px;
@@ -253,8 +256,20 @@ h3 {
   text-transform: uppercase;
 }
 
+.connection-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.connection-block button {
+  flex: none;
+}
+
 .connection-status {
-  max-width: 50%;
+  max-width: 50vw;
+  min-width: 0;
   overflow: hidden;
   color: var(--muted);
   font-size: 12px;
@@ -961,6 +976,21 @@ h3 {
   overflow: auto;
   background: #fafbfc;
   overflow-wrap: anywhere;
+}
+
+.evidence-error {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.evidence-error-message {
+  margin-top: 0;
+}
+
+.evidence-retry {
+  border: 1px solid var(--border);
+  background: var(--panel);
 }
 
 .evidence-placeholder {

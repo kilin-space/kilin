@@ -373,3 +373,98 @@ test("the selected stream live-tails on the poll cadence while its node runs", a
   expect(completion.exitCode).toBe(0);
   await expect(page.getByRole("tab", { name: "Result" })).toBeVisible();
 });
+
+const installEvidenceAlertLog = async (page: Page): Promise<void> => {
+  await page.addInitScript(() => {
+    const holder = window as unknown as { __evidenceAlerts: string[] };
+    holder.__evidenceAlerts = [];
+    document.addEventListener("DOMContentLoaded", () => {
+      const panel = document.getElementById("output-panel");
+      if (panel === null) {
+        return;
+      }
+      new MutationObserver((records) => {
+        for (const record of records) {
+          for (const added of Array.from(record.addedNodes)) {
+            if (added instanceof Element && added.getAttribute("role") === "alert") {
+              holder.__evidenceAlerts.push(added.textContent);
+            }
+          }
+        }
+      }).observe(panel, { childList: true });
+    });
+  });
+};
+
+const readEvidenceAlerts = async (page: Page): Promise<readonly string[]> =>
+  page.evaluate(() => {
+    const holder = window as unknown as { __evidenceAlerts?: string[] };
+    return holder.__evidenceAlerts ?? [];
+  });
+
+const waitForRunListPoll = async (page: Page): Promise<void> => {
+  await page.waitForResponse(
+    (response) => response.status() === 200 && new URL(response.url()).pathname === "/api/runs",
+  );
+};
+
+test("a failed evidence read offers a keyboard retry that reloads the stream", async ({
+  page,
+  scenario,
+  viewer,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installEvidenceAlertLog(page);
+  await writeFile(
+    nodeOutputPath(scenario, scenario.successfulRunId, "000-analyze", "result.txt"),
+    "RETRIED_EVIDENCE_BODY",
+    { mode: 0o600 },
+  );
+  let outputReadFails = true;
+  await page.route("**/api/runs/*/nodes/*/output/*", async (route) => {
+    if (!outputReadFails) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        outputVersion: 1,
+        error: { code: "TRANSIENT_TEST_FAILURE", message: "Synthetic evidence failure." },
+      }),
+    });
+  });
+  await openViewer(page, viewer.launchUrl);
+  await page
+    .getByRole("button", { name: new RegExp(`Run ${scenario.successfulRunId}, succeeded`) })
+    .click();
+
+  const panel = page.locator("#output-panel");
+  await expect(panel.getByRole("alert")).toContainText("Synthetic evidence failure.");
+  const retry = page.getByRole("button", { name: "Retry" });
+  const target = await retry.boundingBox();
+  expect(target?.width ?? 0).toBeGreaterThanOrEqual(44);
+  expect(target?.height ?? 0).toBeGreaterThanOrEqual(44);
+
+  await retry.focus();
+  await waitForRunListPoll(page);
+  await waitForRunListPoll(page);
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.textContent ?? null))
+    .toBe("Retry");
+  await expect.poll(() => readEvidenceAlerts(page)).toHaveLength(1);
+
+  await page.keyboard.press("Enter");
+  await expect.poll(() => readEvidenceAlerts(page)).toHaveLength(2);
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.id ?? null))
+    .toBe("output-panel");
+
+  outputReadFails = false;
+  await retry.focus();
+  await page.keyboard.press("Enter");
+
+  await expect(retry).toHaveCount(0);
+  await expect(panel).toContainText("RETRIED_EVIDENCE_BODY");
+});
