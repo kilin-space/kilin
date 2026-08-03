@@ -1,7 +1,9 @@
+import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -438,6 +440,38 @@ describe("viewer client asset", () => {
 });
 
 describe("viewer server request boundary and sessions", () => {
+  it("closes while a client is still sending a request", async () => {
+    const { handle } = await createServerFixture();
+    const target = new URL(handle.origin);
+    const socket = createConnection({ host: target.hostname, port: Number(target.port) });
+    await once(socket, "connect");
+    socket.write(
+      `POST /session HTTP/1.1\r\nHost: ${target.host}\r\nOrigin: ${handle.origin}\r\nContent-Type: application/json\r\nContent-Length: 100\r\nExpect: 100-continue\r\n\r\n`,
+    );
+    let interimResponse = "";
+    while (!interimResponse.includes("\r\n\r\n")) {
+      interimResponse += String((await once(socket, "data"))[0]);
+    }
+    expect(interimResponse).toContain("100 Continue");
+    socket.write("{");
+
+    const closePromise = handle.close();
+    let watchdogFired = false;
+    const watchdog = setTimeout(() => {
+      watchdogFired = true;
+      socket.destroy();
+    }, 2_000);
+    try {
+      await closePromise;
+    } finally {
+      clearTimeout(watchdog);
+      socket.destroy();
+      await closePromise;
+    }
+
+    expect(watchdogFired).toBe(false);
+  });
+
   it("serves only fixed local assets and enforces Host, Origin, remote address, and methods", async () => {
     const { handle } = await createServerFixture();
     expect(new URL(handle.origin)).toMatchObject({ protocol: "http:", hostname: "127.0.0.1" });

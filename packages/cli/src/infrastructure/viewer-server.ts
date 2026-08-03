@@ -854,7 +854,7 @@ export const startViewerServer = async (
             rejectClose(error);
           }
         });
-        server.closeIdleConnections();
+        server.closeAllConnections();
       });
     }
     await closed;
