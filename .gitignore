@@ -31,6 +31,7 @@ playwright/.cache/
 
 # Agent-owned scratch checkouts
 .claude/worktrees/
+.pi-subagents/
 
 # macOS / editor cruft
 .DS_Store
