@@ -3460,9 +3460,11 @@ const pollViewer = async (): Promise<void> => {
 
 const refreshNow = (): void => {
   state.pollFailures = 0;
-  state.outputError = undefined;
   clearPollTimer();
   setText(elements.connectionStatus, "Refreshing…");
+  if (state.outputError !== undefined) {
+    void selectOutput(state.selectedOutputStream, false);
+  }
   void pollViewer();
 };
 

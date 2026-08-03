@@ -468,3 +468,55 @@ test("a failed evidence read offers a keyboard retry that reloads the stream", a
   await expect(retry).toHaveCount(0);
   await expect(panel).toContainText("RETRIED_EVIDENCE_BODY");
 });
+
+test("refresh re-requests a failed evidence read even while polling fails", async ({
+  page,
+  scenario,
+  viewer,
+}) => {
+  await writeFile(
+    nodeOutputPath(scenario, scenario.successfulRunId, "000-analyze", "result.txt"),
+    "REFRESHED_EVIDENCE_BODY",
+    { mode: 0o600 },
+  );
+  let outputReadFails = true;
+  await page.route("**/api/runs/*/nodes/*/output/*", async (route) => {
+    if (!outputReadFails) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        outputVersion: 1,
+        error: { code: "TRANSIENT_TEST_FAILURE", message: "Synthetic evidence failure." },
+      }),
+    });
+  });
+  await openViewer(page, viewer.launchUrl);
+  await page
+    .getByRole("button", { name: new RegExp(`Run ${scenario.successfulRunId}, succeeded`) })
+    .click();
+
+  const panel = page.locator("#output-panel");
+  await expect(panel.getByRole("alert")).toContainText("Synthetic evidence failure.");
+
+  await page.route("**/api/workflow", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        outputVersion: 1,
+        error: { code: "TRANSIENT_TEST_FAILURE", message: "Synthetic refresh failure." },
+      }),
+    });
+  });
+  await expect(page.locator("#connection-status")).toContainText("Retrying");
+
+  outputReadFails = false;
+  await page.getByRole("button", { name: "Refresh" }).press("Enter");
+
+  await expect(panel).toContainText("REFRESHED_EVIDENCE_BODY", { timeout: 3_000 });
+  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+});

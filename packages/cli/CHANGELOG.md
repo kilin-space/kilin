@@ -6,8 +6,7 @@ All notable changes to `@kilin-space/cli` are documented here.
 
 - Recover from a failed Viewer evidence read without reselecting the node: the error state now
   carries a Retry control that re-requests the stream. A Refresh control in the top bar runs a
-  poll cycle at once, restarts the backoff, and clears a failed evidence read so the next cycle
-  re-fetches it (#19).
+  poll cycle at once, restarts the backoff, and re-requests a failed evidence read (#19).
 - Retry `NODE_OUTPUT_INVALID` once by default for `read_only` agents with a declared output, so
   one serialization slip no longer fails the whole run; an authored `retry` replaces the default
   (#28).
