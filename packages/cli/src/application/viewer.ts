@@ -18,7 +18,11 @@ import type {
   WorkflowRevisionRecord,
   WorkflowRunRecord,
 } from "../domain/run-state.js";
-import { elapsedMsOrUndefined, isApprovalAwaitingDecision } from "../domain/run-state.js";
+import {
+  elapsedMsOrUndefined,
+  isApprovalAwaitingDecision,
+  waitingApprovalNodes,
+} from "../domain/run-state.js";
 import type {
   AgentNode,
   ApprovalNode,
@@ -378,23 +382,30 @@ const storedRunCorruption = (): KilinError =>
     "The stored run nodes do not match their immutable workflow revision. This indicates damaged local state rather than a problem with your workflow. Report it at https://github.com/kilin-space/kilin/issues.",
   );
 
+const awaitingApprovalDecision = (
+  run: Pick<WorkflowRunRecord, "status" | "cancelRequestedAt">,
+  waitingApprovalCount: number,
+  undecidedWaitingApprovalCount: number,
+): boolean => {
+  if (waitingApprovalCount > 1) {
+    throw storedRunCorruption();
+  }
+  return (
+    run.status === "running" &&
+    run.cancelRequestedAt === undefined &&
+    undecidedWaitingApprovalCount === 1
+  );
+};
+
 const runAwaitingApprovalDecision = (
   run: WorkflowRunRecord,
   nodes: readonly NodeRunRecord[],
 ): boolean => {
-  const waitingApprovals = nodes.filter(
-    (node): node is ApprovalNodeRunRecord =>
-      node.kind === "approval" && node.status === "waiting_for_approval",
-  );
-  if (waitingApprovals.length > 1) {
-    throw storedRunCorruption();
-  }
-  const waiting = waitingApprovals[0];
-  return (
-    run.status === "running" &&
-    run.cancelRequestedAt === undefined &&
-    waiting !== undefined &&
-    isApprovalAwaitingDecision(waiting)
+  const waitingApprovals = waitingApprovalNodes(nodes);
+  return awaitingApprovalDecision(
+    run,
+    waitingApprovals.length,
+    waitingApprovals.filter(isApprovalAwaitingDecision).length,
   );
 };
 
@@ -629,19 +640,17 @@ export class ViewerApplication {
           ) && record.canonicalCwd === this.#scope.canonicalCwd,
       )
       .slice(0, 50)
-      .map((record) => {
-        if (record.waitingApprovalCount > 1) {
-          throw storedRunCorruption();
-        }
-        return runSummary(
+      .map((record) =>
+        runSummary(
           record,
           { scope: record.scope, workflowId: record.workflowId },
-          record.status === "running" &&
-            record.cancelRequestedAt === undefined &&
-            record.waitingApprovalCount === 1 &&
-            record.undecidedWaitingApprovalCount === 1,
-        );
-      });
+          awaitingApprovalDecision(
+            record,
+            record.waitingApprovalCount,
+            record.undecidedWaitingApprovalCount,
+          ),
+        ),
+      );
     return {
       outputVersion,
       workflowId: this.#scope.identity.workflowId,

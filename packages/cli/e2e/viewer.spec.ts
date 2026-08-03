@@ -20,12 +20,14 @@ import {
   loopRunDetail,
   loopRunListResponse,
   ordinaryRunningSummary,
+  readApprovalAnnouncements,
   readApprovalEventLog,
   runListResponse,
   runningNodes,
   succeededNodes,
   succeededSummary,
   syntheticApprovalDecision,
+  syntheticOutputResponse,
   waitingGateNodes,
   waitingGateSummary,
 } from "./approval-world.js";
@@ -1094,18 +1096,16 @@ test("the approval live region announces the waiting gate once and stays silent 
   await expect(page.locator("#selection-announcement")).toHaveText(
     "Opened run run-wait, waiting for approval. Selected node gate.",
   );
-  const announcements = async (): Promise<readonly (string | undefined)[]> =>
-    (await readApprovalEventLog(page))
-      .filter((entry) => entry.type === "announcement")
-      .map((entry) => entry.text);
-  await expect.poll(announcements).toHaveLength(1);
-  expect((await announcements())[0]).toMatch(/^Decision needed for gate gate, deadline /u);
+  await expect.poll(() => readApprovalAnnouncements(page)).toHaveLength(1);
+  expect((await readApprovalAnnouncements(page))[0]).toMatch(
+    /^Decision needed for gate gate, deadline /u,
+  );
 
   const observedRequests = detailRequests;
   await expect
     .poll(() => detailRequests, { timeout: 10_000 })
     .toBeGreaterThanOrEqual(observedRequests + 2);
-  expect(await announcements()).toHaveLength(1);
+  expect(await readApprovalAnnouncements(page)).toHaveLength(1);
   await expect(page.locator("#selection-announcement")).toHaveText(
     "Opened run run-wait, waiting for approval. Selected node gate.",
   );
@@ -1137,17 +1137,13 @@ test("a replacement waiting gate announces once more", async ({ page, viewer }) 
   await openViewer(page, viewer.launchUrl);
 
   await expect(page.locator("#decision-needed-banner")).toBeVisible();
-  const announcements = async (): Promise<readonly (string | undefined)[]> =>
-    (await readApprovalEventLog(page))
-      .filter((entry) => entry.type === "announcement")
-      .map((entry) => entry.text);
-  await expect.poll(announcements).toHaveLength(1);
+  await expect.poll(() => readApprovalAnnouncements(page)).toHaveLength(1);
 
   const observedRequests = detailRequests;
   replacement = true;
   await expect.poll(() => detailRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests);
-  await expect.poll(announcements).toHaveLength(2);
-  const texts = await announcements();
+  await expect.poll(() => readApprovalAnnouncements(page)).toHaveLength(2);
+  const texts = await readApprovalAnnouncements(page);
   expect(texts[0]).toMatch(/^Decision needed for gate gate, deadline /u);
   expect(texts[1]).toMatch(/^Decision needed for gate gate, deadline /u);
   expect(texts[1]).not.toBe(texts[0]);
@@ -1195,12 +1191,8 @@ test("the live region announces the cleared gate after the recorded decision", a
   await page.locator("#decision-approve").click();
   await expect(banner).toBeHidden();
 
-  const announcements = async (): Promise<readonly (string | undefined)[]> =>
-    (await readApprovalEventLog(page))
-      .filter((entry) => entry.type === "announcement")
-      .map((entry) => entry.text);
-  await expect.poll(announcements).toHaveLength(2);
-  const texts = await announcements();
+  await expect.poll(() => readApprovalAnnouncements(page)).toHaveLength(2);
+  const texts = await readApprovalAnnouncements(page);
   expect(texts[0]).toMatch(/^Decision needed for gate gate, deadline /u);
   expect(texts[1]).toBe("Approval gate gate is no longer waiting for a decision.");
   await expect(page.locator("#selection-announcement")).toHaveText(
@@ -1347,16 +1339,7 @@ test("a decision recorded during a run switch clears the row and ignores the abo
     await fulfillJson(route, gateRunDetail(ordinaryRunningSummary("run-b"), runningNodes()));
   });
   await page.route(`${viewer.origin}/api/runs/run-a/nodes/0/output/result`, async (route) => {
-    await fulfillJson(route, {
-      outputVersion: 1,
-      runId: "run-a",
-      ordinal: 0,
-      stream: "result",
-      text: "seeded synthetic evidence",
-      totalBytes: 25,
-      returnedBytes: 25,
-      truncated: false,
-    });
+    await fulfillJson(route, syntheticOutputResponse("run-a", 0, "result"));
   });
   await page.route(`${viewer.origin}/api/runs/run-a/nodes/gate-execution-1/decision`, (route) => {
     heldDecisionRoute.resolve(route);

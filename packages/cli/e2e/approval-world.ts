@@ -2,19 +2,21 @@ import type { Page, Route } from "@playwright/test";
 
 import type {
   ApprovalDecisionResponse,
+  BoundedOutputResponse,
   CurrentWorkflowResponse,
   LoopIterationDto,
   NodeRunDto,
+  OutputStream,
   RunSummaryDto,
   ScopedRunDetailResponse,
   ScopedRunListResponse,
   WorkflowGraphDto,
 } from "../src/ui/contracts.js";
 
-export const gateWorkflowId = "gate-viewer";
-export const gateQuestion = "Ship these verified changes?";
+const gateWorkflowId = "gate-viewer";
+const gateQuestion = "Ship these verified changes?";
 
-export const gateWorkflowGraph = (): WorkflowGraphDto => ({
+const gateWorkflowGraph = (): WorkflowGraphDto => ({
   workflowId: gateWorkflowId,
   name: "Gated release",
   nodes: [
@@ -222,8 +224,11 @@ export const gateRunDetail = (
   lineage: { runs: [summary], selectedRunIndex: 0 },
 });
 
-export const loopWorkflowGraph = (): WorkflowGraphDto => ({
-  workflowId: "loop-viewer",
+const loopWorkflowId = "loop-viewer";
+const loopGateQuestion = "Approve the revised result?";
+
+const loopWorkflowGraph = (): WorkflowGraphDto => ({
+  workflowId: loopWorkflowId,
   name: "Bounded review",
   nodes: [
     {
@@ -247,7 +252,7 @@ export const loopWorkflowGraph = (): WorkflowGraphDto => ({
             id: "gate",
             ordinal: 1,
             kind: "approval",
-            question: "Approve the revised result?",
+            question: loopGateQuestion,
             dependencies: ["draft"],
           },
           {
@@ -282,9 +287,9 @@ export const loopCurrentWorkflow = (): CurrentWorkflowResponse => ({
   diagnostics: [],
 });
 
-export const loopRunSummary = (waiting: boolean): RunSummaryDto => ({
+const loopRunSummary = (waiting: boolean): RunSummaryDto => ({
   runId: "loop-run",
-  workflowId: "loop-viewer",
+  workflowId: loopWorkflowId,
   workflowScope: "project",
   revisionId: "loop-revision",
   cwd: "workspace",
@@ -317,7 +322,7 @@ const loopFirstIterationExecutions = (): LoopIterationDto["executions"] => [
     loopNodeId: "refine",
     iteration: 0,
     ordinal: 2,
-    question: "Approve the revised result?",
+    question: loopGateQuestion,
     status: "succeeded",
     requestedAt: "2026-07-26T01:00:01.000Z",
     finishedAt: "2026-07-26T01:00:02.000Z",
@@ -371,7 +376,7 @@ const loopSecondIterationExecutions = (
         loopNodeId: "refine",
         iteration: 1,
         ordinal: 5,
-        question: "Approve the revised result?",
+        question: loopGateQuestion,
         status: "waiting_for_approval",
         requestedAt: "2026-07-26T01:00:04.000Z",
         deadlineAt,
@@ -384,7 +389,7 @@ const loopSecondIterationExecutions = (
         loopNodeId: "refine",
         iteration: 1,
         ordinal: 5,
-        question: "Approve the revised result?",
+        question: loopGateQuestion,
         status: "succeeded",
         requestedAt: "2026-07-26T01:00:04.000Z",
         finishedAt: "2026-07-26T01:00:05.000Z",
@@ -412,7 +417,7 @@ export const loopRunDetail = (waiting: boolean, deadlineAt: string): ScopedRunDe
   const secondIteration = loopSecondIterationExecutions(waiting, deadlineAt);
   return {
     outputVersion: 1,
-    workflowId: "loop-viewer",
+    workflowId: loopWorkflowId,
     workflowScope: "project",
     run: summary,
     revision: {
@@ -459,7 +464,7 @@ export const runListResponse = (runs: readonly RunSummaryDto[]): ScopedRunListRe
 
 export const loopRunListResponse = (waiting: boolean): ScopedRunListResponse => ({
   outputVersion: 1,
-  workflowId: "loop-viewer",
+  workflowId: loopWorkflowId,
   workflowScope: "project",
   runs: [loopRunSummary(waiting)],
 });
@@ -472,6 +477,21 @@ export const syntheticApprovalDecision = (
   runId,
   nodeId: executionId,
   decision: { decision: "approve", actor: "human", decidedAt: "2026-07-26T01:00:05.000Z" },
+});
+
+export const syntheticOutputResponse = (
+  runId: string,
+  ordinal: number,
+  stream: OutputStream,
+): BoundedOutputResponse => ({
+  outputVersion: 1,
+  runId,
+  ordinal,
+  stream,
+  text: "seeded synthetic evidence",
+  totalBytes: 25,
+  returnedBytes: 25,
+  truncated: false,
 });
 
 export const fulfillJson = async (route: Route, body: unknown): Promise<void> => {
@@ -520,21 +540,16 @@ export const installWorldRoutes = async (
       await fulfillJson(route, detail);
       return;
     }
+    const stream = outputMatch?.[3];
     if (
       outputMatch?.[1] !== undefined &&
       outputMatch[2] !== undefined &&
-      outputMatch[3] !== undefined
+      (stream === "stdout" || stream === "stderr" || stream === "result")
     ) {
-      await fulfillJson(route, {
-        outputVersion: 1,
-        runId: decodeURIComponent(outputMatch[1]),
-        ordinal: Number(outputMatch[2]),
-        stream: outputMatch[3],
-        text: "seeded synthetic evidence",
-        totalBytes: 25,
-        returnedBytes: 25,
-        truncated: false,
-      });
+      await fulfillJson(
+        route,
+        syntheticOutputResponse(decodeURIComponent(outputMatch[1]), Number(outputMatch[2]), stream),
+      );
       return;
     }
     await route.continue();
@@ -587,3 +602,10 @@ export const readApprovalEventLog = async (page: Page): Promise<readonly Approva
     const holder = window as unknown as { __approvalEventLog?: ApprovalEventLogEntry[] };
     return holder.__approvalEventLog ?? [];
   });
+
+export const readApprovalAnnouncements = async (
+  page: Page,
+): Promise<readonly (string | undefined)[]> =>
+  (await readApprovalEventLog(page))
+    .filter((entry) => entry.type === "announcement")
+    .map((entry) => entry.text);

@@ -1,6 +1,10 @@
 import { KilinError } from "../domain/errors.js";
 import type { ApprovalNodeRunRecord, RunDetail, WorkflowRunRecord } from "../domain/run-state.js";
-import { elapsedMs, isApprovalAwaitingDecision } from "../domain/run-state.js";
+import {
+  elapsedMs,
+  isApprovalAwaitingDecision,
+  waitingApprovalNodes,
+} from "../domain/run-state.js";
 import { compileStoredWorkflowRevision } from "./workflows.js";
 import type { ApprovalRequestedEvent, RunAttentionEvent, RunFinishedEvent } from "./run-events.js";
 
@@ -83,10 +87,7 @@ export const projectRunAttention = (detail: RunDetail): RunAttentionEvent | unde
     return projectTerminalAttention(detail.run);
   }
 
-  const waitingApprovals = detail.nodes.filter(
-    (node): node is ApprovalNodeRunRecord =>
-      node.kind === "approval" && node.status === "waiting_for_approval",
-  );
+  const waitingApprovals = waitingApprovalNodes(detail.nodes);
   if (waitingApprovals.length > 1) {
     return invalidStoredState(`Run "${detail.run.id}"`);
   }

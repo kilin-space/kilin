@@ -392,12 +392,18 @@ export const isNodeRunStatus = (value: unknown): value is NodeRunStatus =>
   typeof value === "string" && nodeRunStatuses.some((status) => status === value);
 
 /**
- * Lifecycle predicate: the approval node holds its stored waiting status and has no recorded
- * decision. It never authorizes a decision; decision eligibility stays with the guarded store
- * transition.
+ * Never authorizes a decision; decision eligibility stays with the guarded store transition.
  */
 export const isApprovalAwaitingDecision = (node: ApprovalNodeRunRecord): boolean =>
   node.status === "waiting_for_approval" && node.decision === undefined;
+
+export const waitingApprovalNodes = (
+  nodes: readonly NodeRunRecord[],
+): readonly ApprovalNodeRunRecord[] =>
+  nodes.filter(
+    (node): node is ApprovalNodeRunRecord =>
+      node.kind === "approval" && node.status === "waiting_for_approval",
+  );
 
 export const canTransitionRun = (from: RunStatus, to: RunStatus): boolean =>
   legalRunTransitions[from].includes(to);

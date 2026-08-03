@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 
-import type { ScopedRunListResponse } from "../src/ui/contracts.js";
+import type { ScopedRunDetailResponse, ScopedRunListResponse } from "../src/ui/contracts.js";
+import type { SyntheticWorld } from "./approval-world.js";
 import {
   gateCurrentWorkflow,
   gateRunDetail,
@@ -177,38 +178,40 @@ test("with no stored runs the viewer keeps the definition view", async ({ page, 
   expect(new URL(page.url()).hash).toBe("");
 });
 
+const gatedSelectionWorld = (deadlineAt: string): SyntheticWorld => ({
+  currentWorkflow: gateCurrentWorkflow,
+  runList: () =>
+    runListResponse([
+      ordinaryRunningSummary("run-new"),
+      waitingGateSummary("run-wait-a"),
+      waitingGateSummary("run-wait-b"),
+    ]),
+  runDetail: (runId): ScopedRunDetailResponse | undefined => {
+    if (runId === "run-new") {
+      return gateRunDetail(ordinaryRunningSummary("run-new"), runningNodes());
+    }
+    if (runId === "run-wait-a") {
+      return gateRunDetail(
+        waitingGateSummary("run-wait-a"),
+        waitingGateNodes("gate-execution-a", deadlineAt),
+      );
+    }
+    if (runId === "run-wait-b") {
+      return gateRunDetail(
+        waitingGateSummary("run-wait-b"),
+        waitingGateNodes("gate-execution-b", deadlineAt),
+      );
+    }
+    return undefined;
+  },
+});
+
 test("initial selection prefers the first waiting run over a newer ordinary running run", async ({
   page,
   viewer,
 }) => {
   const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
-  await installWorldRoutes(page, viewer.origin, {
-    currentWorkflow: gateCurrentWorkflow,
-    runList: () =>
-      runListResponse([
-        ordinaryRunningSummary("run-new"),
-        waitingGateSummary("run-wait-a"),
-        waitingGateSummary("run-wait-b"),
-      ]),
-    runDetail: (runId) => {
-      if (runId === "run-new") {
-        return gateRunDetail(ordinaryRunningSummary("run-new"), runningNodes());
-      }
-      if (runId === "run-wait-a") {
-        return gateRunDetail(
-          waitingGateSummary("run-wait-a"),
-          waitingGateNodes("gate-execution-a", deadlineAt),
-        );
-      }
-      if (runId === "run-wait-b") {
-        return gateRunDetail(
-          waitingGateSummary("run-wait-b"),
-          waitingGateNodes("gate-execution-b", deadlineAt),
-        );
-      }
-      return undefined;
-    },
-  });
+  await installWorldRoutes(page, viewer.origin, gatedSelectionWorld(deadlineAt));
   await openViewer(page, viewer.launchUrl);
 
   await expect(
@@ -225,33 +228,7 @@ test("an explicit valid hash wins over waiting-first initial selection", async (
   viewer,
 }) => {
   const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
-  await installWorldRoutes(page, viewer.origin, {
-    currentWorkflow: gateCurrentWorkflow,
-    runList: () =>
-      runListResponse([
-        ordinaryRunningSummary("run-new"),
-        waitingGateSummary("run-wait-a"),
-        waitingGateSummary("run-wait-b"),
-      ]),
-    runDetail: (runId) => {
-      if (runId === "run-new") {
-        return gateRunDetail(ordinaryRunningSummary("run-new"), runningNodes());
-      }
-      if (runId === "run-wait-a") {
-        return gateRunDetail(
-          waitingGateSummary("run-wait-a"),
-          waitingGateNodes("gate-execution-a", deadlineAt),
-        );
-      }
-      if (runId === "run-wait-b") {
-        return gateRunDetail(
-          waitingGateSummary("run-wait-b"),
-          waitingGateNodes("gate-execution-b", deadlineAt),
-        );
-      }
-      return undefined;
-    },
-  });
+  await installWorldRoutes(page, viewer.origin, gatedSelectionWorld(deadlineAt));
   await openViewer(page, viewer.launchUrl);
 
   await reloadViewerWithHash(page, viewer.origin, "run=run-new");

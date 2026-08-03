@@ -276,7 +276,8 @@ h3 {
 }
 
 .decision-needed-banner:hover {
-  background: var(--gate-soft);
+  color: #7c1f56;
+  background: #f9e3f1;
 }
 
 .decision-needed-countdown {

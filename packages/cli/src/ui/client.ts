@@ -182,12 +182,7 @@ type ViewerFocusTarget =
   | { readonly type: "decision-note" }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
   | { readonly type: "decision-copy"; readonly command: string }
-  | {
-      readonly type: "decision-needed";
-      readonly runId: string;
-      readonly executionId: string;
-      readonly graphNodeId: string;
-    };
+  | { readonly type: "decision-needed"; readonly runId: string; readonly graphNodeId: string };
 
 class ViewerRequestError extends Error {
   public constructor(
@@ -221,10 +216,9 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   }
   if (activeElement === elements.decisionNeededBanner) {
     const runId = elements.decisionNeededBanner.getAttribute("data-run-id");
-    const executionId = elements.decisionNeededBanner.getAttribute("data-execution-id");
     const graphNodeId = elements.decisionNeededBanner.getAttribute("data-graph-node-id");
-    if (runId !== null && executionId !== null && graphNodeId !== null) {
-      return { type: "decision-needed", runId, executionId, graphNodeId };
+    if (runId !== null && graphNodeId !== null) {
+      return { type: "decision-needed", runId, graphNodeId };
     }
     return undefined;
   }
@@ -2745,7 +2739,6 @@ const renderDecisionNeededBanner = (): void => {
   }
   banner.hidden = false;
   banner.setAttribute("data-run-id", detail.run.runId);
-  banner.setAttribute("data-execution-id", waitingNode.executionId);
   banner.setAttribute("data-graph-node-id", waitingNode.loopNodeId ?? waitingNode.nodeId);
   const absoluteDeadline =
     waitingNode.deadlineAt === undefined ? undefined : formatTimestamp(waitingNode.deadlineAt);
