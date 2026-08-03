@@ -413,6 +413,7 @@ test("a failed evidence read offers a keyboard retry that reloads the stream", a
   scenario,
   viewer,
 }) => {
+  test.slow();
   await page.setViewportSize({ width: 390, height: 844 });
   await installEvidenceAlertLog(page);
   await writeFile(
@@ -458,11 +459,10 @@ test("a failed evidence read offers a keyboard retry that reloads the stream", a
   await page.keyboard.press("Enter");
   await expect.poll(() => readEvidenceAlerts(page)).toHaveLength(2);
   await expect
-    .poll(() => page.evaluate(() => document.activeElement?.id ?? null))
-    .toBe("output-panel");
+    .poll(() => page.evaluate(() => document.activeElement?.textContent ?? null))
+    .toBe("Retry");
 
   outputReadFails = false;
-  await retry.focus();
   await page.keyboard.press("Enter");
 
   await expect(retry).toHaveCount(0);

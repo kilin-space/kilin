@@ -1473,6 +1473,7 @@ test("refresh polls at once and restarts the poll backoff after failures", async
 
   const afterManualCycle = pollRequests;
   await expect.poll(() => pollRequests, { timeout: 6_000 }).toBeGreaterThan(afterManualCycle);
+  await expect(status).toContainText("Synthetic refresh failure 4.");
 
   pollFails = false;
   const beforeRecovery = pollRequests;

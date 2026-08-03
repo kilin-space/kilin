@@ -2830,9 +2830,9 @@ const resetEvidencePanel = (content: Node | string): void => {
   elements.evidenceBanner.hidden = true;
 };
 
-const showEvidenceError = (message: string): void => {
-  const rendered = elements.outputPanel.querySelector(".evidence-error-message");
-  if (rendered?.textContent === message) {
+const showEvidenceError = (key: string, message: string): void => {
+  const rendered = elements.outputPanel.querySelector<HTMLElement>(".evidence-error-message");
+  if (rendered?.textContent === message && rendered.dataset.outputKey === key) {
     return;
   }
   const failure = document.createElement("div");
@@ -2840,6 +2840,7 @@ const showEvidenceError = (message: string): void => {
   failure.setAttribute("role", "alert");
   const description = document.createElement("p");
   description.className = "failure-copy evidence-error-message";
+  description.dataset.outputKey = key;
   setText(description, message);
   const retry = document.createElement("button");
   retry.type = "button";
@@ -2850,6 +2851,9 @@ const showEvidenceError = (message: string): void => {
   });
   failure.append(description, retry);
   resetEvidencePanel(failure);
+  if (document.activeElement === elements.outputPanel) {
+    retry.focus();
+  }
 };
 
 const renderEvidenceSelection = (selection: OutputSelection, liveNode: boolean): void => {
@@ -2966,7 +2970,7 @@ const renderOutput = (): void => {
   if (state.output?.key === key) {
     renderEvidenceSelection(state.output, nodeRun.kind === "agent" && nodeRun.status === "running");
   } else if (state.outputError !== undefined) {
-    showEvidenceError(state.outputError);
+    showEvidenceError(key, state.outputError);
     setText(
       elements.outputMeta,
       "If Retry fails again, examine the terminal output, then run kilin ui again.",
