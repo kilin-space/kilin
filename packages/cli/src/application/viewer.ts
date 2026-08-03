@@ -18,7 +18,7 @@ import type {
   WorkflowRevisionRecord,
   WorkflowRunRecord,
 } from "../domain/run-state.js";
-import { elapsedMsOrUndefined } from "../domain/run-state.js";
+import { elapsedMsOrUndefined, isApprovalAwaitingDecision } from "../domain/run-state.js";
 import type {
   AgentNode,
   ApprovalNode,
@@ -59,6 +59,11 @@ const outputVersion = 1 as const;
 export interface ViewerScope {
   readonly identity: WorkflowIdentity;
   readonly canonicalCwd: string;
+}
+
+export interface ViewerRunListRecord extends RunListRecord {
+  readonly waitingApprovalCount: number;
+  readonly undecidedWaitingApprovalCount: number;
 }
 
 export interface ViewerApplicationOptions {
@@ -181,7 +186,11 @@ const workflowGraph = (plan: ExecutionPlan): WorkflowGraphDto => {
   };
 };
 
-const runSummary = (run: WorkflowRunRecord, identity: WorkflowIdentity): RunSummaryDto => {
+const runSummary = (
+  run: WorkflowRunRecord,
+  identity: WorkflowIdentity,
+  waitingForApproval: boolean,
+): RunSummaryDto => {
   if (
     (run.recoveryOfRunId === undefined) !== (run.recoveryMode === undefined) ||
     (run.rerunOfRunId !== undefined && run.recoveryOfRunId !== undefined)
@@ -207,6 +216,7 @@ const runSummary = (run: WorkflowRunRecord, identity: WorkflowIdentity): RunSumm
     status: run.status,
     startedAt: run.startedAt,
     ...(run.cancelRequestedAt === undefined ? {} : { cancelRequestedAt: run.cancelRequestedAt }),
+    ...(waitingForApproval ? { waitingForApproval: true } : {}),
     ...(finishedAt === undefined ? {} : { finishedAt }),
     ...(durationMs === undefined ? {} : { durationMs }),
     ...(failure === undefined ? {} : { failure }),
@@ -367,6 +377,26 @@ const storedRunCorruption = (): KilinError =>
     "INTERNAL_ERROR",
     "The stored run nodes do not match their immutable workflow revision. This indicates damaged local state rather than a problem with your workflow. Report it at https://github.com/kilin-space/kilin/issues.",
   );
+
+const runAwaitingApprovalDecision = (
+  run: WorkflowRunRecord,
+  nodes: readonly NodeRunRecord[],
+): boolean => {
+  const waitingApprovals = nodes.filter(
+    (node): node is ApprovalNodeRunRecord =>
+      node.kind === "approval" && node.status === "waiting_for_approval",
+  );
+  if (waitingApprovals.length > 1) {
+    throw storedRunCorruption();
+  }
+  const waiting = waitingApprovals[0];
+  return (
+    run.status === "running" &&
+    run.cancelRequestedAt === undefined &&
+    waiting !== undefined &&
+    isApprovalAwaitingDecision(waiting)
+  );
+};
 
 const assertStoredNodesMatchPlan = (detail: RunDetail, plan: ExecutionPlan): void => {
   if (detail.nodes.length !== plan.nodes.length) {
@@ -589,7 +619,7 @@ export class ViewerApplication {
     }
   }
 
-  public runList(records: readonly RunListRecord[]): ScopedRunListResponse {
+  public runList(records: readonly ViewerRunListRecord[]): ScopedRunListResponse {
     const runs = records
       .filter(
         (record) =>
@@ -599,7 +629,19 @@ export class ViewerApplication {
           ) && record.canonicalCwd === this.#scope.canonicalCwd,
       )
       .slice(0, 50)
-      .map((record) => runSummary(record, { scope: record.scope, workflowId: record.workflowId }));
+      .map((record) => {
+        if (record.waitingApprovalCount > 1) {
+          throw storedRunCorruption();
+        }
+        return runSummary(
+          record,
+          { scope: record.scope, workflowId: record.workflowId },
+          record.status === "running" &&
+            record.cancelRequestedAt === undefined &&
+            record.waitingApprovalCount === 1 &&
+            record.undecidedWaitingApprovalCount === 1,
+        );
+      });
     return {
       outputVersion,
       workflowId: this.#scope.identity.workflowId,
@@ -615,10 +657,14 @@ export class ViewerApplication {
     const plan = this.#assertRunScope(detail);
     const lineageRuns = lineageDetails.map((lineageDetail) => {
       this.#assertRunScope(lineageDetail);
-      return runSummary(lineageDetail.run, {
-        scope: lineageDetail.revision.scope,
-        workflowId: lineageDetail.revision.workflowId,
-      });
+      return runSummary(
+        lineageDetail.run,
+        {
+          scope: lineageDetail.revision.scope,
+          workflowId: lineageDetail.revision.workflowId,
+        },
+        runAwaitingApprovalDecision(lineageDetail.run, lineageDetail.nodes),
+      );
     });
     const selectedRunIndex = lineageRuns.findIndex(({ runId }) => runId === detail.run.id);
     if (selectedRunIndex === -1) {
@@ -641,10 +687,14 @@ export class ViewerApplication {
       outputVersion,
       workflowId: this.#scope.identity.workflowId,
       workflowScope: this.#scope.identity.scope.kind,
-      run: runSummary(detail.run, {
-        scope: detail.revision.scope,
-        workflowId: detail.revision.workflowId,
-      }),
+      run: runSummary(
+        detail.run,
+        {
+          scope: detail.revision.scope,
+          workflowId: detail.revision.workflowId,
+        },
+        runAwaitingApprovalDecision(detail.run, detail.nodes),
+      ),
       revision: storedRevision(detail.revision, plan),
       nodes,
       loopIterations: loopIterations(nodes),

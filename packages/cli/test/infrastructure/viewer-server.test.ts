@@ -22,7 +22,11 @@ import {
   startViewerServer,
 } from "../../src/infrastructure/viewer-server.js";
 import type { ViewerServerHandle } from "../../src/infrastructure/viewer-server.js";
-import type { SessionBootstrapResponse, ViewerApiErrorResponse } from "../../src/ui/contracts.js";
+import type {
+  ScopedRunListResponse,
+  SessionBootstrapResponse,
+  ViewerApiErrorResponse,
+} from "../../src/ui/contracts.js";
 
 interface HttpResponse {
   readonly status: number;
@@ -780,6 +784,74 @@ describe("viewer server read-only records and output", () => {
 
     expect(storedLifecycle(fixture.dataDirectory)).toEqual(before);
     expect((await stat(join(fixture.dataDirectory, "kilin.db"))).mtimeMs).toBe(databaseMtime);
+  });
+
+  it("derives the waiting-for-approval flag from stored approval state without scope leakage", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kilin-viewer-waiting-"));
+    temporaryDirectories.push(root);
+    const dataDirectory = join(root, "state");
+    const cwd = join(root, "workspace");
+    const otherCwd = join(root, "other-workspace");
+    const workflowFile = join(root, "workflow.yaml");
+    await Promise.all([mkdir(cwd), mkdir(otherCwd)]);
+    const plan = compileWorkflow(approvalDefinition());
+    const otherApprovalPlan = compileWorkflow({
+      ...approvalDefinition(),
+      workflow: { id: "other-approval-viewer", name: "Other approval workflow" },
+    });
+    const identity = projectIdentity(plan, root);
+    await writeFile(workflowFile, JSON.stringify(plan.definition), "utf8");
+    const options = {
+      nodeTimeoutMs: 60_000,
+      approvalTimeoutMs: 60_000,
+      maxOutputBytes: 1_048_576,
+      maxParallel: 1,
+    };
+    const store = new StateStore(dataDirectory);
+    const waitingUndecided = store.createRun({ plan, identity, canonicalCwd: cwd, options });
+    store.requestApproval(waitingUndecided.run.id, "release-approval");
+    const decidedWaiting = store.createRun({ plan, identity, canonicalCwd: cwd, options });
+    store.requestApproval(decidedWaiting.run.id, "release-approval");
+    store.recordApprovalDecision(decidedWaiting.run.id, "release-approval", "approve", "human");
+    const plainRunning = store.createRun({ plan, identity, canonicalCwd: cwd, options });
+    const terminal = store.createRun({ plan, identity, canonicalCwd: cwd, options });
+    store.skipPendingNodes(terminal.run.id);
+    store.transitionRun(terminal.run.id, { status: "succeeded" });
+    const otherCwdWaiting = store.createRun({ plan, identity, canonicalCwd: otherCwd, options });
+    store.requestApproval(otherCwdWaiting.run.id, "release-approval");
+    const otherWorkflowWaiting = store.createRun({
+      plan: otherApprovalPlan,
+      identity: projectIdentity(otherApprovalPlan, root),
+      canonicalCwd: otherCwd,
+      options,
+    });
+    store.requestApproval(otherWorkflowWaiting.run.id, "release-approval");
+    store.close();
+
+    const handle = await startViewerServer({
+      definitionFile: workflowFile,
+      identity,
+      canonicalCwd: cwd,
+      dataDirectory,
+      clientJavaScript: "",
+    });
+    serverHandles.push(handle);
+    const session = await exchangeSession(handle);
+    const response = await requestViewer(handle, {
+      path: "/api/runs",
+      headers: authenticatedHeaders(session),
+    });
+
+    expect(response.status).toBe(200);
+    const list = JSON.parse(response.body) as ScopedRunListResponse;
+    const runsById = new Map(list.runs.map((run) => [run.runId, run]));
+    expect(runsById.get(waitingUndecided.run.id)).toMatchObject({ waitingForApproval: true });
+    for (const runId of [decidedWaiting.run.id, plainRunning.run.id, terminal.run.id]) {
+      expect(runsById.get(runId)).toBeDefined();
+      expect(runsById.get(runId)).not.toHaveProperty("waitingForApproval");
+    }
+    expect(runsById.has(otherCwdWaiting.run.id)).toBe(false);
+    expect(runsById.has(otherWorkflowWaiting.run.id)).toBe(false);
   });
 
   it("records a scoped human decision through the guarded route while the attached run holds its workspace", async () => {

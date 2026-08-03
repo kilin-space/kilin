@@ -12,8 +12,9 @@ import type { Database as SqliteDatabase } from "better-sqlite3";
 
 import { recordApprovalDecision } from "../application/runs.js";
 import { ViewerApplication } from "../application/viewer.js";
+import type { ViewerRunListRecord } from "../application/viewer.js";
 import { KilinError } from "../domain/errors.js";
-import type { RunDetail, RunListRecord } from "../domain/run-state.js";
+import type { RunDetail } from "../domain/run-state.js";
 import { maximumApprovalNoteCharacters } from "../domain/run-state.js";
 import type { WorkflowIdentity } from "../domain/workflow-package.js";
 import { sameWorkflowIdentity, workflowScopeRoot } from "../domain/workflow-package.js";
@@ -65,6 +66,8 @@ interface ScopedRunRow extends RunRow {
   readonly scope_kind: string;
   readonly scope_root: string;
   readonly workflow_id: string;
+  readonly waiting_approval_count: number;
+  readonly undecided_waiting_approval_count: number;
 }
 
 export interface StartViewerServerOptions {
@@ -115,7 +118,7 @@ class ReadonlyViewerStore {
     this.#databasePath = join(dataDirectory, databaseFileName);
   }
 
-  public listScopedRuns(identity: WorkflowIdentity, canonicalCwd: string): RunListRecord[] {
+  public listScopedRuns(identity: WorkflowIdentity, canonicalCwd: string): ViewerRunListRecord[] {
     const database = this.#openIfAvailable();
     if (database === undefined) {
       return [];
@@ -125,7 +128,20 @@ class ReadonlyViewerStore {
         .prepare(
           `
         SELECT workflow_runs.*, workflow_revisions.scope_kind,
-               workflow_revisions.scope_root, workflow_revisions.workflow_id
+               workflow_revisions.scope_root, workflow_revisions.workflow_id,
+               (
+                 SELECT COUNT(*) FROM node_runs
+                 WHERE node_runs.run_id = workflow_runs.id
+                   AND node_runs.kind = 'approval'
+                   AND node_runs.status = 'waiting_for_approval'
+               ) AS waiting_approval_count,
+               (
+                 SELECT COUNT(*) FROM node_runs
+                 WHERE node_runs.run_id = workflow_runs.id
+                   AND node_runs.kind = 'approval'
+                   AND node_runs.status = 'waiting_for_approval'
+                   AND node_runs.approval_decision IS NULL
+               ) AS undecided_waiting_approval_count
         FROM workflow_runs
         JOIN workflow_revisions ON workflow_revisions.id = workflow_runs.revision_id
         WHERE workflow_revisions.scope_kind = ?
@@ -146,6 +162,8 @@ class ReadonlyViewerStore {
         ...runFromRow(row),
         scope: identity.scope,
         workflowId: identity.workflowId,
+        waitingApprovalCount: row.waiting_approval_count,
+        undecidedWaitingApprovalCount: row.undecided_waiting_approval_count,
       }));
     } catch (error: unknown) {
       if (error instanceof KilinError) {

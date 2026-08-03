@@ -3,10 +3,32 @@ import type { Page, Response, Route, TestInfo } from "@playwright/test";
 import type {
   CurrentWorkflowResponse,
   LoopIterationDto,
+  NodeRunDto,
   ScopedRunDetailResponse,
   ScopedRunListResponse,
   WorkflowGraphDto,
 } from "../src/ui/contracts.js";
+import {
+  cancelRequestedSummary,
+  decidedGateNodes,
+  fulfillJson,
+  gateCurrentWorkflow,
+  gateRunDetail,
+  installApprovalEventLog,
+  installWorldRoutes,
+  loopCurrentWorkflow,
+  loopRunDetail,
+  loopRunListResponse,
+  ordinaryRunningSummary,
+  readApprovalEventLog,
+  runListResponse,
+  runningNodes,
+  succeededNodes,
+  succeededSummary,
+  syntheticApprovalDecision,
+  waitingGateNodes,
+  waitingGateSummary,
+} from "./approval-world.js";
 import { expect, test } from "./fixtures.js";
 
 const openViewer = async (page: Page, launchUrl: string): Promise<Response> => {
@@ -519,7 +541,7 @@ test("selecting a node reveals the evidence stage and a waiting gate exposes its
   );
   try {
     await page
-      .getByRole("button", { name: new RegExp(`Run ${approvalRun.runId}, running`) })
+      .getByRole("button", { name: new RegExp(`Run ${approvalRun.runId}, waiting for approval`) })
       .click();
 
     const gateNode = page.locator(".dag-node.waiting_for_approval");
@@ -564,7 +586,7 @@ test("permanent approval evidence failures stop after bounded retries", async ({
   );
   try {
     await page
-      .getByRole("button", { name: new RegExp(`Run ${approvalRun.runId}, running`) })
+      .getByRole("button", { name: new RegExp(`Run ${approvalRun.runId}, waiting for approval`) })
       .click();
     await page.locator(".dag-node.waiting_for_approval").click();
 
@@ -587,7 +609,7 @@ test("an approval decided in the viewer resumes the attached run", async ({
   const approvalRun = await scenario.startApprovalRun();
   try {
     await page
-      .getByRole("button", { name: new RegExp(`Run ${approvalRun.runId}, running`) })
+      .getByRole("button", { name: new RegExp(`Run ${approvalRun.runId}, waiting for approval`) })
       .click();
     await page.locator(".dag-node.waiting_for_approval").click();
 
@@ -672,7 +694,7 @@ test("a rejection decided in the viewer fails the gate and stops the attached ru
   const approvalRun = await scenario.startApprovalRun();
   try {
     await page
-      .getByRole("button", { name: new RegExp(`Run ${approvalRun.runId}, running`) })
+      .getByRole("button", { name: new RegExp(`Run ${approvalRun.runId}, waiting for approval`) })
       .click();
     await page.locator(".dag-node.waiting_for_approval").click();
 
@@ -832,4 +854,600 @@ test("polling reports lifecycle changes, retries after a transient error, and re
   await scenario.setWorkflowSource(scenario.workflowSource);
   await expect(page.locator("#graph-status")).toHaveText("valid");
   await expect(page.locator("#diagnostics")).toBeEmpty();
+});
+
+test("the decision-needed banner tracks the waiting gate and clears when approved", async ({
+  page,
+  scenario,
+  viewer,
+}) => {
+  const approvalRun = await scenario.startApprovalRun();
+  try {
+    await openViewer(page, viewer.launchUrl);
+
+    const banner = page.locator("#decision-needed-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toHaveAccessibleName(/^Decision needed, deadline /u);
+
+    const waitingRow = page.getByRole("button", {
+      name: new RegExp(`^Run ${approvalRun.runId}, waiting for approval`, "u"),
+    });
+    await expect(waitingRow).toHaveAttribute("aria-current", "true");
+    await expect(waitingRow).toContainText("Waiting for approval");
+    await expect(waitingRow.locator(".status-glyph.waiting_for_approval")).toHaveCount(1);
+    const lineageButton = page.locator("#lineage-list .lineage-button");
+    await expect(lineageButton).toContainText("waiting for approval");
+    await expect(lineageButton).toHaveAccessibleName(
+      new RegExp(`^Inspect lineage run ${approvalRun.runId}, waiting for approval$`, "u"),
+    );
+
+    const [bannerCountdown, dockCountdown] = await page.evaluate(() => {
+      const bannerText = document.querySelector(
+        "#decision-needed-banner [data-live-deadline]",
+      )?.textContent;
+      const dockText = document.querySelector("#decision-dock .dock-deadline")?.textContent;
+      return [bannerText ?? null, dockText ?? null] as const;
+    });
+    expect(bannerCountdown).not.toBeNull();
+    expect(bannerCountdown).toContain("left");
+    expect(bannerCountdown).toBe(dockCountdown);
+
+    await banner.click();
+    await expect(page.locator(".dag-node.waiting_for_approval")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(page.locator("#decision-approve")).toBeFocused();
+
+    await page.locator("#decision-approve").click();
+    await expect(banner).toBeHidden();
+    await expect(
+      page.getByRole("button", {
+        name: new RegExp(`^Run ${approvalRun.runId}, waiting for approval`, "u"),
+      }),
+    ).toHaveCount(0);
+    await expect(lineageButton).not.toContainText("waiting for approval");
+
+    const completion = await approvalRun.wait();
+    expect(completion.exitCode).toBe(0);
+    await expect(
+      page.getByRole("button", { name: new RegExp(`^Run ${approvalRun.runId}, succeeded`, "u") }),
+    ).toHaveCount(1);
+    await expect(lineageButton).toContainText("succeeded");
+  } finally {
+    approvalRun.cancel();
+  }
+});
+
+test("the banner countdown matches the dock when the deadline is overdue", async ({
+  page,
+  scenario,
+  viewer,
+}) => {
+  const approvalRun = await scenario.startApprovalRun();
+  try {
+    const pastDeadline = new Date(Date.now() - 90_000).toISOString();
+    await page.route(`${viewer.origin}/api/runs/${approvalRun.runId}`, async (route) => {
+      const response = await route.fetch();
+      const detail = (await response.json()) as ScopedRunDetailResponse;
+      const nodes = detail.nodes.map((node): NodeRunDto => {
+        if (node.kind === "approval" && node.status === "waiting_for_approval") {
+          return { ...node, deadlineAt: pastDeadline };
+        }
+        return node;
+      });
+      await route.fulfill({ response, body: JSON.stringify({ ...detail, nodes }) });
+    });
+    await openViewer(page, viewer.launchUrl);
+
+    const banner = page.locator("#decision-needed-banner");
+    await expect(banner).toBeVisible();
+    const bannerCountdown = banner.locator("[data-live-deadline]");
+    await expect(bannerCountdown).toContainText("overdue by");
+    await expect(page.locator("#decision-dock .dock-deadline")).toContainText("overdue by");
+    const [bannerText, dockText] = await page.evaluate(() => {
+      const bannerNode = document.querySelector("#decision-needed-banner [data-live-deadline]");
+      const dockNode = document.querySelector("#decision-dock .dock-deadline");
+      return [bannerNode?.textContent ?? null, dockNode?.textContent ?? null] as const;
+    });
+    expect(bannerText).not.toBeNull();
+    expect(bannerText).toBe(dockText);
+  } finally {
+    approvalRun.cancel();
+  }
+  const completion = await approvalRun.wait();
+  expect(completion.exitCode).toBe(130);
+});
+
+test("the banner stays hidden for ordinary running and finished runs", async ({ page, viewer }) => {
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () =>
+      runListResponse([ordinaryRunningSummary("run-ordinary"), succeededSummary("run-finished")]),
+    runDetail: (runId) => {
+      if (runId === "run-ordinary") {
+        return gateRunDetail(ordinaryRunningSummary("run-ordinary"), runningNodes());
+      }
+      if (runId === "run-finished") {
+        return gateRunDetail(succeededSummary("run-finished"), succeededNodes());
+      }
+      return undefined;
+    },
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const banner = page.locator("#decision-needed-banner");
+  await expect(page.getByRole("button", { name: /^Run run-ordinary, running,/u })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
+  await expect(banner).toBeHidden();
+
+  await page.getByRole("button", { name: /^Run run-finished, succeeded,/u }).click();
+  await expect(page.locator("#run-inspector .inspector-title")).toHaveText("run-finished");
+  await expect(banner).toBeHidden();
+});
+
+test("a cancellation request hides the banner and clears the waiting label on the next poll", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let cancelRequested = false;
+  let listRequests = 0;
+  const summary = (): ReturnType<typeof waitingGateSummary> =>
+    cancelRequested ? cancelRequestedSummary("run-gated") : waitingGateSummary("run-gated");
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse([summary()]);
+    },
+    runDetail: (runId) =>
+      runId === "run-gated"
+        ? gateRunDetail(summary(), waitingGateNodes("gate-execution-1", deadlineAt))
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const banner = page.locator("#decision-needed-banner");
+  await expect(banner).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^Run run-gated, waiting for approval,/u }),
+  ).toHaveCount(1);
+
+  const pollsBeforeFlip = listRequests;
+  cancelRequested = true;
+  await expect.poll(() => listRequests, { timeout: 10_000 }).toBeGreaterThan(pollsBeforeFlip);
+  await expect(banner).toBeHidden();
+  await expect(page.getByRole("button", { name: /^Run run-gated, running,/u })).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: /^Run run-gated, waiting for approval,/u }),
+  ).toHaveCount(0);
+});
+
+test("the banner targets the outer loop node and occurrence of a waiting loop gate", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let decided = false;
+  let decisionBody: string | null = null;
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: loopCurrentWorkflow,
+    runList: () => loopRunListResponse(!decided),
+    runDetail: (runId) => (runId === "loop-run" ? loopRunDetail(!decided, deadlineAt) : undefined),
+  });
+  await page.route(
+    `${viewer.origin}/api/runs/loop-run/nodes/opaque-occurrence-gate/decision`,
+    async (route) => {
+      decisionBody = route.request().postData();
+      await fulfillJson(route, syntheticApprovalDecision("loop-run", "opaque-occurrence-gate"));
+    },
+  );
+  await openViewer(page, viewer.launchUrl);
+
+  const banner = page.locator("#decision-needed-banner");
+  await expect(banner).toBeVisible();
+  await banner.click();
+
+  const outerNode = page.locator('.dag-node[data-node-id="refine"]');
+  await expect(outerNode).toHaveAttribute("aria-selected", "true");
+  const dock = page.locator("#decision-dock");
+  await expect(dock).toBeVisible();
+  await expect(dock.locator(".dock-question")).toHaveText("Approve the revised result?");
+  await expect(dock.locator(".approval-commands")).toContainText(
+    "kilin runs approve loop-run opaque-occurrence-gate --actor human",
+  );
+  await expect(page.locator("#decision-approve")).toBeFocused();
+
+  decided = true;
+  await page.locator("#decision-approve").click();
+  await expect(banner).toBeHidden();
+  expect(decisionBody).toBe(JSON.stringify({ decision: "approved" }));
+});
+
+test("the approval live region announces the waiting gate once and stays silent across identical polls", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let detailRequests = 0;
+  await installApprovalEventLog(page);
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([waitingGateSummary("run-wait")]),
+    runDetail: (runId) => {
+      if (runId !== "run-wait") {
+        return undefined;
+      }
+      detailRequests += 1;
+      return gateRunDetail(
+        waitingGateSummary("run-wait"),
+        waitingGateNodes("gate-execution-1", deadlineAt),
+      );
+    },
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  await expect(page.locator("#decision-needed-banner")).toBeVisible();
+  await expect(page.locator("#selection-announcement")).toHaveText(
+    "Opened run run-wait, waiting for approval. Selected node gate.",
+  );
+  const announcements = async (): Promise<readonly (string | undefined)[]> =>
+    (await readApprovalEventLog(page))
+      .filter((entry) => entry.type === "announcement")
+      .map((entry) => entry.text);
+  await expect.poll(announcements).toHaveLength(1);
+  expect((await announcements())[0]).toMatch(/^Decision needed for gate gate, deadline /u);
+
+  const observedRequests = detailRequests;
+  await expect
+    .poll(() => detailRequests, { timeout: 10_000 })
+    .toBeGreaterThanOrEqual(observedRequests + 2);
+  expect(await announcements()).toHaveLength(1);
+  await expect(page.locator("#selection-announcement")).toHaveText(
+    "Opened run run-wait, waiting for approval. Selected node gate.",
+  );
+});
+
+test("a replacement waiting gate announces once more", async ({ page, viewer }) => {
+  const firstDeadline = new Date(Date.now() + 3_600_000).toISOString();
+  const secondDeadline = new Date(Date.now() + 7_200_000).toISOString();
+  let replacement = false;
+  let detailRequests = 0;
+  await installApprovalEventLog(page);
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([waitingGateSummary("run-wait")]),
+    runDetail: (runId) => {
+      if (runId !== "run-wait") {
+        return undefined;
+      }
+      detailRequests += 1;
+      return gateRunDetail(
+        waitingGateSummary("run-wait"),
+        waitingGateNodes(
+          replacement ? "gate-execution-2" : "gate-execution-1",
+          replacement ? secondDeadline : firstDeadline,
+        ),
+      );
+    },
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  await expect(page.locator("#decision-needed-banner")).toBeVisible();
+  const announcements = async (): Promise<readonly (string | undefined)[]> =>
+    (await readApprovalEventLog(page))
+      .filter((entry) => entry.type === "announcement")
+      .map((entry) => entry.text);
+  await expect.poll(announcements).toHaveLength(1);
+
+  const observedRequests = detailRequests;
+  replacement = true;
+  await expect.poll(() => detailRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests);
+  await expect.poll(announcements).toHaveLength(2);
+  const texts = await announcements();
+  expect(texts[0]).toMatch(/^Decision needed for gate gate, deadline /u);
+  expect(texts[1]).toMatch(/^Decision needed for gate gate, deadline /u);
+  expect(texts[1]).not.toBe(texts[0]);
+});
+
+test("the live region announces the cleared gate after the recorded decision", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let decided = false;
+  await installApprovalEventLog(page);
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () =>
+      runListResponse([
+        decided ? ordinaryRunningSummary("run-wait") : waitingGateSummary("run-wait"),
+      ]),
+    runDetail: (runId) => {
+      if (runId !== "run-wait") {
+        return undefined;
+      }
+      return decided
+        ? gateRunDetail(ordinaryRunningSummary("run-wait"), decidedGateNodes("gate-execution-1"))
+        : gateRunDetail(
+            waitingGateSummary("run-wait"),
+            waitingGateNodes("gate-execution-1", deadlineAt),
+          );
+    },
+  });
+  await page.route(
+    `${viewer.origin}/api/runs/run-wait/nodes/gate-execution-1/decision`,
+    async (route) => {
+      await fulfillJson(route, syntheticApprovalDecision("run-wait", "gate-execution-1"));
+    },
+  );
+  await openViewer(page, viewer.launchUrl);
+
+  const banner = page.locator("#decision-needed-banner");
+  await expect(banner).toBeVisible();
+  await banner.click();
+  await expect(page.locator("#decision-approve")).toBeFocused();
+
+  decided = true;
+  await page.locator("#decision-approve").click();
+  await expect(banner).toBeHidden();
+
+  const announcements = async (): Promise<readonly (string | undefined)[]> =>
+    (await readApprovalEventLog(page))
+      .filter((entry) => entry.type === "announcement")
+      .map((entry) => entry.text);
+  await expect.poll(announcements).toHaveLength(2);
+  const texts = await announcements();
+  expect(texts[0]).toMatch(/^Decision needed for gate gate, deadline /u);
+  expect(texts[1]).toBe("Approval gate gate is no longer waiting for a decision.");
+  await expect(page.locator("#selection-announcement")).toHaveText(
+    "Opened run run-wait, waiting for approval. Selected node gate.",
+  );
+});
+
+test("focus moves from the disappearing banner to the gate's loop graph node", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let waiting = true;
+  let detailRequests = 0;
+  await installApprovalEventLog(page);
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: loopCurrentWorkflow,
+    runList: () => loopRunListResponse(waiting),
+    runDetail: (runId) => {
+      if (runId !== "loop-run") {
+        return undefined;
+      }
+      detailRequests += 1;
+      return loopRunDetail(waiting, deadlineAt);
+    },
+  });
+  await openViewer(page, viewer.launchUrl);
+  await page.bringToFront();
+
+  const banner = page.locator("#decision-needed-banner");
+  await expect(banner).toBeVisible();
+  await banner.focus();
+  await expect(banner).toBeFocused();
+
+  const observedRequests = detailRequests;
+  waiting = false;
+  await expect.poll(() => detailRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests);
+  await expect(banner).toBeHidden();
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-node-id") ?? null))
+    .toBe("refine");
+
+  const log = await readApprovalEventLog(page);
+  const disappearance = "Approval gate gate is no longer waiting for a decision.";
+  expect(log.some((entry) => entry.type === "announcement" && entry.text === disappearance)).toBe(
+    true,
+  );
+  expect(
+    log.some(
+      (entry) =>
+        entry.type === "focusin" &&
+        entry.key === "refine" &&
+        entry.announcementAtFocus === disappearance,
+    ),
+  ).toBe(true);
+});
+
+test("focus falls back to the waiting run's history button after a run switch", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  const heldDetailRoute = deferred<Route>();
+  let holdRunBDetail = false;
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([waitingGateSummary("run-a"), ordinaryRunningSummary("run-b")]),
+    runDetail: (runId) => {
+      if (runId === "run-a") {
+        return gateRunDetail(
+          waitingGateSummary("run-a"),
+          waitingGateNodes("gate-execution-1", deadlineAt),
+        );
+      }
+      if (runId === "run-b") {
+        return gateRunDetail(ordinaryRunningSummary("run-b"), runningNodes());
+      }
+      return undefined;
+    },
+  });
+  await page.route(`${viewer.origin}/api/runs/run-b`, async (route) => {
+    if (holdRunBDetail) {
+      heldDetailRoute.resolve(route);
+      return;
+    }
+    await fulfillJson(route, gateRunDetail(ordinaryRunningSummary("run-b"), runningNodes()));
+  });
+  await openViewer(page, viewer.launchUrl);
+  await page.bringToFront();
+
+  const banner = page.locator("#decision-needed-banner");
+  await expect(banner).toBeVisible();
+  await banner.focus();
+  await expect(banner).toBeFocused();
+
+  holdRunBDetail = true;
+  await page.evaluate(() => {
+    const button = document.querySelector('.history-button[data-run-id="run-b"]');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error("The synthetic ordinary run did not render its history button.");
+    }
+    button.click();
+  });
+  await expect(page.locator('.history-button[data-run-id="run-a"]')).toBeFocused();
+
+  const heldDetail = await heldDetailRoute.promise;
+  await fulfillJson(heldDetail, gateRunDetail(ordinaryRunningSummary("run-b"), runningNodes()));
+  await expect(page.locator("#run-inspector .inspector-title")).toHaveText("run-b");
+});
+
+test("a decision recorded during a run switch clears the row and ignores the aborted stale poll", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let armed = false;
+  const staleListRoute = deferred<Route>();
+  const staleDetailRoute = deferred<Route>();
+  const heldDecisionRoute = deferred<Route>();
+  await page.route(`${viewer.origin}/api/workflow`, async (route) => {
+    await fulfillJson(route, gateCurrentWorkflow());
+  });
+  await page.route(`${viewer.origin}/api/runs`, async (route) => {
+    if (armed) {
+      staleListRoute.resolve(route);
+      return;
+    }
+    await fulfillJson(
+      route,
+      runListResponse([waitingGateSummary("run-a"), ordinaryRunningSummary("run-b")]),
+    );
+  });
+  await page.route(`${viewer.origin}/api/runs/run-a`, async (route) => {
+    if (armed) {
+      staleDetailRoute.resolve(route);
+      return;
+    }
+    await fulfillJson(
+      route,
+      gateRunDetail(waitingGateSummary("run-a"), waitingGateNodes("gate-execution-1", deadlineAt)),
+    );
+  });
+  await page.route(`${viewer.origin}/api/runs/run-b`, async (route) => {
+    await fulfillJson(route, gateRunDetail(ordinaryRunningSummary("run-b"), runningNodes()));
+  });
+  await page.route(`${viewer.origin}/api/runs/run-a/nodes/0/output/result`, async (route) => {
+    await fulfillJson(route, {
+      outputVersion: 1,
+      runId: "run-a",
+      ordinal: 0,
+      stream: "result",
+      text: "seeded synthetic evidence",
+      totalBytes: 25,
+      returnedBytes: 25,
+      truncated: false,
+    });
+  });
+  await page.route(`${viewer.origin}/api/runs/run-a/nodes/gate-execution-1/decision`, (route) => {
+    heldDecisionRoute.resolve(route);
+  });
+  await openViewer(page, viewer.launchUrl);
+  const banner = page.locator("#decision-needed-banner");
+  await expect(banner).toBeVisible();
+  await banner.click();
+  await expect(page.locator("#decision-approve")).toBeFocused();
+
+  armed = true;
+  const staleList = await staleListRoute.promise;
+  const staleDetail = await staleDetailRoute.promise;
+  await page.locator("#decision-approve").click();
+  const heldDecision = await heldDecisionRoute.promise;
+
+  await page.getByRole("button", { name: /^Run run-b, running,/u }).click();
+  await expect(page.locator("#run-inspector .inspector-title")).toHaveText("run-b");
+
+  await fulfillJson(heldDecision, syntheticApprovalDecision("run-a", "gate-execution-1"));
+  await fulfillJson(
+    staleList,
+    runListResponse([waitingGateSummary("run-a"), ordinaryRunningSummary("run-b")]),
+  );
+  await fulfillJson(
+    staleDetail,
+    gateRunDetail(waitingGateSummary("run-a"), waitingGateNodes("gate-execution-1", deadlineAt)),
+  );
+  await waitForBrowserRendering(page);
+
+  await expect(page.getByRole("button", { name: /^Run run-a, running,/u })).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: /^Run run-a, waiting for approval,/u }),
+  ).toHaveCount(0);
+  await expect(banner).toBeHidden();
+});
+
+test("the banner fits the narrow topbar without overlap or overflow at 390x844", async ({
+  page,
+  viewer,
+}, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([waitingGateSummary("run-wait")]),
+    runDetail: (runId) =>
+      runId === "run-wait"
+        ? gateRunDetail(
+            waitingGateSummary("run-wait"),
+            waitingGateNodes("gate-execution-1", deadlineAt),
+          )
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const banner = page.locator("#decision-needed-banner");
+  await expect(banner).toBeVisible();
+  const bannerBox = await banner.boundingBox();
+  const brandBox = await page.locator(".brand-block").boundingBox();
+  const statusBox = await page.locator("#connection-status").boundingBox();
+  const topbarBox = await page.locator(".topbar").boundingBox();
+  const graphBox = await page.locator(".graph-region").boundingBox();
+  if (
+    bannerBox === null ||
+    brandBox === null ||
+    statusBox === null ||
+    topbarBox === null ||
+    graphBox === null
+  ) {
+    throw new Error("The banner geometry contract could not locate every topbar region.");
+  }
+  const overlaps = (
+    first: { x: number; y: number; width: number; height: number },
+    second: { x: number; y: number; width: number; height: number },
+  ): boolean =>
+    first.x < second.x + second.width &&
+    second.x < first.x + first.width &&
+    first.y < second.y + second.height &&
+    second.y < first.y + first.height;
+  expect(overlaps(bannerBox, brandBox)).toBe(false);
+  expect(overlaps(bannerBox, statusBox)).toBe(false);
+  expect(overlaps(brandBox, statusBox)).toBe(false);
+  expect(bannerBox.x).toBeGreaterThanOrEqual(0);
+  expect(bannerBox.y).toBeGreaterThanOrEqual(0);
+  expect(bannerBox.x + bannerBox.width).toBeLessThanOrEqual(390);
+  expect(bannerBox.y + bannerBox.height).toBeLessThanOrEqual(844);
+  expect(bannerBox.width).toBeGreaterThanOrEqual(44);
+  expect(bannerBox.height).toBeGreaterThanOrEqual(44);
+  expect(topbarBox.y + topbarBox.height).toBeLessThanOrEqual(graphBox.y);
+  await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
+
+  await saveScreenshot(page, "viewer-banner-mobile.png", "viewer-banner-mobile-390x844", testInfo);
 });

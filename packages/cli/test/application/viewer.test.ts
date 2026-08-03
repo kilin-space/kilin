@@ -5,14 +5,10 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ViewerApplication } from "../../src/application/viewer.js";
+import type { ViewerRunListRecord } from "../../src/application/viewer.js";
 import { compileWorkflow } from "../../src/domain/compile-workflow.js";
 import { KilinError } from "../../src/domain/errors.js";
-import type {
-  NodeRunRecord,
-  RunDetail,
-  RunListRecord,
-  WorkflowRunRecord,
-} from "../../src/domain/run-state.js";
+import type { NodeRunRecord, RunDetail, WorkflowRunRecord } from "../../src/domain/run-state.js";
 import type { ExecutionPlan, WorkflowDefinitionV1 } from "../../src/domain/workflow.js";
 import { nodeOutputPaths, prepareNodeOutput } from "../../src/infrastructure/process-runner.js";
 import { StateStore } from "../../src/infrastructure/state-store.js";
@@ -86,6 +82,16 @@ const decisionPacketDefinition = (
       prompt: "Produce a business judgment",
       output: { type: outputType },
     },
+  ],
+  edges: [],
+});
+
+const twoGateDefinition = (): WorkflowDefinitionV1 => ({
+  schemaVersion: 1,
+  workflow: { id: "viewer-workflow", name: "Viewer workflow" },
+  nodes: [
+    { id: "gate-one", kind: "approval", question: "Approve the first gate?" },
+    { id: "gate-two", kind: "approval", question: "Approve the second gate?" },
   ],
   edges: [],
 });
@@ -244,6 +250,32 @@ const runDetail = (
   ),
 });
 
+const viewerListRecord = (
+  run: WorkflowRunRecord,
+  waitingApprovalCount = 0,
+  undecidedWaitingApprovalCount = 0,
+): ViewerRunListRecord => ({
+  ...run,
+  scope: { kind: "project", root: dirname(run.canonicalCwd) },
+  workflowId: "viewer-workflow",
+  waitingApprovalCount,
+  undecidedWaitingApprovalCount,
+});
+
+const waitingRunDetail = (plan: ExecutionPlan, cwd: string, id: string): RunDetail => {
+  const detail = runDetail(plan, cwd, id);
+  detail.run.status = "running";
+  delete detail.run.finishedAt;
+  const approval = detail.nodes.find((node) => node.kind === "approval");
+  if (approval?.kind !== "approval") {
+    throw new Error("Expected an approval node");
+  }
+  approval.status = "waiting_for_approval";
+  approval.requestedAt = "2026-07-21T01:00:00.500Z";
+  approval.deadlineAt = "2026-07-21T01:01:00.500Z";
+  return detail;
+};
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map(async (directory) => rm(directory, { recursive: true })),
@@ -343,31 +375,35 @@ describe("ViewerApplication workflow and run projections", () => {
     const { application, cwd, dataDirectory, plan } = await createFixture();
     const selected = runDetail(plan, cwd);
     const otherCwd = runRecord(plan, "/private/other-workspace", "other-cwd");
-    const otherWorkflow: RunListRecord = {
+    const otherWorkflow: ViewerRunListRecord = {
       ...runRecord(plan, cwd, "other-workflow"),
       scope: { kind: "project", root: dirname(cwd) },
       workflowId: "different-workflow",
+      waitingApprovalCount: 0,
+      undecidedWaitingApprovalCount: 0,
     };
-    const userScoped: RunListRecord = {
+    const userScoped: ViewerRunListRecord = {
       ...runRecord(plan, cwd, "user-scoped"),
       scope: { kind: "user" },
       workflowId: "viewer-workflow",
+      waitingApprovalCount: 0,
+      undecidedWaitingApprovalCount: 0,
     };
-    const otherProjectScoped: RunListRecord = {
+    const otherProjectScoped: ViewerRunListRecord = {
       ...runRecord(plan, cwd, "other-project-scoped"),
       scope: { kind: "project", root: dirname(dirname(cwd)) },
       workflowId: "viewer-workflow",
+      waitingApprovalCount: 0,
+      undecidedWaitingApprovalCount: 0,
     };
-    const records: RunListRecord[] = [
-      {
-        ...selected.run,
-        scope: { kind: "project", root: dirname(cwd) },
-        workflowId: "viewer-workflow",
-      },
+    const records: ViewerRunListRecord[] = [
+      viewerListRecord(selected.run),
       {
         ...otherCwd,
         scope: { kind: "project", root: dirname(cwd) },
         workflowId: "viewer-workflow",
+        waitingApprovalCount: 0,
+        undecidedWaitingApprovalCount: 0,
       },
       otherWorkflow,
       userScoped,
@@ -470,6 +506,112 @@ describe("ViewerApplication workflow and run projections", () => {
     await expect(
       application.runDetail(otherProjectDetail, [otherProjectDetail]),
     ).rejects.toMatchObject({ code: "RUN_NOT_FOUND" });
+  });
+
+  it("marks only a running run with one undecided waiting approval as waiting", async () => {
+    const { application, cwd, plan } = await createFixture();
+    const runningRecord = (id: string): WorkflowRunRecord => {
+      const record = runRecord(plan, cwd, id);
+      record.status = "running";
+      delete record.finishedAt;
+      return record;
+    };
+    const cancelRequested = runningRecord("cancel-requested");
+    cancelRequested.cancelRequestedAt = "2026-07-21T01:00:01.000Z";
+
+    const list = application.runList([
+      viewerListRecord(runningRecord("waiting-undecided"), 1, 1),
+      viewerListRecord(runningRecord("decided-waiting"), 1, 0),
+      viewerListRecord(runningRecord("plain-running"), 0, 0),
+      viewerListRecord(cancelRequested, 1, 1),
+      viewerListRecord(runRecord(plan, cwd, "terminal"), 1, 1),
+    ]);
+
+    const runsById = new Map(list.runs.map((run) => [run.runId, run]));
+    expect(runsById.get("waiting-undecided")).toMatchObject({ waitingForApproval: true });
+    for (const runId of ["decided-waiting", "plain-running", "cancel-requested", "terminal"]) {
+      expect(runsById.get(runId)).toBeDefined();
+      expect(runsById.get(runId)).not.toHaveProperty("waitingForApproval");
+    }
+  });
+
+  it("fails closed when a listed run reports more than one waiting approval", async () => {
+    const { application, cwd, plan } = await createFixture();
+    const damaged = runRecord(plan, cwd, "damaged");
+    damaged.status = "running";
+    delete damaged.finishedAt;
+
+    expect(() => application.runList([viewerListRecord(damaged, 2, 1)])).toThrowError(KilinError);
+    expect(() => application.runList([viewerListRecord(damaged, 2, 1)])).toThrow(
+      "damaged local state",
+    );
+  });
+
+  it("derives the waiting flag for the open run and each lineage entry from stored nodes", async () => {
+    const { application, cwd, plan } = await createFixture(approvalDefinition());
+    const decidedSource = waitingRunDetail(plan, cwd, "source");
+    const decidedGate = decidedSource.nodes.find((node) => node.kind === "approval");
+    if (decidedGate?.kind !== "approval") {
+      throw new Error("Expected an approval node");
+    }
+    decidedGate.decision = {
+      decision: "approve",
+      actor: "human",
+      decidedAt: "2026-07-21T01:00:02.000Z",
+    };
+    const waitingRetry = waitingRunDetail(plan, cwd, "retry");
+    waitingRetry.run.rerunOfRunId = decidedSource.run.id;
+
+    const projected = await application.runDetail(waitingRetry, [decidedSource, waitingRetry]);
+
+    expect(projected.run).toMatchObject({ runId: "retry", waitingForApproval: true });
+    expect(projected.lineage.selectedRunIndex).toBe(1);
+    expect(projected.lineage.runs[0]).toMatchObject({ runId: "source" });
+    expect(projected.lineage.runs[0]).not.toHaveProperty("waitingForApproval");
+    expect(projected.lineage.runs[1]).toMatchObject({ runId: "retry", waitingForApproval: true });
+  });
+
+  it("keeps the flag absent for decided, cancel-requested, and terminal waiting gates", async () => {
+    const { application, cwd, plan } = await createFixture(approvalDefinition());
+    const decided = waitingRunDetail(plan, cwd, "decided");
+    const decidedGate = decided.nodes.find((node) => node.kind === "approval");
+    if (decidedGate?.kind !== "approval") {
+      throw new Error("Expected an approval node");
+    }
+    decidedGate.decision = {
+      decision: "reject",
+      actor: "human",
+      decidedAt: "2026-07-21T01:00:02.000Z",
+    };
+    const cancelRequested = waitingRunDetail(plan, cwd, "cancel-requested");
+    cancelRequested.run.cancelRequestedAt = "2026-07-21T01:00:01.000Z";
+    const terminal = waitingRunDetail(plan, cwd, "terminal");
+    terminal.run.status = "succeeded";
+    terminal.run.finishedAt = "2026-07-21T01:00:02.000Z";
+
+    for (const detail of [decided, cancelRequested, terminal]) {
+      const projected = await application.runDetail(detail, [detail]);
+      expect(projected.run).not.toHaveProperty("waitingForApproval");
+      expect(projected.lineage.runs[0]).not.toHaveProperty("waitingForApproval");
+    }
+  });
+
+  it("fails closed when stored nodes hold more than one waiting approval", async () => {
+    const { application, cwd, plan } = await createFixture(twoGateDefinition());
+    const detail = runDetail(plan, cwd);
+    detail.run.status = "running";
+    delete detail.run.finishedAt;
+    for (const node of detail.nodes) {
+      if (node.kind === "approval") {
+        node.status = "waiting_for_approval";
+        node.requestedAt = "2026-07-21T01:00:00.500Z";
+        node.deadlineAt = "2026-07-21T01:01:00.500Z";
+      }
+    }
+
+    await expect(application.runDetail(detail, [detail])).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+    });
   });
 
   it("projects typed agents, input edges, and terminal approval state without private paths", async () => {
