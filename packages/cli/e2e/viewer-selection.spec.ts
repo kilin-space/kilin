@@ -1,6 +1,17 @@
 import type { Page } from "@playwright/test";
 
-import type { ScopedRunListResponse } from "../src/ui/contracts.js";
+import type { ScopedRunDetailResponse, ScopedRunListResponse } from "../src/ui/contracts.js";
+import type { SyntheticWorld } from "./approval-world.js";
+import {
+  gateCurrentWorkflow,
+  gateRunDetail,
+  installWorldRoutes,
+  ordinaryRunningSummary,
+  runListResponse,
+  runningNodes,
+  waitingGateNodes,
+  waitingGateSummary,
+} from "./approval-world.js";
 import { expect, test } from "./fixtures.js";
 
 const openViewer = async (page: Page, launchUrl: string): Promise<void> => {
@@ -41,7 +52,9 @@ test("opening the viewer during a waiting approval selects the gate with no clic
     await openViewer(page, viewer.launchUrl);
 
     await expect(
-      page.getByRole("button", { name: new RegExp(`Run ${approvalRun.runId}, running`) }),
+      page.getByRole("button", {
+        name: new RegExp(`Run ${approvalRun.runId}, waiting for approval`),
+      }),
     ).toHaveAttribute("aria-current", "true");
     const gateNode = page.locator(".dag-node.waiting_for_approval");
     await expect(gateNode).toHaveAttribute("aria-selected", "true");
@@ -163,4 +176,65 @@ test("with no stored runs the viewer keeps the definition view", async ({ page, 
   );
   await expect(page.locator("#graph-context")).toHaveText("Current workflow");
   expect(new URL(page.url()).hash).toBe("");
+});
+
+const gatedSelectionWorld = (deadlineAt: string): SyntheticWorld => ({
+  currentWorkflow: gateCurrentWorkflow,
+  runList: () =>
+    runListResponse([
+      ordinaryRunningSummary("run-new"),
+      waitingGateSummary("run-wait-a"),
+      waitingGateSummary("run-wait-b"),
+    ]),
+  runDetail: (runId): ScopedRunDetailResponse | undefined => {
+    if (runId === "run-new") {
+      return gateRunDetail(ordinaryRunningSummary("run-new"), runningNodes());
+    }
+    if (runId === "run-wait-a") {
+      return gateRunDetail(
+        waitingGateSummary("run-wait-a"),
+        waitingGateNodes("gate-execution-a", deadlineAt),
+      );
+    }
+    if (runId === "run-wait-b") {
+      return gateRunDetail(
+        waitingGateSummary("run-wait-b"),
+        waitingGateNodes("gate-execution-b", deadlineAt),
+      );
+    }
+    return undefined;
+  },
+});
+
+test("initial selection prefers the first waiting run over a newer ordinary running run", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  await installWorldRoutes(page, viewer.origin, gatedSelectionWorld(deadlineAt));
+  await openViewer(page, viewer.launchUrl);
+
+  await expect(
+    page.getByRole("button", { name: /^Run run-wait-a, waiting for approval,/u }),
+  ).toHaveAttribute("aria-current", "true");
+  await expect(page.locator("#decision-needed-banner")).toBeVisible();
+  await expect(page.locator("#selection-announcement")).toHaveText(
+    "Opened run run-wait-a, waiting for approval. Selected node gate.",
+  );
+});
+
+test("an explicit valid hash wins over waiting-first initial selection", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  await installWorldRoutes(page, viewer.origin, gatedSelectionWorld(deadlineAt));
+  await openViewer(page, viewer.launchUrl);
+
+  await reloadViewerWithHash(page, viewer.origin, "run=run-new");
+  await expect(page.getByRole("button", { name: /^Run run-new, running,/u })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
+  await expect(page.locator("#decision-needed-banner")).toBeHidden();
 });

@@ -115,12 +115,14 @@ const requiredElement = <ElementType extends Element>(
 };
 
 const elements = {
+  approvalStatus: requiredElement("#approval-status", HTMLElement),
   appShell: requiredElement("#app-shell", HTMLElement),
   appTitle: requiredElement("#app-title", HTMLElement),
   connectionStatus: requiredElement("#connection-status", HTMLElement),
   currentWorkflowButton: requiredElement("#current-workflow-button", HTMLButtonElement),
   diagnostics: requiredElement("#diagnostics", HTMLElement),
   decisionDock: requiredElement("#decision-dock", HTMLElement),
+  decisionNeededBanner: requiredElement("#decision-needed-banner", HTMLButtonElement),
   evidenceBanner: requiredElement("#evidence-banner", HTMLElement),
   evidencePlaceholder: requiredElement("#evidence-placeholder", HTMLElement),
   evidenceViewRaw: requiredElement("#evidence-view-raw", HTMLButtonElement),
@@ -179,7 +181,8 @@ type ViewerFocusTarget =
   | { readonly type: "evidence-view"; readonly view: EvidenceView }
   | { readonly type: "decision-note" }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
-  | { readonly type: "decision-copy"; readonly command: string };
+  | { readonly type: "decision-copy"; readonly command: string }
+  | { readonly type: "decision-needed"; readonly runId: string; readonly graphNodeId: string };
 
 class ViewerRequestError extends Error {
   public constructor(
@@ -210,6 +213,14 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   const activeElement = document.activeElement;
   if (activeElement === elements.currentWorkflowButton) {
     return { type: "current-workflow" };
+  }
+  if (activeElement === elements.decisionNeededBanner) {
+    const runId = elements.decisionNeededBanner.getAttribute("data-run-id");
+    const graphNodeId = elements.decisionNeededBanner.getAttribute("data-graph-node-id");
+    if (runId !== null && graphNodeId !== null) {
+      return { type: "decision-needed", runId, graphNodeId };
+    }
+    return undefined;
   }
   const historyRunId = focusedAttribute(activeElement, "history-button", "data-run-id");
   if (historyRunId !== undefined) {
@@ -369,6 +380,34 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
   if (target.type === "decision-action") {
     const identifier = target.decision === "approved" ? "#decision-approve" : "#decision-reject";
     elements.decisionDock.querySelector<HTMLButtonElement>(identifier)?.focus();
+    return;
+  }
+  if (target.type === "decision-needed") {
+    if (!elements.decisionNeededBanner.hidden) {
+      elements.decisionNeededBanner.focus();
+      return;
+    }
+    if (state.viewMode === "run" && state.selectedRunId === target.runId) {
+      const groups = Array.from(elements.graph.querySelectorAll<SVGGElement>(".dag-node"));
+      const index = groups.findIndex(
+        (group) => group.getAttribute("data-node-id") === target.graphNodeId,
+      );
+      if (index >= 0) {
+        updateGraphRovingFocus(groups, index);
+        return;
+      }
+    }
+    const button = matchingElement(
+      elements.historyList,
+      ".history-button",
+      "data-run-id",
+      target.runId,
+    );
+    if (button instanceof HTMLButtonElement) {
+      button.focus();
+      return;
+    }
+    elements.currentWorkflowButton.focus();
     return;
   }
   const copyButtons = Array.from(
@@ -753,11 +792,8 @@ const appendHistoryDuration = (row: HTMLElement, run: RunSummaryDto): void => {
   row.append(elapsed);
 };
 
-const presentedRunStatus = (status: string): string =>
-  status === "running" &&
-  state.runDetail?.nodes.some((node) => node.status === "waiting_for_approval") === true
-    ? "waiting_for_approval"
-    : status;
+const presentedRunStatus = (run: Pick<RunSummaryDto, "status" | "waitingForApproval">): string =>
+  run.status === "running" && run.waitingForApproval === true ? "waiting_for_approval" : run.status;
 
 const renderHistory = (): void => {
   elements.historyList.replaceChildren();
@@ -765,6 +801,7 @@ const renderHistory = (): void => {
   elements.historyEmpty.hidden = runs.length !== 0;
   setText(elements.historyCount, historyCountCopy(state.runList?.runs));
   for (const run of runs) {
+    const presentedStatus = presentedRunStatus(run);
     const item = document.createElement("li");
     item.className = "history-item";
     const button = document.createElement("button");
@@ -773,7 +810,7 @@ const renderHistory = (): void => {
     button.setAttribute("data-run-id", run.runId);
     button.setAttribute(
       "aria-label",
-      `Run ${run.runId}, ${formatStatus(run.status)}, ${run.workflowId}, started ${formatTimestamp(run.startedAt)}`,
+      `Run ${run.runId}, ${formatStatus(presentedStatus)}, ${run.workflowId}, started ${formatTimestamp(run.startedAt)}`,
     );
     button.setAttribute(
       "aria-current",
@@ -789,7 +826,7 @@ const renderHistory = (): void => {
     setText(workflow, run.workflowId);
     const statusRow = document.createElement("span");
     statusRow.className = "history-meta";
-    setText(statusRow, statusLabel(run.status));
+    setText(statusRow, statusLabel(presentedStatus));
     appendHistoryDuration(statusRow, run);
     const startedRow = document.createElement("span");
     startedRow.className = "history-meta";
@@ -798,7 +835,7 @@ const renderHistory = (): void => {
     runId.className = "history-run-id";
     setText(runId, run.runId);
     copy.append(workflow, statusRow, startedRow, runId);
-    button.append(statusGlyphElement(run.status), copy);
+    button.append(statusGlyphElement(presentedStatus), copy);
     item.append(button, copyRunIdButton(run.runId));
     elements.historyList.append(item);
   }
@@ -1194,7 +1231,7 @@ const renderRunInspector = (): void => {
   }
   setText(title, detail.run.runId);
   const list = createPropertyList();
-  const runStatus = presentedRunStatus(detail.run.status);
+  const runStatus = presentedRunStatus(detail.run);
   appendProperty(list, "Status", `${statusGlyph(runStatus)} ${statusLabel(runStatus)}`);
   appendProperty(list, "Started", formatTimestamp(detail.run.startedAt));
   appendDurationProperty(list, detail.run.durationMs, detail.run.startedAt, detail.run.finishedAt);
@@ -1369,6 +1406,7 @@ const renderLineage = (): void => {
     return;
   }
   for (const [index, run] of lineage.runs.entries()) {
+    const presentedStatus = presentedRunStatus(run);
     const item = document.createElement("li");
     const button = document.createElement("button");
     button.className = "lineage-button";
@@ -1378,7 +1416,7 @@ const renderLineage = (): void => {
     button.setAttribute("tabindex", index === lineage.selectedRunIndex ? "0" : "-1");
     button.setAttribute(
       "aria-label",
-      `Inspect lineage run ${run.runId}, ${formatStatus(run.status)}`,
+      `Inspect lineage run ${run.runId}, ${formatStatus(presentedStatus)}`,
     );
     const relation =
       run.recoveryMode === "resume"
@@ -1390,7 +1428,7 @@ const renderLineage = (): void => {
             : "rerun";
     setText(
       button,
-      `${String(index + 1)}. ${shortId(run.runId)} · ${relation} · ${formatStatus(run.status)}`,
+      `${String(index + 1)}. ${shortId(run.runId)} · ${relation} · ${formatStatus(presentedStatus)}`,
     );
     button.addEventListener("click", () => {
       void selectRun(run.runId);
@@ -2507,13 +2545,39 @@ const decisionRecordElement = (
   return record;
 };
 
+const withoutWaitingForApproval = (run: RunSummaryDto): RunSummaryDto => {
+  if (run.waitingForApproval !== true) {
+    return run;
+  }
+  const cleared = { ...run };
+  delete cleared.waitingForApproval;
+  return cleared;
+};
+
 const applyRecordedDecision = (response: ApprovalDecisionResponse): void => {
+  pollController?.abort();
+  const runList = state.runList;
+  if (runList !== undefined) {
+    state.runList = {
+      ...runList,
+      runs: runList.runs.map((run) =>
+        run.runId === response.runId ? withoutWaitingForApproval(run) : run,
+      ),
+    };
+  }
   const detail = state.runDetail;
   if (detail === undefined || detail.run.runId !== response.runId) {
     return;
   }
   state.runDetail = {
     ...detail,
+    run: withoutWaitingForApproval(detail.run),
+    lineage: {
+      ...detail.lineage,
+      runs: detail.lineage.runs.map((run) =>
+        run.runId === response.runId ? withoutWaitingForApproval(run) : run,
+      ),
+    },
     nodes: detail.nodes.map((node) =>
       node.kind === "approval" && node.executionId === response.nodeId
         ? { ...node, decision: response.decision }
@@ -2649,6 +2713,105 @@ const renderDecisionDock = (): void => {
   setText(dockStatusElement, statusText);
   footer.append(dockStatusElement);
   elements.decisionDock.replaceChildren(header, body, footer);
+};
+
+const waitingApprovalNodeRun = (): ApprovalNodeRunDto | undefined => {
+  const detail = state.runDetail;
+  if (state.viewMode !== "run" || detail?.run.waitingForApproval !== true) {
+    return undefined;
+  }
+  return detail.nodes.find(
+    (node): node is ApprovalNodeRunDto =>
+      node.kind === "approval" &&
+      node.status === "waiting_for_approval" &&
+      node.decision === undefined,
+  );
+};
+
+const renderDecisionNeededBanner = (): void => {
+  const banner = elements.decisionNeededBanner;
+  const detail = state.runDetail;
+  const waitingNode = waitingApprovalNodeRun();
+  if (detail === undefined || waitingNode === undefined) {
+    banner.hidden = true;
+    banner.replaceChildren();
+    return;
+  }
+  banner.hidden = false;
+  banner.setAttribute("data-run-id", detail.run.runId);
+  banner.setAttribute("data-graph-node-id", waitingNode.loopNodeId ?? waitingNode.nodeId);
+  const absoluteDeadline =
+    waitingNode.deadlineAt === undefined ? undefined : formatTimestamp(waitingNode.deadlineAt);
+  banner.setAttribute(
+    "aria-label",
+    absoluteDeadline === undefined
+      ? "Decision needed"
+      : `Decision needed, deadline ${absoluteDeadline}`,
+  );
+  const glyph = document.createElement("span");
+  glyph.setAttribute("aria-hidden", "true");
+  setText(glyph, "◇");
+  const label = document.createElement("span");
+  setText(label, "Decision needed");
+  const children: HTMLElement[] = [glyph, label];
+  if (waitingNode.deadlineAt !== undefined) {
+    const countdown = document.createElement("span");
+    countdown.className = "decision-needed-countdown";
+    countdown.dataset.liveDeadline = waitingNode.deadlineAt;
+    countdown.dataset.liveDeadlineLabel = "Deadline";
+    children.push(countdown);
+  }
+  banner.replaceChildren(...children);
+};
+
+interface ApprovalGateSnapshot {
+  readonly runId: string;
+  readonly executionId: string;
+  readonly nodeId: string;
+  readonly deadlineAt: string | undefined;
+}
+
+let approvalGateSnapshot: ApprovalGateSnapshot | undefined;
+
+const announceApprovalGateTransitions = (): void => {
+  const detail = state.runDetail;
+  if (state.viewMode !== "run" || detail === undefined) {
+    return;
+  }
+  const waitingNode = waitingApprovalNodeRun();
+  const current: ApprovalGateSnapshot | undefined =
+    waitingNode === undefined
+      ? undefined
+      : {
+          runId: detail.run.runId,
+          executionId: waitingNode.executionId,
+          nodeId: waitingNode.nodeId,
+          deadlineAt: waitingNode.deadlineAt,
+        };
+  const previous = approvalGateSnapshot;
+  approvalGateSnapshot = current;
+  if (current !== undefined) {
+    if (
+      previous === undefined ||
+      previous.runId !== current.runId ||
+      previous.executionId !== current.executionId ||
+      previous.deadlineAt !== current.deadlineAt
+    ) {
+      setText(
+        elements.approvalStatus,
+        current.deadlineAt === undefined
+          ? `Decision needed for gate ${current.nodeId}.`
+          : `Decision needed for gate ${current.nodeId}, deadline ${formatTimestamp(current.deadlineAt)}.`,
+      );
+    }
+    return;
+  }
+  if (previous !== undefined && state.selectedRunId === previous.runId) {
+    setText(
+      elements.approvalStatus,
+      `Approval gate ${previous.nodeId} is no longer waiting for a decision.`,
+    );
+  }
 };
 
 const resetEvidencePanel = (message: string): void => {
@@ -2827,7 +2990,7 @@ const renderPresentation = (): void => {
     if (run === undefined) {
       renderStatusChip(elements.graphStatus, "", "Loading");
     } else {
-      const status = presentedRunStatus(run.status);
+      const status = presentedRunStatus(run);
       renderStatusChip(elements.graphStatus, status, statusLabel(status));
     }
   }
@@ -2843,6 +3006,8 @@ const renderPresentation = (): void => {
   renderLineage();
   renderOutput();
   renderDecisionDock();
+  renderDecisionNeededBanner();
+  announceApprovalGateTransitions();
   updateLiveElements();
   restoreViewerFocus(focusTarget);
 };
@@ -3098,6 +3263,7 @@ const selectRun = async (runId: string, initial?: InitialRunSelection): Promise<
   state.decisionError = undefined;
   state.decisionSubmitting = false;
   dockEvidenceCache.clear();
+  approvalGateSnapshot = undefined;
   renderPresentation();
   setText(elements.connectionStatus, "Loading stored revision…");
   try {
@@ -3122,7 +3288,7 @@ const selectRun = async (runId: string, initial?: InitialRunSelection): Promise<
         applyNodeSelection(target, true, restore?.stream);
       }
       if (initial !== undefined) {
-        const status = presentedRunStatus(detail.run.status);
+        const status = presentedRunStatus(detail.run);
         const nodeCopy = target === undefined ? "" : ` Selected node ${target.nodeId}.`;
         setText(
           elements.selectionAnnouncement,
@@ -3154,6 +3320,7 @@ const selectCurrentWorkflow = (): void => {
   state.decisionError = undefined;
   state.decisionSubmitting = false;
   dockEvidenceCache.clear();
+  approvalGateSnapshot = undefined;
   renderPresentation();
   replaceLocationHash(definitionViewHash);
 };
@@ -3171,7 +3338,12 @@ const applyInitialSelectionOnce = (): void => {
   const restore =
     parsed !== undefined && runs.some((run) => run.runId === parsed.runId) ? parsed : undefined;
   const targetRunId =
-    restore?.runId ?? (runs.find((run) => run.status === "running") ?? runs[0])?.runId;
+    restore?.runId ??
+    (
+      runs.find((run) => run.waitingForApproval === true) ??
+      runs.find((run) => run.status === "running") ??
+      runs[0]
+    )?.runId;
   if (targetRunId === undefined) {
     return;
   }
@@ -3290,6 +3462,19 @@ const setEvidenceView = (view: EvidenceView): void => {
 window.setInterval(updateLiveElements, liveTickIntervalMs);
 
 elements.currentWorkflowButton.addEventListener("click", selectCurrentWorkflow);
+elements.decisionNeededBanner.addEventListener("click", () => {
+  const waitingNode = waitingApprovalNodeRun();
+  if (waitingNode === undefined) {
+    return;
+  }
+  applyNodeSelection(nodeSelectionTarget(waitingNode), true);
+  const approve = elements.decisionDock.querySelector<HTMLButtonElement>("#decision-approve");
+  if (approve !== null) {
+    approve.focus();
+    return;
+  }
+  elements.decisionDock.querySelector<HTMLButtonElement>("button")?.focus();
+});
 elements.evidenceViewRendered.addEventListener("click", () => {
   setEvidenceView("rendered");
 });

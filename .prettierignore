@@ -18,6 +18,7 @@ e2e/artifacts
 # Agent-owned files (skills, worktrees, launch configs)
 .agents
 .claude
+.pi-subagents
 
 # Documentation (design docs with hand-tuned layout, official snapshots)
 packages/cli/docs

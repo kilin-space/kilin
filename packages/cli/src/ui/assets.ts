@@ -18,8 +18,10 @@ export const viewerHtml = `<!doctype html>
             <h1 id="app-title">Kilin</h1>
           </div>
         </div>
+        <button type="button" id="decision-needed-banner" class="decision-needed-banner" hidden></button>
         <p id="connection-status" class="connection-status" role="status" aria-live="polite">Connecting…</p>
         <p id="selection-announcement" class="sr-only" role="status" aria-live="polite"></p>
+        <p id="approval-status" class="sr-only" role="status" aria-live="polite"></p>
       </header>
 
       <div class="viewer-layout">
@@ -182,7 +184,7 @@ button:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-rows: 56px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
 }
 
@@ -190,8 +192,11 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 4px;
   min-width: 0;
-  padding: 0 16px;
+  min-height: 56px;
+  padding: 4px 16px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel) 92%, transparent);
 }
@@ -255,6 +260,34 @@ h3 {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.decision-needed-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px solid var(--gate);
+  color: var(--gate);
+  background: var(--gate-soft);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.decision-needed-banner:hover {
+  color: #7c1f56;
+  background: #f9e3f1;
+}
+
+.decision-needed-countdown {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.decision-needed-countdown.urgent {
+  color: var(--danger);
+  font-weight: 650;
 }
 
 .viewer-layout {
@@ -1612,7 +1645,8 @@ h3 {
     position: sticky;
     top: 0;
     z-index: 2;
-    height: 56px;
+    height: auto;
+    min-height: 56px;
   }
 
   .viewer-layout {

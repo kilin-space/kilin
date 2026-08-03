@@ -112,6 +112,12 @@ export interface RunSummaryDto {
   readonly status: RunStatus;
   readonly startedAt: string;
   readonly cancelRequestedAt?: string;
+  /**
+   * True iff the run is running, has no cancellation requested, and has exactly one approval
+   * node waiting for approval with no recorded decision. Absence means false. The flag is a
+   * presentation hint only; it never authorizes a decision.
+   */
+  readonly waitingForApproval?: boolean;
   readonly finishedAt?: string;
   readonly durationMs?: number;
   readonly failure?: ViewerFailureDto;

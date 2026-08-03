@@ -1,7 +1,9 @@
+import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -22,7 +24,11 @@ import {
   startViewerServer,
 } from "../../src/infrastructure/viewer-server.js";
 import type { ViewerServerHandle } from "../../src/infrastructure/viewer-server.js";
-import type { SessionBootstrapResponse, ViewerApiErrorResponse } from "../../src/ui/contracts.js";
+import type {
+  ScopedRunListResponse,
+  SessionBootstrapResponse,
+  ViewerApiErrorResponse,
+} from "../../src/ui/contracts.js";
 
 interface HttpResponse {
   readonly status: number;
@@ -434,6 +440,38 @@ describe("viewer client asset", () => {
 });
 
 describe("viewer server request boundary and sessions", () => {
+  it("closes while a client is still sending a request", async () => {
+    const { handle } = await createServerFixture();
+    const target = new URL(handle.origin);
+    const socket = createConnection({ host: target.hostname, port: Number(target.port) });
+    await once(socket, "connect");
+    socket.write(
+      `POST /session HTTP/1.1\r\nHost: ${target.host}\r\nOrigin: ${handle.origin}\r\nContent-Type: application/json\r\nContent-Length: 100\r\nExpect: 100-continue\r\n\r\n`,
+    );
+    let interimResponse = "";
+    while (!interimResponse.includes("\r\n\r\n")) {
+      interimResponse += String((await once(socket, "data"))[0]);
+    }
+    expect(interimResponse).toContain("100 Continue");
+    socket.write("{");
+
+    const closePromise = handle.close();
+    let watchdogFired = false;
+    const watchdog = setTimeout(() => {
+      watchdogFired = true;
+      socket.destroy();
+    }, 2_000);
+    try {
+      await closePromise;
+    } finally {
+      clearTimeout(watchdog);
+      socket.destroy();
+      await closePromise;
+    }
+
+    expect(watchdogFired).toBe(false);
+  });
+
   it("serves only fixed local assets and enforces Host, Origin, remote address, and methods", async () => {
     const { handle } = await createServerFixture();
     expect(new URL(handle.origin)).toMatchObject({ protocol: "http:", hostname: "127.0.0.1" });
@@ -780,6 +818,74 @@ describe("viewer server read-only records and output", () => {
 
     expect(storedLifecycle(fixture.dataDirectory)).toEqual(before);
     expect((await stat(join(fixture.dataDirectory, "kilin.db"))).mtimeMs).toBe(databaseMtime);
+  });
+
+  it("derives the waiting-for-approval flag from stored approval state without scope leakage", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kilin-viewer-waiting-"));
+    temporaryDirectories.push(root);
+    const dataDirectory = join(root, "state");
+    const cwd = join(root, "workspace");
+    const otherCwd = join(root, "other-workspace");
+    const workflowFile = join(root, "workflow.yaml");
+    await Promise.all([mkdir(cwd), mkdir(otherCwd)]);
+    const plan = compileWorkflow(approvalDefinition());
+    const otherApprovalPlan = compileWorkflow({
+      ...approvalDefinition(),
+      workflow: { id: "other-approval-viewer", name: "Other approval workflow" },
+    });
+    const identity = projectIdentity(plan, root);
+    await writeFile(workflowFile, JSON.stringify(plan.definition), "utf8");
+    const options = {
+      nodeTimeoutMs: 60_000,
+      approvalTimeoutMs: 60_000,
+      maxOutputBytes: 1_048_576,
+      maxParallel: 1,
+    };
+    const store = new StateStore(dataDirectory);
+    const waitingUndecided = store.createRun({ plan, identity, canonicalCwd: cwd, options });
+    store.requestApproval(waitingUndecided.run.id, "release-approval");
+    const decidedWaiting = store.createRun({ plan, identity, canonicalCwd: cwd, options });
+    store.requestApproval(decidedWaiting.run.id, "release-approval");
+    store.recordApprovalDecision(decidedWaiting.run.id, "release-approval", "approve", "human");
+    const plainRunning = store.createRun({ plan, identity, canonicalCwd: cwd, options });
+    const terminal = store.createRun({ plan, identity, canonicalCwd: cwd, options });
+    store.skipPendingNodes(terminal.run.id);
+    store.transitionRun(terminal.run.id, { status: "succeeded" });
+    const otherCwdWaiting = store.createRun({ plan, identity, canonicalCwd: otherCwd, options });
+    store.requestApproval(otherCwdWaiting.run.id, "release-approval");
+    const otherWorkflowWaiting = store.createRun({
+      plan: otherApprovalPlan,
+      identity: projectIdentity(otherApprovalPlan, root),
+      canonicalCwd: otherCwd,
+      options,
+    });
+    store.requestApproval(otherWorkflowWaiting.run.id, "release-approval");
+    store.close();
+
+    const handle = await startViewerServer({
+      definitionFile: workflowFile,
+      identity,
+      canonicalCwd: cwd,
+      dataDirectory,
+      clientJavaScript: "",
+    });
+    serverHandles.push(handle);
+    const session = await exchangeSession(handle);
+    const response = await requestViewer(handle, {
+      path: "/api/runs",
+      headers: authenticatedHeaders(session),
+    });
+
+    expect(response.status).toBe(200);
+    const list = JSON.parse(response.body) as ScopedRunListResponse;
+    const runsById = new Map(list.runs.map((run) => [run.runId, run]));
+    expect(runsById.get(waitingUndecided.run.id)).toMatchObject({ waitingForApproval: true });
+    for (const runId of [decidedWaiting.run.id, plainRunning.run.id, terminal.run.id]) {
+      expect(runsById.get(runId)).toBeDefined();
+      expect(runsById.get(runId)).not.toHaveProperty("waitingForApproval");
+    }
+    expect(runsById.has(otherCwdWaiting.run.id)).toBe(false);
+    expect(runsById.has(otherWorkflowWaiting.run.id)).toBe(false);
   });
 
   it("records a scoped human decision through the guarded route while the attached run holds its workspace", async () => {

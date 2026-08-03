@@ -15,6 +15,12 @@ All notable changes to `@kilin-space/cli` are documented here.
 - Persist the selected Viewer run, node, stream, and rendered/raw view in the URL hash and
   restore them after a reload; a stale hash run id falls back to the default selection without an
   error state (#22).
+- Surface a pending approval in the Viewer: a decision-needed banner beside the connection
+  status with a live deadline countdown that selects the waiting gate and focuses the decision
+  dock, a waiting label and glyph on run history and lineage rows, and live-region announcements
+  for waiting-state transitions (#16).
+- Add the derived `waitingForApproval` flag to the Viewer run summary, which also delivers the
+  documented waiting-first initial selection (#16).
 
 ## 0.1.0
 
