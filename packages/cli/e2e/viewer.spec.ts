@@ -12,6 +12,7 @@ import {
   cancelRequestedSummary,
   decidedGateNodes,
   fulfillJson,
+  fulfillTransientFailure,
   gateCurrentWorkflow,
   gateRunDetail,
   installApprovalEventLog,
@@ -834,14 +835,7 @@ test("polling reports lifecycle changes, retries after a transient error, and re
   await page.route("**/api/runs", async (route) => {
     if (!failedOnePoll) {
       failedOnePoll = true;
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          outputVersion: 1,
-          error: { code: "TRANSIENT_TEST_FAILURE", message: "Synthetic refresh failure." },
-        }),
-      });
+      await fulfillTransientFailure(route, "Synthetic refresh failure.");
       return;
     }
     await route.continue();
@@ -1450,17 +1444,7 @@ test("refresh polls at once and restarts the poll backoff after failures", async
       await route.continue();
       return;
     }
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        outputVersion: 1,
-        error: {
-          code: "TRANSIENT_TEST_FAILURE",
-          message: `Synthetic refresh failure ${String(pollRequests)}.`,
-        },
-      }),
-    });
+    await fulfillTransientFailure(route, `Synthetic refresh failure ${String(pollRequests)}.`);
   });
 
   const status = page.locator("#connection-status");
@@ -1469,7 +1453,7 @@ test("refresh polls at once and restarts the poll backoff after failures", async
   const refresh = page.getByRole("button", { name: "Refresh" });
   const beforeManualCycle = pollRequests;
   await refresh.press("Enter");
-  await expect.poll(() => pollRequests, { timeout: 2_000 }).toBeGreaterThan(beforeManualCycle);
+  await expect.poll(() => pollRequests, { timeout: 1_000 }).toBeGreaterThan(beforeManualCycle);
 
   const afterManualCycle = pollRequests;
   await expect.poll(() => pollRequests, { timeout: 6_000 }).toBeGreaterThan(afterManualCycle);

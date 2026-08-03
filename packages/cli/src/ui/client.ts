@@ -168,8 +168,16 @@ let pollInProgress = false;
 let runDetailRequestGeneration = 0;
 let outputRequestGeneration = 0;
 let initialSelectionPending = true;
-let renderedEvidence:
-  { readonly key: string; readonly view: EvidenceView; readonly text: string } | undefined;
+type RenderedEvidence =
+  | {
+      readonly kind: "stream";
+      readonly key: string;
+      readonly view: EvidenceView;
+      readonly text: string;
+    }
+  | { readonly kind: "failure"; readonly key: string; readonly message: string };
+
+let renderedEvidence: RenderedEvidence | undefined;
 
 type ViewerFocusTarget =
   | { readonly type: "current-workflow" }
@@ -2831,16 +2839,18 @@ const resetEvidencePanel = (content: Node | string): void => {
 };
 
 const showEvidenceError = (key: string, message: string): void => {
-  const rendered = elements.outputPanel.querySelector<HTMLElement>(".evidence-error-message");
-  if (rendered?.textContent === message && rendered.dataset.outputKey === key) {
+  if (
+    renderedEvidence?.kind === "failure" &&
+    renderedEvidence.key === key &&
+    renderedEvidence.message === message
+  ) {
     return;
   }
   const failure = document.createElement("div");
   failure.className = "evidence-error";
   failure.setAttribute("role", "alert");
   const description = document.createElement("p");
-  description.className = "failure-copy evidence-error-message";
-  description.dataset.outputKey = key;
+  description.className = "failure-copy";
   setText(description, message);
   const retry = document.createElement("button");
   retry.type = "button";
@@ -2851,6 +2861,7 @@ const showEvidenceError = (key: string, message: string): void => {
   });
   failure.append(description, retry);
   resetEvidencePanel(failure);
+  renderedEvidence = { kind: "failure", key, message };
   if (document.activeElement === elements.outputPanel) {
     retry.focus();
   }
@@ -2876,7 +2887,8 @@ const renderEvidenceSelection = (selection: OutputSelection, liveNode: boolean):
       : `${formatBytes(response.returnedBytes)} of ${formatBytes(response.totalBytes)}${liveSuffix}.`,
   );
   if (
-    renderedEvidence?.key === selection.key &&
+    renderedEvidence?.kind === "stream" &&
+    renderedEvidence.key === selection.key &&
     renderedEvidence.view === state.evidenceView &&
     renderedEvidence.text === response.text
   ) {
@@ -2907,7 +2919,12 @@ const renderEvidenceSelection = (selection: OutputSelection, liveNode: boolean):
       details.open = true;
     }
   }
-  renderedEvidence = { key: selection.key, view: state.evidenceView, text: response.text };
+  renderedEvidence = {
+    kind: "stream",
+    key: selection.key,
+    view: state.evidenceView,
+    text: response.text,
+  };
   if ((liveNode || selection.fetchedWhileRunning) && state.followTail) {
     elements.outputPanel.scrollTop = elements.outputPanel.scrollHeight;
   }
@@ -3170,7 +3187,7 @@ const selectOutput = async (
   }
 };
 
-const maybeRefreshEvidence = (): void => {
+const maybeRefreshEvidence = (retryFailedRead = false): void => {
   if (state.viewMode !== "run" || state.selectedRunId === undefined || state.outputLoading) {
     return;
   }
@@ -3183,7 +3200,7 @@ const maybeRefreshEvidence = (): void => {
   }
   const key = outputKey(state.selectedRunId, nodeRun.ordinal, state.selectedOutputStream);
   if (state.output?.key !== key) {
-    if (state.outputError === undefined) {
+    if (retryFailedRead || state.outputError === undefined) {
       void selectOutput(state.selectedOutputStream, false);
     }
     return;
@@ -3464,11 +3481,8 @@ const pollViewer = async (): Promise<void> => {
 
 const refreshNow = (): void => {
   state.pollFailures = 0;
-  clearPollTimer();
   setText(elements.connectionStatus, "Refreshing…");
-  if (state.outputError !== undefined) {
-    void selectOutput(state.selectedOutputStream, false);
-  }
+  maybeRefreshEvidence(true);
   void pollViewer();
 };
 

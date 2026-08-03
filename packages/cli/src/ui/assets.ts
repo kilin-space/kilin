@@ -984,7 +984,7 @@ h3 {
   gap: 10px;
 }
 
-.evidence-error-message {
+.evidence-error > :first-child {
   margin-top: 0;
 }
 

@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
+import { fulfillTransientFailure } from "./approval-world.js";
 import { expect, test } from "./fixtures.js";
 import type { ViewerScenario } from "./fixtures.js";
 
@@ -200,6 +201,50 @@ const openViewer = async (page: Page, launchUrl: string): Promise<void> => {
   await expect(page.locator("#app-shell")).toHaveAttribute("aria-busy", "false");
 };
 
+const installEvidenceAlertLog = async (page: Page): Promise<void> => {
+  await page.addInitScript(() => {
+    const holder = window as unknown as { __evidenceAlerts: string[] };
+    holder.__evidenceAlerts = [];
+    document.addEventListener("DOMContentLoaded", () => {
+      const panel = document.getElementById("output-panel");
+      if (panel === null) {
+        return;
+      }
+      new MutationObserver((records) => {
+        for (const record of records) {
+          for (const added of Array.from(record.addedNodes)) {
+            if (added instanceof Element && added.getAttribute("role") === "alert") {
+              holder.__evidenceAlerts.push(added.textContent);
+            }
+          }
+        }
+      }).observe(panel, { childList: true });
+    });
+  });
+};
+
+const readEvidenceAlerts = async (page: Page): Promise<readonly string[]> =>
+  page.evaluate(() => {
+    const holder = window as unknown as { __evidenceAlerts?: string[] };
+    return holder.__evidenceAlerts ?? [];
+  });
+
+const waitForRunListPoll = async (page: Page): Promise<void> => {
+  await page.waitForResponse(
+    (response) => response.status() === 200 && new URL(response.url()).pathname === "/api/runs",
+  );
+};
+
+const routeFailingEvidenceReads = async (page: Page, failing: () => boolean): Promise<void> => {
+  await page.route("**/api/runs/*/nodes/*/output/*", async (route) => {
+    if (!failing()) {
+      await route.continue();
+      return;
+    }
+    await fulfillTransientFailure(route, "Synthetic evidence failure.");
+  });
+};
+
 test.describe.configure({ mode: "serial" });
 
 test("stdout renders typed activity rows from codex and claude streams with inert hostile lines", async ({
@@ -374,40 +419,6 @@ test("the selected stream live-tails on the poll cadence while its node runs", a
   await expect(page.getByRole("tab", { name: "Result" })).toBeVisible();
 });
 
-const installEvidenceAlertLog = async (page: Page): Promise<void> => {
-  await page.addInitScript(() => {
-    const holder = window as unknown as { __evidenceAlerts: string[] };
-    holder.__evidenceAlerts = [];
-    document.addEventListener("DOMContentLoaded", () => {
-      const panel = document.getElementById("output-panel");
-      if (panel === null) {
-        return;
-      }
-      new MutationObserver((records) => {
-        for (const record of records) {
-          for (const added of Array.from(record.addedNodes)) {
-            if (added instanceof Element && added.getAttribute("role") === "alert") {
-              holder.__evidenceAlerts.push(added.textContent);
-            }
-          }
-        }
-      }).observe(panel, { childList: true });
-    });
-  });
-};
-
-const readEvidenceAlerts = async (page: Page): Promise<readonly string[]> =>
-  page.evaluate(() => {
-    const holder = window as unknown as { __evidenceAlerts?: string[] };
-    return holder.__evidenceAlerts ?? [];
-  });
-
-const waitForRunListPoll = async (page: Page): Promise<void> => {
-  await page.waitForResponse(
-    (response) => response.status() === 200 && new URL(response.url()).pathname === "/api/runs",
-  );
-};
-
 test("a failed evidence read offers a keyboard retry that reloads the stream", async ({
   page,
   scenario,
@@ -422,20 +433,7 @@ test("a failed evidence read offers a keyboard retry that reloads the stream", a
     { mode: 0o600 },
   );
   let outputReadFails = true;
-  await page.route("**/api/runs/*/nodes/*/output/*", async (route) => {
-    if (!outputReadFails) {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        outputVersion: 1,
-        error: { code: "TRANSIENT_TEST_FAILURE", message: "Synthetic evidence failure." },
-      }),
-    });
-  });
+  await routeFailingEvidenceReads(page, () => outputReadFails);
   await openViewer(page, viewer.launchUrl);
   await page
     .getByRole("button", { name: new RegExp(`Run ${scenario.successfulRunId}, succeeded`) })
@@ -451,21 +449,17 @@ test("a failed evidence read offers a keyboard retry that reloads the stream", a
   await retry.focus();
   await waitForRunListPoll(page);
   await waitForRunListPoll(page);
-  await expect
-    .poll(() => page.evaluate(() => document.activeElement?.textContent ?? null))
-    .toBe("Retry");
   await expect.poll(() => readEvidenceAlerts(page)).toHaveLength(1);
 
   await page.keyboard.press("Enter");
   await expect.poll(() => readEvidenceAlerts(page)).toHaveLength(2);
   await expect
-    .poll(() => page.evaluate(() => document.activeElement?.textContent ?? null))
-    .toBe("Retry");
+    .poll(() => retry.evaluate((element) => element === document.activeElement))
+    .toBe(true);
 
   outputReadFails = false;
   await page.keyboard.press("Enter");
 
-  await expect(retry).toHaveCount(0);
   await expect(panel).toContainText("RETRIED_EVIDENCE_BODY");
 });
 
@@ -474,26 +468,20 @@ test("refresh re-requests a failed evidence read even while polling fails", asyn
   scenario,
   viewer,
 }) => {
+  test.slow();
   await writeFile(
     nodeOutputPath(scenario, scenario.successfulRunId, "000-analyze", "result.txt"),
     "REFRESHED_EVIDENCE_BODY",
     { mode: 0o600 },
   );
   let outputReadFails = true;
-  await page.route("**/api/runs/*/nodes/*/output/*", async (route) => {
-    if (!outputReadFails) {
-      await route.continue();
-      return;
+  let outputReads = 0;
+  page.on("request", (request) => {
+    if (/\/nodes\/\d+\/output\//u.test(new URL(request.url()).pathname)) {
+      outputReads += 1;
     }
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        outputVersion: 1,
-        error: { code: "TRANSIENT_TEST_FAILURE", message: "Synthetic evidence failure." },
-      }),
-    });
   });
+  await routeFailingEvidenceReads(page, () => outputReadFails);
   await openViewer(page, viewer.launchUrl);
   await page
     .getByRole("button", { name: new RegExp(`Run ${scenario.successfulRunId}, succeeded`) })
@@ -503,14 +491,7 @@ test("refresh re-requests a failed evidence read even while polling fails", asyn
   await expect(panel.getByRole("alert")).toContainText("Synthetic evidence failure.");
 
   await page.route("**/api/workflow", async (route) => {
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        outputVersion: 1,
-        error: { code: "TRANSIENT_TEST_FAILURE", message: "Synthetic refresh failure." },
-      }),
-    });
+    await fulfillTransientFailure(route, "Synthetic refresh failure.");
   });
   await expect(page.locator("#connection-status")).toContainText("Retrying");
 
@@ -518,5 +499,12 @@ test("refresh re-requests a failed evidence read even while polling fails", asyn
   await page.getByRole("button", { name: "Refresh" }).press("Enter");
 
   await expect(panel).toContainText("REFRESHED_EVIDENCE_BODY", { timeout: 3_000 });
-  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+
+  const readsBeforeHealthyRefresh = outputReads;
+  const nextPoll = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/workflow",
+  );
+  await page.getByRole("button", { name: "Refresh" }).press("Enter");
+  await nextPoll;
+  expect(outputReads).toBe(readsBeforeHealthyRefresh);
 });

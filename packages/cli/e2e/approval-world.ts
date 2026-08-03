@@ -502,6 +502,17 @@ export const fulfillJson = async (route: Route, body: unknown): Promise<void> =>
   });
 };
 
+export const fulfillTransientFailure = async (route: Route, message: string): Promise<void> => {
+  await route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({
+      outputVersion: 1,
+      error: { code: "TRANSIENT_TEST_FAILURE", message },
+    }),
+  });
+};
+
 export interface SyntheticWorld {
   readonly currentWorkflow: () => CurrentWorkflowResponse;
   readonly runList: () => ScopedRunListResponse;
