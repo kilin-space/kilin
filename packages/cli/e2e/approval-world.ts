@@ -269,7 +269,7 @@ export const gateRunDetail = (
 const loopWorkflowId = "loop-viewer";
 const loopGateQuestion = "Approve the revised result?";
 
-const loopWorkflowGraph = (): WorkflowGraphDto => ({
+export const loopWorkflowGraph = (): WorkflowGraphDto => ({
   workflowId: loopWorkflowId,
   name: "Bounded review",
   nodes: [

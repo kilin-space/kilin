@@ -23,6 +23,7 @@ import {
   loopCurrentWorkflow,
   loopRunDetail,
   loopRunListResponse,
+  loopWorkflowGraph,
   ordinaryRunningSummary,
   readApprovalAnnouncements,
   readApprovalEventLog,
@@ -210,7 +211,7 @@ test("desktop viewer exposes the graph, stored states, bounded output, and linea
   await expect(scenario.runtimeInvocationCount()).resolves.toBe(invocationCount);
 });
 
-test("bounded loops stay compact and expose scoped iterations without parsing execution IDs", async ({
+test("a loop collapses to one card, expands on selection, and exposes scoped iterations without parsing execution IDs", async ({
   page,
   viewer,
 }) => {
@@ -219,11 +220,20 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     name: "Bounded review",
     nodes: [
       {
-        id: "refine",
+        id: "prepare",
         ordinal: 0,
-        kind: "loop",
-        maxIterations: 2,
+        kind: "agent",
+        runtime: "codex",
+        access: "read_only",
+        outputType: "text",
         dependencies: [],
+      },
+      {
+        id: "refine",
+        ordinal: 1,
+        kind: "loop",
+        maxIterations: 3,
+        dependencies: ["prepare"],
         body: {
           nodes: [
             {
@@ -262,8 +272,8 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
         resultNodeId: "draft",
       },
     ],
-    edges: [],
-    executionOrder: ["refine"],
+    edges: [{ from: "prepare", to: "refine" }],
+    executionOrder: ["prepare", "refine"],
   };
   const run = {
     runId: "loop-run",
@@ -293,7 +303,7 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     },
     {
       kind: "approval" as const,
-      executionId: "opaque-occurrence-approved-gate",
+      executionId: "opaque-occurrence-beta",
       nodeId: "gate",
       loopNodeId: "refine",
       iteration: 0,
@@ -312,7 +322,7 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     },
     {
       kind: "agent" as const,
-      executionId: "opaque-occurrence-beta",
+      executionId: "opaque-occurrence-gamma",
       nodeId: "judge",
       loopNodeId: "refine",
       iteration: 0,
@@ -330,7 +340,7 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
   const secondIterationExecutions: LoopIterationDto["executions"] = [
     {
       kind: "agent" as const,
-      executionId: "opaque-occurrence-second-draft",
+      executionId: "opaque-occurrence-delta",
       nodeId: "draft",
       loopNodeId: "refine",
       iteration: 1,
@@ -346,7 +356,7 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     },
     {
       kind: "approval" as const,
-      executionId: "opaque-occurrence-gate",
+      executionId: "opaque-occurrence-epsilon",
       nodeId: "gate",
       loopNodeId: "refine",
       iteration: 1,
@@ -359,11 +369,48 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     },
     {
       kind: "agent" as const,
-      executionId: "opaque-occurrence-second-judge",
+      executionId: "opaque-occurrence-zeta",
       nodeId: "judge",
       loopNodeId: "refine",
       iteration: 1,
       ordinal: 6,
+      runtime: "codex" as const,
+      outputType: "choice" as const,
+      status: "pending" as const,
+      availableOutputs: [],
+    },
+  ];
+  const unreachedIterationExecutions: LoopIterationDto["executions"] = [
+    {
+      kind: "agent" as const,
+      executionId: "opaque-occurrence-eta",
+      nodeId: "draft",
+      loopNodeId: "refine",
+      iteration: 2,
+      ordinal: 7,
+      runtime: "codex" as const,
+      outputType: "text" as const,
+      status: "pending" as const,
+      availableOutputs: [],
+    },
+    {
+      kind: "approval" as const,
+      executionId: "opaque-occurrence-theta",
+      nodeId: "gate",
+      loopNodeId: "refine",
+      iteration: 2,
+      ordinal: 8,
+      question: "Approve the revised result?",
+      status: "pending" as const,
+      availableOutputs: [],
+    },
+    {
+      kind: "agent" as const,
+      executionId: "opaque-occurrence-iota",
+      nodeId: "judge",
+      loopNodeId: "refine",
+      iteration: 2,
+      ordinal: 9,
       runtime: "codex" as const,
       outputType: "choice" as const,
       status: "pending" as const,
@@ -397,16 +444,31 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     },
     nodes: [
       {
+        kind: "agent",
+        executionId: "opaque-occurrence-omega",
+        nodeId: "prepare",
+        ordinal: 0,
+        runtime: "codex",
+        outputType: "text",
+        status: "succeeded",
+        startedAt: "2026-07-26T00:59:59.000Z",
+        finishedAt: "2026-07-26T01:00:00.000Z",
+        durationMs: 1_000,
+        exitCode: 0,
+        availableOutputs: [],
+      },
+      {
         kind: "loop",
         executionId: "refine",
         nodeId: "refine",
-        ordinal: 0,
+        ordinal: 1,
         status: "running",
         startedAt: "2026-07-26T01:00:00.000Z",
         availableOutputs: [],
       },
       ...firstIterationExecutions,
       ...secondIterationExecutions,
+      ...unreachedIterationExecutions,
     ],
     loopIterations: [
       {
@@ -420,6 +482,12 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
         iteration: 1,
         status: "waiting_for_approval",
         executions: secondIterationExecutions,
+      },
+      {
+        loopNodeId: "refine",
+        iteration: 2,
+        status: "pending",
+        executions: unreachedIterationExecutions,
       },
     ],
     attempts: [],
@@ -451,19 +519,74 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     });
   });
 
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await openViewer(page, viewer.launchUrl);
   await page.locator("#current-workflow-button").click();
   await expect(page.locator("#graph-context")).toHaveText("Current workflow");
+
+  const loopCard = page.locator('.dag-node[data-node-id="refine"]');
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText("loop · up to 3");
+  await expect(page.locator(".dag-body-node")).toHaveCount(0);
   await expect(page.locator("#workflow-graph desc")).toContainText(
-    "1 nodes in execution order: refine",
+    "Loop refine repeats up to 3 times over draft, gate, judge.",
   );
-  await expect(page.locator(".dag-node")).toHaveCount(1);
-  await expect(page.locator(".dag-node-meta")).toHaveText("loop · up to 2");
+  await expect(page.locator("#execution-list")).toContainText("gate · approval · after draft");
+  await expect(page.locator("#loop-iterations-section")).toBeVisible();
+  await expect(page.locator("#loop-iterations-section")).toContainText(
+    "No iterations recorded yet. Body: draft → gate → judge.",
+  );
+
+  await loopCard.click();
+  await expect(page.locator(".dag-body-node")).toHaveCount(3);
+  await page.locator('.dag-node[data-node-id="prepare"]').click();
+  await expect(page.locator(".dag-body-node")).toHaveCount(0);
+  await expect(loopCard.locator(".dag-edge")).toHaveCount(0);
+
   await page.getByRole("button", { name: /Run loop-run, running/u }).click();
   await expect(page.locator("#execution-list button")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: /^draft, loop refine body step 1, iteration 2, succeeded$/u }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: /^gate, loop refine body step 2, iteration 2, waiting for approval$/u,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^judge, loop refine body step 3, iteration 2, pending$/u }),
+  ).toBeVisible();
+  await loopCard.click({ position: { x: 60, y: 20 } });
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
+    "loop · 2/3 · ◐ Running",
+  );
+  await expect(loopCard).toHaveAttribute("aria-label", /loop, iteration 2 of 3, running/u);
+  await expect(loopCard.locator(".dag-edge")).toHaveCount(4);
+  await expect(loopCard.locator(".dag-loop-feedback")).toHaveCount(1);
+  await expect(loopCard.locator(".dag-loop-edge-label")).toHaveText([
+    "revise · prior_feedback",
+    "pass",
+  ]);
+  await expect(page.locator("#evidence-placeholder")).toBeVisible();
+  await expect(page.locator("#evidence-placeholder")).toHaveText(
+    "A loop node does not capture evidence. Select a body execution under Loop iterations.",
+  );
+
+  await loopCard.focus();
+  await loopCard.press("ArrowRight");
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-body-node-id")))
+    .toBe("draft");
+
+  await page.locator('.dag-body-node[data-body-node-id="gate"]').click();
+  await expect(page.locator("#decision-dock")).toBeVisible();
+  await expect(page.locator("#decision-dock")).toContainText("Approve the revised result?");
+  await expect(page.locator('.dag-body-node[data-body-node-id="gate"]')).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   const iterationRegion = page.locator("#loop-iterations-section");
   await expect(iterationRegion).toBeVisible();
-  await expect(iterationRegion.locator(".loop-iteration")).toHaveCount(2);
+  await expect(iterationRegion.locator(".loop-iteration")).toHaveCount(3);
   await expect(
     iterationRegion.locator('[data-iteration-status="waiting_for_approval"]'),
   ).toHaveAttribute("open", "");
@@ -475,15 +598,37 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
   await expect(page.locator(".loop-execution-provenance").first()).toContainText(
     "executionId opaque-occurrence-alpha · bodyNodeId draft · loopNodeId refine",
   );
-  await page.getByRole("button", { name: /^draft, loop refine, iteration 0,/u }).click();
+  const prepareCard = page.locator('.dag-node[data-node-id="prepare"]');
+  await prepareCard.click();
+  await expect(page.locator(".dag-body-node")).toHaveCount(0);
+  await page.getByRole("button", { name: /^draft, loop refine, iteration 1,/u }).click();
+  await expect(prepareCard).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator(".dag-body-node")).toHaveCount(3);
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
+    "loop · 1/3 · ◐ Running",
+  );
+  await expect(
+    page.getByRole("button", { name: /^draft, loop refine body step 1, iteration 1, succeeded$/u }),
+  ).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#node-inspector")).toContainText("opaque-occurrence-alpha");
   await expect(page.locator("#node-inspector")).toContainText("Iteration0");
-  const gateButton = page.getByRole("button", { name: /^gate, loop refine, iteration 1,/u });
+
+  await page.getByRole("button", { name: /^draft, loop refine, iteration 3,/u }).click();
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
+    "loop · 2/3 · ◐ Running",
+  );
+  await expect(
+    page.getByRole("button", {
+      name: /^gate, loop refine body step 2, iteration 2, waiting for approval$/u,
+    }),
+  ).toBeVisible();
+
+  const gateButton = page.getByRole("button", { name: /^gate, loop refine, iteration 2,/u });
   await gateButton.click();
   await expect(page.locator("#decision-dock")).toBeVisible();
   await expect(page.locator("#decision-dock")).toContainText("Approve the revised result?");
   await expect(page.locator(".approval-commands")).toContainText(
-    "kilin runs approve loop-run opaque-occurrence-gate --actor human",
+    "kilin runs approve loop-run opaque-occurrence-epsilon --actor human",
   );
   await gateButton.focus();
   await expect(gateButton).toBeFocused();
@@ -494,6 +639,142 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     "open",
     "",
   );
+});
+
+test("a graph that is one loop opens expanded and keeps its unstarted body out of the tab order", async ({
+  page,
+  viewer,
+}) => {
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: loopCurrentWorkflow,
+    runList: () => runListResponse([]),
+    runDetail: () => undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const loopCard = page.locator('.dag-node[data-node-id="refine"]');
+  await expect(loopCard).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".dag-body-node")).toHaveCount(3);
+  await expect(page.locator('.dag-body-node[aria-hidden="true"]')).toHaveCount(3);
+
+  await expect(page.locator(".dag-body-node[tabindex]")).toHaveCount(0);
+  await loopCard.focus();
+  await loopCard.press("Tab");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        document.activeElement?.closest("#workflow-graph") === null ? "outside" : "graph",
+      ),
+    )
+    .toBe("outside");
+});
+
+test("a running loop keeps its bound until an iteration starts rather than claiming iteration 0", async ({
+  page,
+  viewer,
+}) => {
+  const pendingBody: LoopIterationDto["executions"] = [
+    {
+      kind: "agent",
+      executionId: "opaque-occurrence-pending-draft",
+      nodeId: "draft",
+      loopNodeId: "refine",
+      iteration: 0,
+      ordinal: 1,
+      runtime: "codex",
+      outputType: "text",
+      status: "pending",
+      availableOutputs: [],
+    },
+    {
+      kind: "approval",
+      executionId: "opaque-occurrence-pending-gate",
+      nodeId: "gate",
+      loopNodeId: "refine",
+      iteration: 0,
+      ordinal: 2,
+      question: "Approve the revised result?",
+      status: "pending",
+      availableOutputs: [],
+    },
+    {
+      kind: "agent",
+      executionId: "opaque-occurrence-pending-judge",
+      nodeId: "judge",
+      loopNodeId: "refine",
+      iteration: 0,
+      ordinal: 3,
+      runtime: "codex",
+      outputType: "choice",
+      status: "pending",
+      availableOutputs: [],
+    },
+  ];
+  const summary: RunSummaryDto = {
+    runId: "loop-run",
+    workflowId: "loop-viewer",
+    workflowScope: "project",
+    revisionId: "loop-revision",
+    cwd: "workspace",
+    status: "running",
+    startedAt: "2026-07-26T01:00:00.000Z",
+  };
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: loopCurrentWorkflow,
+    runList: () => ({
+      outputVersion: 1,
+      workflowId: "loop-viewer",
+      workflowScope: "project",
+      runs: [summary],
+    }),
+    runDetail: (runId) =>
+      runId === "loop-run"
+        ? {
+            outputVersion: 1,
+            workflowId: "loop-viewer",
+            workflowScope: "project",
+            run: summary,
+            revision: {
+              revisionId: "loop-revision",
+              workflowScope: "project",
+              contentHash: "loop-content",
+              createdAt: "2026-07-26T00:59:00.000Z",
+              workflow: loopWorkflowGraph(),
+            },
+            nodes: [
+              {
+                kind: "loop",
+                executionId: "refine",
+                nodeId: "refine",
+                ordinal: 0,
+                status: "running",
+                startedAt: "2026-07-26T01:00:00.000Z",
+                availableOutputs: [],
+              },
+              ...pendingBody,
+            ],
+            loopIterations: [
+              {
+                loopNodeId: "refine",
+                iteration: 0,
+                status: "pending",
+                executions: pendingBody,
+              },
+            ],
+            attempts: [],
+            workspaces: [],
+            lineage: { runs: [summary], selectedRunIndex: 0 },
+          }
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+  await page.getByRole("button", { name: /Run loop-run, running/u }).click();
+
+  const loopCard = page.locator('.dag-node[data-node-id="refine"]');
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
+    "loop · up to 2 · ◐ Running",
+  );
+  await expect(loopCard).toHaveAttribute("aria-label", /loop, up to 2 iterations, running/u);
 });
 
 test("mobile viewer preserves layout and touch targets", async ({
@@ -1092,7 +1373,10 @@ test("the banner targets the outer loop node and occurrence of a waiting loop ga
   await banner.click();
 
   const outerNode = page.locator('.dag-node[data-node-id="refine"]');
-  await expect(outerNode).toHaveAttribute("aria-selected", "true");
+  await expect(
+    page.locator('.dag-body-node[data-loop-node-id="refine"][data-body-node-id="gate"]'),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(outerNode).toHaveAttribute("aria-selected", "false");
   const dock = page.locator("#decision-dock");
   await expect(dock).toBeVisible();
   await expect(dock.locator(".dock-question")).toHaveText("Approve the revised result?");

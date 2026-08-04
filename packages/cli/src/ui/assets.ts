@@ -687,7 +687,8 @@ h3 {
   stroke: none;
 }
 
-.dag-node text {
+.dag-node text,
+.dag-body-node text {
   pointer-events: none;
   fill: #292c33;
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -699,8 +700,42 @@ h3 {
 }
 
 .dag-node .dag-node-meta {
-  fill: #777c87;
+  fill: var(--muted);
   font-size: 10px;
+}
+
+.dag-loop-stack {
+  fill: var(--panel);
+  stroke: var(--dim);
+  stroke-width: 1.5;
+}
+
+.dag-loop-surface {
+  fill: var(--subdued);
+}
+
+.dag-node .dag-loop-edge-label {
+  fill: var(--dim-ink);
+  font-size: 9px;
+  text-anchor: middle;
+}
+
+.dag-loop-feedback {
+  stroke-dasharray: 4 3;
+}
+
+.dag-body-node:not(.dag-node) {
+  pointer-events: none;
+}
+
+.dag-body-node .dag-node-title {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.dag-body-node .dag-node-meta {
+  fill: var(--muted);
+  font-size: 9px;
 }
 
 .dag-node.succeeded .dag-node-body {
@@ -725,7 +760,7 @@ h3 {
   stroke-dasharray: 4 4;
 }
 
-.dag-node.skipped {
+.dag-node.skipped:not(.dag-body-node) {
   opacity: 0.55;
 }
 
