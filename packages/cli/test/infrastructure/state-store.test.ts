@@ -937,22 +937,8 @@ describe("StateStore bootstrap", () => {
     const database = new Database(databasePath);
     database.pragma("foreign_keys = OFF");
     database.exec("DROP TABLE run_workspaces");
-    const beforeObjects = database
-      .prepare(
-        `
-          SELECT type, name, sql FROM sqlite_master
-          WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
-        `,
-      )
-      .all();
-    database.close();
-
-    const error = expectKilinError(() => new StateStore(dataDirectory), "INTERNAL_ERROR");
-    expect(error.message).toContain("Archive or reset");
-
-    const after = new Database(databasePath, { readonly: true });
-    expect(
-      after
+    const readState = (connection: Database.Database): Record<string, unknown[]> => ({
+      objects: connection
         .prepare(
           `
             SELECT type, name, sql FROM sqlite_master
@@ -960,8 +946,21 @@ describe("StateStore bootstrap", () => {
           `,
         )
         .all(),
-    ).toEqual(beforeObjects);
-    expect(after.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([1]);
+      migrations: connection.prepare("SELECT * FROM schema_migrations ORDER BY version").all(),
+      runs: connection.prepare("SELECT * FROM workflow_runs ORDER BY id").all(),
+      nodes: connection.prepare("SELECT * FROM node_runs ORDER BY node_id").all(),
+      attempts: connection.prepare("SELECT * FROM node_attempts ORDER BY node_id, attempt").all(),
+    });
+    const before = readState(database);
+    database.close();
+    expect(before.attempts).toHaveLength(1);
+
+    const error = expectKilinError(() => new StateStore(dataDirectory), "INTERNAL_ERROR");
+    expect(error.message).toContain("Archive or reset");
+
+    // Schema objects alone would not catch a migration that rewrote rows before failing.
+    const after = new Database(databasePath, { readonly: true });
+    expect(readState(after)).toEqual(before);
     after.close();
   });
 

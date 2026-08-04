@@ -505,7 +505,13 @@ export const terminateRecordedProcesses = async (
   }
   signalProcesses(survivors.values(), "SIGTERM");
   await new Promise((resolve) => setTimeout(resolve, graceMs));
-  signalProcesses(matchingProcesses(survivors.values(), listProcessIdentities()) ?? [], "SIGKILL");
+  const remaining = listProcessIdentities();
+  if (remaining === undefined) {
+    // Without the second reading there is no way to know which survivors ignored the signal, so
+    // the escalation never happened and the records are still the only trace of them.
+    return false;
+  }
+  signalProcesses(matchingProcesses(survivors.values(), remaining) ?? [], "SIGKILL");
   return true;
 };
 

@@ -266,7 +266,7 @@ The six tables are:
 | `workflow_revisions` | ID, scope kind/root, workflow ID, schema version, hash, normalized definition, created time                                          |
 | `workflow_runs`      | revision, lineage, canonical cwd, options, parameter snapshot, trigger provenance, cancellation request, status, timestamps, failure |
 | `node_runs`          | run/node identity, ordinal, runtime/model metadata, state, exit/failure, output paths                                                |
-| `node_attempts`      | run/node identity, attempt number, state, timestamps, exit/failure, output paths, process identity while running                     |
+| `node_attempts`      | run/node identity, attempt number, state, timestamps, exit/failure, output paths, process identity until the process is observed ending or reaped |
 | `run_workspaces`     | run ID, workspace ID, path, base commit, status, created time                                                                        |
 
 `workflow_revisions` is unique by `(scope_kind, scope_root, workflow_id, content_hash)`, and each run has one node row per plan node. Streams remain ordinary files:

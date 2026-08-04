@@ -7,7 +7,9 @@ All notable changes to `@kilin-space/cli` are documented here.
 - Terminate the process trees a run spawns, reliably. Forced cleanup now works on macOS: a
   TERM-resistant descendant that outlives its process-group leader is force-terminated on every host
   that exposes a process snapshot, where before macOS declined the escalation and left the process
-  running indefinitely. Process readings are taken under a pinned locale and time zone so the same
+  running indefinitely. Cleanup reaches the process group Kilin created and the tree still parented
+  under it; a descendant that both detaches into its own group and outlives its parent escapes both,
+  as before. Process readings are taken under a pinned locale and time zone so the same
   process is recognised across commands (#37).
 - Stop an attached run on `SIGTERM` and `SIGHUP`, not only `SIGINT`. `run`, `trigger`, `rerun`,
   `retry`, and `resume` route all three through the same cancellation path, so a supervisor,

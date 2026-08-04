@@ -1900,22 +1900,23 @@ describe("run CLI lifecycle", () => {
       child.stdout.on("data", (chunk: string) => {
         stdout += chunk;
       });
-      await waitFor(() => pathExists(descendantPidPath));
-      const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
-      const runId = String(jsonLines(stdout).find(({ type }) => type === "run.started")?.runId);
-
+      let descendantPid: number | undefined;
       try {
+        await waitFor(() => pathExists(descendantPidPath));
+        const provider = Number(await readFile(descendantPidPath, "utf8"));
+        descendantPid = provider;
+        const runId = String(jsonLines(stdout).find(({ type }) => type === "run.started")?.runId);
         // SIGKILL cannot be handled, so no signal handler and no `finally` can clean up here. This is
         // the crash the issue describes: the provider tree outlives the Kilin process entirely.
         child.kill("SIGKILL");
         await new Promise<void>((resolve) => child.once("close", () => resolve()));
-        expect(processIsRunning(descendantPid)).toBe(true);
+        expect(processIsRunning(provider)).toBe(true);
 
         // Inspecting the run first reconciles it to `interrupted`. The reap must survive that, since
         // looking up the run id is the normal thing to do before resuming.
         const shownBefore = await runCli(["runs", "show", runId, "--json"], environment);
         expect(JSON.parse(shownBefore.stdout)).toMatchObject({ run: { status: "interrupted" } });
-        expect(processIsRunning(descendantPid)).toBe(true);
+        expect(processIsRunning(provider)).toBe(true);
 
         const recovered = await runCli([recoveryCommand, runId, "--json"], {
           ...environment,
@@ -1923,9 +1924,12 @@ describe("run CLI lifecycle", () => {
         });
 
         expect(recovered.exitCode).toBe(0);
-        await waitFor(() => !processIsRunning(descendantPid));
+        await waitFor(() => !processIsRunning(provider));
       } finally {
-        killProcessIfRunning(descendantPid);
+        child.kill("SIGKILL");
+        if (descendantPid !== undefined) {
+          killProcessIfRunning(descendantPid);
+        }
       }
     },
     20_000,
@@ -1956,67 +1960,76 @@ describe("run CLI lifecycle", () => {
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
       });
-      await waitFor(() => pathExists(descendantPidPath));
-      const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
-      child.kill(stopSignal);
+      let descendantPid: number | undefined;
+      try {
+        await waitFor(() => pathExists(descendantPidPath));
+        const provider = Number(await readFile(descendantPidPath, "utf8"));
+        descendantPid = provider;
+        child.kill(stopSignal);
 
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          child.kill("SIGKILL");
-          reject(new Error(`Timed out waiting for the ${stopSignal} cancellation contract.`));
-        }, 5_000);
-        child.once("error", reject);
-        child.once("close", (code, signal) => {
-          clearTimeout(timeout);
-          if (signal !== null || code === null) {
-            reject(new Error(`CLI closed with signal ${signal ?? "unknown"}.`));
-            return;
-          }
-          resolve(code);
+        const exitCode = await new Promise<number>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            child.kill("SIGKILL");
+            reject(new Error(`Timed out waiting for the ${stopSignal} cancellation contract.`));
+          }, 5_000);
+          child.once("error", reject);
+          child.once("close", (code, signal) => {
+            clearTimeout(timeout);
+            if (signal !== null || code === null) {
+              reject(new Error(`CLI closed with signal ${signal ?? "unknown"}.`));
+              return;
+            }
+            resolve(code);
+          });
         });
-      });
-      const events = jsonLines(stdout);
+        const events = jsonLines(stdout);
 
-      expect(exitCode).toBe(130);
-      expect(stderr).toBe("");
-      await waitFor(() => !processIsRunning(descendantPid));
-      expect(events.at(-1)).toMatchObject({ type: "run.finished", status: "cancelled" });
-      expect(events.filter(({ type }) => type === "run.finished")).toHaveLength(1);
+        expect(exitCode).toBe(130);
+        expect(stderr).toBe("");
+        await waitFor(() => !processIsRunning(provider));
+        expect(events.at(-1)).toMatchObject({ type: "run.finished", status: "cancelled" });
+        expect(events.filter(({ type }) => type === "run.finished")).toHaveLength(1);
 
-      const runId = events.find(({ type }) => type === "run.started")?.runId;
-      expect(typeof runId).toBe("string");
-      const shown = await runCli(["runs", "show", String(runId), "--json"], environment);
-      expect(shown.exitCode).toBe(0);
-      const shownDocument = JSON.parse(shown.stdout) as {
-        run: Record<string, unknown>;
-        nodes: Record<string, unknown>[];
-      };
-      expect(shownDocument).toMatchObject({ run: { status: "cancelled" } });
-      expect(sortedKeys(shownDocument.run)).toEqual([
-        "cwd",
-        "durationMs",
-        "finishedAt",
-        "projectRoot",
-        "revisionId",
-        "runId",
-        "startedAt",
-        "status",
-        "workflowId",
-        "workflowScope",
-      ]);
-      expect(sortedKeys(shownDocument.nodes[0] ?? {})).toEqual([
-        "durationMs",
-        "finishedAt",
-        "kind",
-        "nodeId",
-        "ordinal",
-        "resultPath",
-        "runtime",
-        "startedAt",
-        "status",
-        "stderrPath",
-        "stdoutPath",
-      ]);
+        const runId = events.find(({ type }) => type === "run.started")?.runId;
+        expect(typeof runId).toBe("string");
+        const shown = await runCli(["runs", "show", String(runId), "--json"], environment);
+        expect(shown.exitCode).toBe(0);
+        const shownDocument = JSON.parse(shown.stdout) as {
+          run: Record<string, unknown>;
+          nodes: Record<string, unknown>[];
+        };
+        expect(shownDocument).toMatchObject({ run: { status: "cancelled" } });
+        expect(sortedKeys(shownDocument.run)).toEqual([
+          "cwd",
+          "durationMs",
+          "finishedAt",
+          "projectRoot",
+          "revisionId",
+          "runId",
+          "startedAt",
+          "status",
+          "workflowId",
+          "workflowScope",
+        ]);
+        expect(sortedKeys(shownDocument.nodes[0] ?? {})).toEqual([
+          "durationMs",
+          "finishedAt",
+          "kind",
+          "nodeId",
+          "ordinal",
+          "resultPath",
+          "runtime",
+          "startedAt",
+          "status",
+          "stderrPath",
+          "stdoutPath",
+        ]);
+      } finally {
+        child.kill("SIGKILL");
+        if (descendantPid !== undefined) {
+          killProcessIfRunning(descendantPid);
+        }
+      }
     },
     10_000,
   );

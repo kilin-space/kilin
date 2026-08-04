@@ -1088,6 +1088,10 @@ export class StateStore {
    * Records the operating-system process a running attempt started. The identity stays on the row
    * until the attempt finishes through the ordinary path, which clears it — so a row that still
    * carries one names a process Kilin never observed ending.
+   *
+   * Writing nothing is the correct outcome when the attempt has already left `running`: a
+   * cancellation can commit between the spawn and this call, and that owner is about to terminate
+   * the process group itself. Recording an identity then would name a process nobody needs to reap.
    */
   public recordAttemptProcess(
     runId: string,
