@@ -542,10 +542,6 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
 
   await page.getByRole("button", { name: /Run loop-run, running/u }).click();
   await expect(page.locator("#execution-list button")).toHaveCount(0);
-  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
-    "loop · 2/3 · ◐ Running",
-  );
-  await expect(loopCard).toHaveAttribute("aria-label", /loop, 2 of 3 iterations started, running/u);
   await expect(
     page.getByRole("button", { name: /^draft, loop refine body step 1, iteration 1, succeeded$/u }),
   ).toBeVisible();
@@ -558,6 +554,10 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
     page.getByRole("button", { name: /^judge, loop refine body step 3, iteration 1, pending$/u }),
   ).toBeVisible();
   await loopCard.click({ position: { x: 60, y: 20 } });
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
+    "loop · 2/3 · ◐ Running",
+  );
+  await expect(loopCard).toHaveAttribute("aria-label", /loop, 2 of 3 iterations started, running/u);
   await expect(page.locator("#evidence-placeholder")).toBeVisible();
   await expect(page.locator("#evidence-placeholder")).toHaveText(
     "A loop node does not capture evidence. Select a body execution under Loop iterations.",
@@ -596,6 +596,13 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   await page.getByRole("button", { name: /^draft, loop refine, iteration 0,/u }).click();
   await expect(prepareCard).toHaveAttribute("aria-selected", "false");
   await expect(page.locator(".dag-body-node")).toHaveCount(3);
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
+    "loop · 1/3 · ◐ Running",
+  );
+  await expect(page.locator('.dag-body-node[data-body-node-id="draft"]')).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(page.locator("#node-inspector")).toContainText("opaque-occurrence-alpha");
   await expect(page.locator("#node-inspector")).toContainText("Iteration0");
   const gateButton = page.getByRole("button", { name: /^gate, loop refine, iteration 1,/u });
