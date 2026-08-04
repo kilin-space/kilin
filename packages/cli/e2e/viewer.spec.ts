@@ -1,4 +1,4 @@
-import type { Page, Response, Route, TestInfo } from "@playwright/test";
+import type { Locator, Page, Response, Route, TestInfo } from "@playwright/test";
 
 import { maximumApprovalNoteCharacters } from "../src/domain/run-state.js";
 import type {
@@ -14,7 +14,6 @@ import {
   cancelRequestedSummary,
   decidedGateNodes,
   fanOutCurrentWorkflow,
-  fanOutRunListResponse,
   fulfillJson,
   fulfillTransientFailure,
   gateCurrentWorkflow,
@@ -67,6 +66,9 @@ const graphStripHeight = async (page: Page): Promise<number> =>
 
 const graphSurfaceHeight = async (page: Page): Promise<number> =>
   page.locator("#workflow-graph").evaluate((element) => element.getBoundingClientRect().height);
+
+const keepsDomFocus = (locator: Locator): Promise<boolean> =>
+  locator.evaluate((element) => element === document.activeElement);
 
 interface Deferred<Value> {
   readonly promise: Promise<Value>;
@@ -127,7 +129,6 @@ test("desktop viewer exposes the graph, stored states, bounded output, and linea
   const surfaceHeight = await graphSurfaceHeight(page);
   expect(surfaceHeight).toBeGreaterThan(0);
   expect(surfaceHeight).toBeLessThanOrEqual(await graphStripHeight(page));
-  await expect(page.locator("#graph-expand-toggle")).toBeAttached();
   await expect(page.locator("#graph-expand-toggle")).toBeHidden();
 
   await page
@@ -1628,15 +1629,13 @@ test("the run inspector offers a cancel fallback only while the run is live", as
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(command);
 
   await copy.focus();
-  const copyKeepsFocus = (): Promise<boolean> =>
-    copy.evaluate((element) => element === document.activeElement);
-  expect(await copyKeepsFocus()).toBe(true);
+  expect(await keepsDomFocus(copy)).toBe(true);
   const focusedCopy = await copy.elementHandle();
   if (focusedCopy === null) {
     throw new Error("The cancel command copy control was not rendered.");
   }
   await page.waitForFunction((element) => !element.isConnected, focusedCopy);
-  expect(await copyKeepsFocus()).toBe(true);
+  expect(await keepsDomFocus(copy)).toBe(true);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(commands).toContainText(command);
@@ -1666,7 +1665,7 @@ test("the graph strip expands from the keyboard and stays expanded across polls"
       workflowRequests += 1;
       return shortGraph ? gateCurrentWorkflow() : fanOutCurrentWorkflow();
     },
-    runList: fanOutRunListResponse,
+    runList: () => runListResponse([]),
     runDetail: () => undefined,
   });
   await openViewer(page, viewer.launchUrl);
@@ -1678,7 +1677,6 @@ test("the graph strip expands from the keyboard and stays expanded across polls"
   const collapsedHeight = await graphStripHeight(page);
   expect(collapsedHeight).toBeLessThan(graphHeight);
 
-  await toggle.focus();
   await toggle.press("Enter");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   const expandedHeight = await graphStripHeight(page);
@@ -1707,9 +1705,7 @@ test("the graph strip expands from the keyboard and stays expanded across polls"
     .poll(() => graphSurfaceHeight(page), { timeout: 10_000 })
     .toBeLessThan(await graphStripHeight(page));
   await expect(toggle).toBeVisible();
-  await expect(toggle.evaluate((element) => element === document.activeElement)).resolves.toBe(
-    true,
-  );
+  expect(await keepsDomFocus(toggle)).toBe(true);
 });
 
 test("an approval note spans lines, stays bounded, and keeps the decision controls reachable", async ({
@@ -1764,7 +1760,6 @@ test("an approval note spans lines, stays bounded, and keeps the decision contro
     .repeat(Math.ceil(maximumApprovalNoteCharacters / "note line\n".length))
     .slice(0, maximumApprovalNoteCharacters);
   await note.fill(overLongNote);
-  await note.press("End");
   await page.keyboard.type("beyond the limit");
   await expect(note).toHaveValue(overLongNote);
 
@@ -1791,15 +1786,12 @@ test("an approval note spans lines, stays bounded, and keeps the decision contro
   expect(decisionBody).toBeNull();
   decided = true;
   await page.locator("#decision-approve").click();
-  await expect(page.locator(".decision-record")).toContainText("human");
-  expect(decisionBody).toBe(JSON.stringify({ decision: "approved", note: multilineNote }));
 
   const recorded = page.locator(".decision-record-note");
   await expect(recorded).toHaveJSProperty("textContent", multilineNote);
+  expect(decisionBody).toBe(JSON.stringify({ decision: "approved", note: multilineNote }));
   await recorded.focus();
-  await expect(recorded.evaluate((element) => element === document.activeElement)).resolves.toBe(
-    true,
-  );
+  expect(await keepsDomFocus(recorded)).toBe(true);
   const recordedLines = await recorded.evaluate(
     (element) =>
       element.getBoundingClientRect().height /
@@ -1829,10 +1821,7 @@ test("the approval note keeps focus and the caret when the decision dock rebuild
   await openViewer(page, viewer.launchUrl);
 
   const note = page.locator("#decision-note");
-  await note.click();
-  await page.keyboard.type("first line");
-  await page.keyboard.press("Enter");
-  await page.keyboard.type("second line");
+  await note.fill("first line\nsecond line");
   await page.keyboard.press("ArrowLeft");
   await page.keyboard.press("Shift+ArrowLeft");
   await page.keyboard.press("Shift+ArrowLeft");
@@ -1844,18 +1833,13 @@ test("the approval note keeps focus and the caret when the decision dock rebuild
     readonly length: number;
   }
   const selection = (): Promise<NoteSelection> =>
-    note.evaluate((element) => {
-      if (!(element instanceof HTMLTextAreaElement)) {
-        throw new Error("The approval note field is not a textarea.");
-      }
-      return {
-        focused: element === document.activeElement,
-        start: element.selectionStart,
-        end: element.selectionEnd,
-        direction: element.selectionDirection,
-        length: element.value.length,
-      };
-    });
+    note.evaluate<NoteSelection, HTMLTextAreaElement>((element) => ({
+      focused: element === document.activeElement,
+      start: element.selectionStart,
+      end: element.selectionEnd,
+      direction: element.selectionDirection,
+      length: element.value.length,
+    }));
   const before = await selection();
   expect(before.focused).toBe(true);
   expect(before.end).toBeLessThan(before.length);

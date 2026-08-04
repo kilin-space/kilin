@@ -1,6 +1,7 @@
 import type { Page, Route } from "@playwright/test";
 
 import type {
+  AgentWorkflowNodeDto,
   ApprovalDecisionResponse,
   BoundedOutputResponse,
   CurrentWorkflowResponse,
@@ -55,7 +56,6 @@ export const gateCurrentWorkflow = (): CurrentWorkflowResponse => ({
   diagnostics: [],
 });
 
-const fanOutWorkflowId = "fan-out-viewer";
 const fanOutBranches = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"] as const;
 
 /** A graph whose seven nodes occupy six lanes, so it is taller than the collapsed graph strip. */
@@ -64,7 +64,7 @@ export const fanOutCurrentWorkflow = (): CurrentWorkflowResponse => ({
   state: "valid",
   contentHash: "fan-out-content",
   workflow: {
-    workflowId: fanOutWorkflowId,
+    workflowId: "fan-out-viewer",
     name: "Fan-out review",
     nodes: [
       {
@@ -76,13 +76,13 @@ export const fanOutCurrentWorkflow = (): CurrentWorkflowResponse => ({
         outputType: "text",
         dependencies: [],
       },
-      ...fanOutBranches.map((branch, index) => ({
+      ...fanOutBranches.map((branch, index): AgentWorkflowNodeDto => ({
         id: branch,
         ordinal: index + 1,
-        kind: "agent" as const,
-        runtime: "codex" as const,
-        access: "read_only" as const,
-        outputType: "text" as const,
+        kind: "agent",
+        runtime: "codex",
+        access: "read_only",
+        outputType: "text",
         dependencies: ["collect"],
       })),
     ],
@@ -90,13 +90,6 @@ export const fanOutCurrentWorkflow = (): CurrentWorkflowResponse => ({
     executionOrder: ["collect", ...fanOutBranches],
   },
   diagnostics: [],
-});
-
-export const fanOutRunListResponse = (): ScopedRunListResponse => ({
-  outputVersion: 1,
-  workflowId: fanOutWorkflowId,
-  workflowScope: "project",
-  runs: [],
 });
 
 const baseSummary = (runId: string): RunSummaryDto => ({
