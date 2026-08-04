@@ -539,6 +539,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   await expect(page.locator(".dag-body-node")).toHaveCount(3);
   await page.locator('.dag-node[data-node-id="prepare"]').click();
   await expect(page.locator(".dag-body-node")).toHaveCount(0);
+  await expect(loopCard.locator(".dag-edge")).toHaveCount(0);
 
   await page.getByRole("button", { name: /Run loop-run, running/u }).click();
   await expect(page.locator("#execution-list button")).toHaveCount(0);
@@ -558,6 +559,12 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
     "loop · 2/3 · ◐ Running",
   );
   await expect(loopCard).toHaveAttribute("aria-label", /loop, iteration 2 of 3, running/u);
+  await expect(loopCard.locator(".dag-edge")).toHaveCount(4);
+  await expect(loopCard.locator(".dag-loop-feedback")).toHaveCount(1);
+  await expect(loopCard.locator(".dag-loop-edge-label")).toHaveText([
+    "revise · prior_feedback",
+    "pass",
+  ]);
   await expect(page.locator("#evidence-placeholder")).toBeVisible();
   await expect(page.locator("#evidence-placeholder")).toHaveText(
     "A loop node does not capture evidence. Select a body execution under Loop iterations.",

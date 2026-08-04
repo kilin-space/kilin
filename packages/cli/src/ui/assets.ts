@@ -694,14 +694,12 @@ h3 {
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-.dag-node .dag-node-title,
-.dag-body-node .dag-node-title {
+.dag-node .dag-node-title {
   font-size: 13px;
   font-weight: 650;
 }
 
-.dag-node .dag-node-meta,
-.dag-body-node .dag-node-meta {
+.dag-node .dag-node-meta {
   fill: var(--muted);
   font-size: 10px;
 }
@@ -732,9 +730,11 @@ h3 {
 
 .dag-body-node .dag-node-title {
   font-size: 11px;
+  font-weight: 650;
 }
 
 .dag-body-node .dag-node-meta {
+  fill: var(--muted);
   font-size: 9px;
 }
 

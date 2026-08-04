@@ -814,7 +814,7 @@ const selectedGraphCardKey = (): string | undefined => {
   if (nodeRun?.loopNodeId === undefined) {
     return state.selectedNodeId;
   }
-  return `${nodeRun.loopNodeId}/${nodeRun.nodeId}`;
+  return composeCardKey(nodeRun.loopNodeId, nodeRun.nodeId);
 };
 
 const ensureNodeSelection = (): void => {
