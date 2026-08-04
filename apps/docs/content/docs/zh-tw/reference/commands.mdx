@@ -56,6 +56,9 @@ kilin runs reject <run-id> <node-id> --actor <agent|human> [--note <text>] [--js
 
 取消操作會記錄持久請求；前景 owner 觀察該請求並終止活動 provider 工作。確認只表示請求已記錄，不代表所有行程已停止。
 
+對於仍在執行的 agent 節點，`runs show` 會報告其作業系統行程及其已執行時長，因此無需檢索行程表即可
+辨識卡住的 provider。節點進入終態後，兩者都不再出現。
+
 ## 本機 Viewer
 
 ```text

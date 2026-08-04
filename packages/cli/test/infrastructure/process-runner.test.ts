@@ -391,11 +391,7 @@ describe("process execution", () => {
 
       expect(outcome.status).toBe("timed_out");
       expect(Date.now() - startedAt).toBeLessThan(timeoutMs + terminationGraceMs + 500);
-      if (process.platform === "linux") {
-        await waitFor(() => !processIsRunning(recordedDescendantPid));
-      } else {
-        expect(processIsRunning(recordedDescendantPid)).toBe(true);
-      }
+      await waitFor(() => !processIsRunning(recordedDescendantPid));
     } finally {
       if (descendantPid !== undefined) {
         killProcessIfRunning(descendantPid);
@@ -463,11 +459,7 @@ describe("process execution", () => {
       const outcome = await running;
 
       expect(outcome.status).toBe("cancelled");
-      if (process.platform === "linux") {
-        await waitFor(() => !processIsRunning(recordedDescendantPid));
-      } else {
-        expect(processIsRunning(recordedDescendantPid)).toBe(true);
-      }
+      await waitFor(() => !processIsRunning(recordedDescendantPid));
     } finally {
       controller.abort();
       await Promise.allSettled([running]);
@@ -530,7 +522,7 @@ describe("process execution", () => {
     }
   });
 
-  it("forces delayed detached-descendant cleanup only with stable process identity", async () => {
+  it("forces delayed cleanup of a detached descendant that outlives its leader", async () => {
     const directory = await createTemporaryDirectory();
     const paths = nodeOutputPaths(directory, "run", "detached-descendant", 0);
     await prepareNodeOutput(paths);
@@ -566,11 +558,7 @@ describe("process execution", () => {
       const outcome = await running;
 
       expect(outcome.status).toBe("timed_out");
-      if (process.platform === "linux") {
-        await waitFor(() => !processIsRunning(recordedDescendantPid));
-      } else {
-        expect(processIsRunning(recordedDescendantPid)).toBe(true);
-      }
+      await waitFor(() => !processIsRunning(recordedDescendantPid));
     } finally {
       if (descendantPid !== undefined) {
         killProcessIfRunning(descendantPid);

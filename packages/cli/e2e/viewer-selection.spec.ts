@@ -91,6 +91,10 @@ test("opening the viewer during a running run selects the running node", async (
     const runningNode = page.locator(".dag-node.running");
     await expect(runningNode).toHaveAttribute("aria-selected", "true");
     await expect.poll(() => activeGraphNodeId(page)).toBe("analyze");
+    // The executing node names the process it is running, so a stuck provider is identifiable
+    // without searching the process table.
+    await expect(page.locator("#node-inspector")).toContainText(/Process\s*[1-9]\d*/u);
+    await expect(page.locator("#node-inspector [data-live-elapsed]")).toHaveCount(1);
   } finally {
     delayed.cancel();
   }

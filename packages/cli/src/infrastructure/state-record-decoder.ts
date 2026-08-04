@@ -13,6 +13,7 @@ import {
 import type {
   AgentNodeRunRecord,
   ApprovalNodeRunRecord,
+  AttemptProcessIdentity,
   FailureInfo,
   LoopNodeRunRecord,
   NodeRunRecord,
@@ -111,6 +112,9 @@ export interface StoredNodeAttemptRow {
   readonly stdout_path: string;
   readonly stderr_path: string;
   readonly result_path: string;
+  readonly process_pid: number | null;
+  readonly process_group_id: number | null;
+  readonly process_start_identifier: string | null;
 }
 
 export interface StoredRunWorkspaceRow {
@@ -827,6 +831,61 @@ export const decodeStoredNodeRunRow = (row: StoredNodeRunRow): NodeRunRecord => 
     return decodeStoredLoopNodeRunRow(row, state);
   }
   throw storedStateError(`uses unsupported node kind "${row.kind}"`);
+};
+
+/**
+ * Decodes the process identity recorded while an attempt was running. The schema keeps the three
+ * columns all-or-nothing, so a partial triple here means the row was written outside Kilin.
+ */
+export const decodeStoredAttemptProcessIdentity = (
+  row: Pick<StoredNodeAttemptRow, "process_pid" | "process_group_id" | "process_start_identifier">,
+): AttemptProcessIdentity | undefined => {
+  if (
+    row.process_pid === null &&
+    row.process_group_id === null &&
+    row.process_start_identifier === null
+  ) {
+    return undefined;
+  }
+  if (
+    !Number.isSafeInteger(row.process_pid) ||
+    Number(row.process_pid) < 1 ||
+    !Number.isSafeInteger(row.process_group_id) ||
+    Number(row.process_group_id) < 1 ||
+    typeof row.process_start_identifier !== "string" ||
+    row.process_start_identifier.length === 0
+  ) {
+    throw storedStateError("has an invalid node attempt process identity");
+  }
+  return {
+    pid: Number(row.process_pid),
+    processGroupId: Number(row.process_group_id),
+    startIdentifier: row.process_start_identifier,
+  };
+};
+
+/**
+ * Attaches the recorded process to every agent node that is still running. The identity lives on the
+ * attempt row, so without this an executing node could not name the process it is running.
+ */
+export const withRunningAttemptProcesses = (
+  nodes: readonly NodeRunRecord[],
+  attemptRows: readonly StoredNodeAttemptRow[],
+): NodeRunRecord[] => {
+  const running = new Map<string, AttemptProcessIdentity>();
+  for (const row of attemptRows) {
+    const identity = decodeStoredAttemptProcessIdentity(row);
+    if (identity !== undefined) {
+      running.set(`${row.node_id} ${String(row.attempt)}`, identity);
+    }
+  }
+  return nodes.map((node) => {
+    if (running.size === 0 || node.kind !== "agent" || node.status !== "running") {
+      return node;
+    }
+    const identity = running.get(`${node.nodeId} ${String(node.attempt ?? 1)}`);
+    return identity === undefined ? node : { ...node, process: identity };
+  });
 };
 
 export const decodeStoredNodeAttemptRow = (row: StoredNodeAttemptRow): NodeAttemptRecord => {

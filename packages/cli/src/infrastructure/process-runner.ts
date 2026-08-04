@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { createWriteStream, readFileSync } from "node:fs";
 import { chmod, mkdir, open, rename, rm, stat, truncate } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
+import { uptime } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
@@ -11,13 +12,25 @@ import type { TransformCallback } from "node:stream";
 
 import type { CompletedProcess, RuntimeInvocation } from "../application/runtime.js";
 import { KilinError } from "../domain/errors.js";
-import type { NodeOutputPaths } from "../domain/run-state.js";
+import type { AttemptProcessIdentity, NodeOutputPaths } from "../domain/run-state.js";
 
 export interface ProcessRunOptions {
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
   readonly terminationGraceMs?: number;
   readonly signal?: AbortSignal;
+  /**
+   * Called once with the identity of the spawned process group leader, before the process can
+   * produce output. Recording it lets a later command attribute and reap a survivor of a Kilin
+   * process that exited without cleaning up.
+   */
+  readonly onProcessStarted?: (identity: AttemptProcessIdentity) => void;
+}
+
+/** An attempt's recorded process, paired with the time the attempt started. */
+export interface RecordedProcess {
+  readonly startedAt: string;
+  readonly identity: AttemptProcessIdentity;
 }
 
 type CompletedProcessWithExitCode = CompletedProcess & {
@@ -46,7 +59,6 @@ interface ProcessIdentity {
   readonly parentPid: number;
   readonly processGroupId: number;
   readonly startIdentifier: string;
-  readonly startIdentifierResolution: "stable" | "coarse";
 }
 
 const defaultTerminationGraceMs = 1_000;
@@ -214,14 +226,7 @@ const syncAndCloseHandle = async (handle: FileHandle): Promise<void> => {
   }
 };
 
-const linuxProcessIdentity = (
-  pid: number,
-):
-  | Pick<
-      ProcessIdentity,
-      "parentPid" | "processGroupId" | "startIdentifier" | "startIdentifierResolution"
-    >
-  | undefined => {
+const linuxProcessIdentity = (pid: number): Omit<ProcessIdentity, "pid"> | undefined => {
   let processStat: string;
   try {
     processStat = readFileSync(`/proc/${String(pid)}/stat`, "utf8");
@@ -249,13 +254,15 @@ const linuxProcessIdentity = (
   ) {
     return undefined;
   }
-  return {
-    parentPid,
-    processGroupId,
-    startIdentifier,
-    startIdentifierResolution: "stable",
-  };
+  return { parentPid, processGroupId, startIdentifier };
 };
+
+/**
+ * `lstart` is rendered through `strftime`, so its weekday, month, and clock reading depend on the
+ * locale and time zone of the `ps` process. A recorded identifier is compared against a later
+ * snapshot — sometimes from a later CLI invocation — so both sides must render identically.
+ */
+const processListingEnvironment: Readonly<Record<string, string>> = { LC_ALL: "C", TZ: "UTC" };
 
 const listProcessIdentities = (): readonly ProcessIdentity[] | undefined => {
   const listed = spawnSync(
@@ -263,6 +270,7 @@ const listProcessIdentities = (): readonly ProcessIdentity[] | undefined => {
     ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart="],
     {
       encoding: "utf8",
+      env: processListingEnvironment,
       maxBuffer: 1024 * 1024,
       timeout: 1_000,
     },
@@ -291,16 +299,19 @@ const listProcessIdentities = (): readonly ProcessIdentity[] | undefined => {
     ) {
       continue;
     }
-    const stableIdentity = process.platform === "linux" ? linuxProcessIdentity(pid) : undefined;
-    if (process.platform === "linux" && stableIdentity === undefined) {
+    if (process.platform === "linux") {
+      const kernelIdentity = linuxProcessIdentity(pid);
+      if (kernelIdentity === undefined) {
+        continue;
+      }
+      processes.push({ pid, ...kernelIdentity });
       continue;
     }
     processes.push({
       pid,
-      parentPid: stableIdentity?.parentPid ?? parentPid,
-      processGroupId: stableIdentity?.processGroupId ?? processGroupId,
-      startIdentifier: stableIdentity?.startIdentifier ?? startedAtText.replace(/\s+/gu, " "),
-      startIdentifierResolution: stableIdentity?.startIdentifierResolution ?? "coarse",
+      parentPid,
+      processGroupId,
+      startIdentifier: startedAtText.replace(/\s+/gu, " "),
     });
   }
   return processes;
@@ -352,7 +363,6 @@ const signalProcesses = (processes: Iterable<ProcessIdentity>, signal: NodeJS.Si
 const matchingProcesses = (
   expectedProcesses: Iterable<ProcessIdentity>,
   currentProcesses: readonly ProcessIdentity[] | undefined,
-  requireStableIdentity = false,
 ): readonly ProcessIdentity[] | undefined => {
   const expectedByPid = new Map(
     [...expectedProcesses].map((processIdentity) => [processIdentity.pid, processIdentity]),
@@ -360,16 +370,123 @@ const matchingProcesses = (
   if (currentProcesses === undefined) {
     return undefined;
   }
-  return currentProcesses.filter((currentProcess) => {
-    const expectedProcess = expectedByPid.get(currentProcess.pid);
-    return (
-      expectedProcess !== undefined &&
-      (!requireStableIdentity ||
-        (expectedProcess.startIdentifierResolution === "stable" &&
-          currentProcess.startIdentifierResolution === "stable")) &&
-      expectedProcess.startIdentifier === currentProcess.startIdentifier
-    );
-  });
+  return currentProcesses.filter(
+    (currentProcess) =>
+      expectedByPid.get(currentProcess.pid)?.startIdentifier === currentProcess.startIdentifier,
+  );
+};
+
+const processIdentity = (pid: number): ProcessIdentity | undefined => {
+  if (process.platform === "linux") {
+    const kernelIdentity = linuxProcessIdentity(pid);
+    return kernelIdentity === undefined ? undefined : { pid, ...kernelIdentity };
+  }
+  const listed = spawnSync(
+    "/bin/ps",
+    ["-p", String(pid), "-o", "ppid=", "-o", "pgid=", "-o", "lstart="],
+    {
+      encoding: "utf8",
+      env: processListingEnvironment,
+      timeout: 1_000,
+    },
+  );
+  if (listed.error !== undefined || listed.status !== 0) {
+    return undefined;
+  }
+  const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(listed.stdout.split("\n")[0] ?? "");
+  if (match === null) {
+    return undefined;
+  }
+  const [, parentPidText, processGroupIdText, startedAtText] = match;
+  const parentPid = Number(parentPidText);
+  const processGroupId = Number(processGroupIdText);
+  if (
+    !Number.isSafeInteger(parentPid) ||
+    parentPid < 0 ||
+    !Number.isSafeInteger(processGroupId) ||
+    processGroupId <= 0 ||
+    startedAtText === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    pid,
+    parentPid,
+    processGroupId,
+    startIdentifier: startedAtText.replace(/\s+/gu, " "),
+  };
+};
+
+const hostBootedAt = (): number => Date.now() - uptime() * 1_000;
+
+/**
+ * Selects the live processes a recorded identity still owns.
+ *
+ * The recorded leader is trusted only when it is absent or still carries its recorded start
+ * identifier; a live process holding the recorded pid under a different identifier means the pid
+ * was recycled, and nothing about the recording can be trusted any more. Otherwise the group the
+ * leader created and the tree still parented under it are both claimed, mirroring what an
+ * in-process termination retains — a descendant can leave the group by calling `setsid`, and a
+ * descendant of a still-live leader can have its own group.
+ */
+const recordedSurvivors = (
+  record: RecordedProcess,
+  currentProcesses: readonly ProcessIdentity[],
+): readonly ProcessIdentity[] => {
+  const startedAt = Date.parse(record.startedAt);
+  if (!Number.isFinite(startedAt) || startedAt < hostBootedAt()) {
+    return [];
+  }
+  const { pid, processGroupId, startIdentifier } = record.identity;
+  const leader = currentProcesses.find((candidate) => candidate.pid === pid);
+  if (leader !== undefined && leader.startIdentifier !== startIdentifier) {
+    return [];
+  }
+  const claimed = new Map<number, ProcessIdentity>();
+  for (const candidate of currentProcesses) {
+    if (candidate.processGroupId === processGroupId) {
+      claimed.set(candidate.pid, candidate);
+    }
+  }
+  if (leader !== undefined) {
+    claimed.set(leader.pid, leader);
+    for (const descendant of descendantProcesses(pid, currentProcesses)) {
+      claimed.set(descendant.pid, descendant);
+    }
+  }
+  claimed.delete(process.pid);
+  return [...claimed.values()];
+};
+
+/**
+ * Terminates the processes recorded attempts left behind, escalating once for all of them so a run
+ * with several recorded attempts waits one grace period rather than one per attempt. Returns the
+ * number of processes signalled.
+ */
+export const terminateRecordedProcesses = async (
+  records: readonly RecordedProcess[],
+  graceMs = defaultTerminationGraceMs,
+): Promise<number> => {
+  if (records.length === 0) {
+    return 0;
+  }
+  const currentProcesses = listProcessIdentities();
+  if (currentProcesses === undefined) {
+    return 0;
+  }
+  const survivors = new Map<number, ProcessIdentity>();
+  for (const record of records) {
+    for (const survivor of recordedSurvivors(record, currentProcesses)) {
+      survivors.set(survivor.pid, survivor);
+    }
+  }
+  if (survivors.size === 0) {
+    return 0;
+  }
+  signalProcesses(survivors.values(), "SIGTERM");
+  await new Promise((resolve) => setTimeout(resolve, graceMs));
+  signalProcesses(matchingProcesses(survivors.values(), listProcessIdentities()) ?? [], "SIGKILL");
+  return survivors.size;
 };
 
 const signalProcessGroup = (child: ChildProcess, signal: NodeJS.Signals): boolean => {
@@ -567,7 +684,16 @@ export const runProcess = async (
   }
 
   const exitPromise = waitForExit(child);
-  let leaderIdentity: ProcessIdentity | undefined;
+  // Read the leader's identity while it is certain to exist rather than waiting for a termination
+  // snapshot, which can arrive after the leader has already gone.
+  let leaderIdentity = child.pid === undefined ? undefined : processIdentity(child.pid);
+  if (leaderIdentity !== undefined) {
+    options.onProcessStarted?.({
+      pid: leaderIdentity.pid,
+      processGroupId: leaderIdentity.processGroupId,
+      startIdentifier: leaderIdentity.startIdentifier,
+    });
+  }
 
   let terminationStatus: TerminationStatus | undefined;
   let terminationPromise: Promise<void> | undefined;
@@ -596,7 +722,6 @@ export const runProcess = async (
   const signalOriginalProcessGroup = (
     signal: NodeJS.Signals,
     currentProcesses: readonly ProcessIdentity[] | undefined,
-    requireStableIdentity: boolean,
   ): boolean => {
     const childIsActive = child.exitCode === null && child.signalCode === null;
     if (leaderIdentity === undefined && childIsActive) {
@@ -606,8 +731,7 @@ export const runProcess = async (
     }
     const leaderMatches =
       leaderIdentity !== undefined &&
-      matchingProcesses([leaderIdentity], currentProcesses, requireStableIdentity && !childIsActive)
-        ?.length === 1;
+      matchingProcesses([leaderIdentity], currentProcesses)?.length === 1;
     const processSnapshotUnavailable = currentProcesses === undefined && childIsActive;
     if (leaderMatches || processSnapshotUnavailable) {
       return signalProcessGroup(child, signal);
@@ -617,15 +741,10 @@ export const runProcess = async (
   const signalOwnedProcessTree = (
     signal: NodeJS.Signals,
     currentProcesses: readonly ProcessIdentity[] | undefined,
-    requireStableIdentity: boolean,
   ): void => {
-    const originalProcessGroupSignaled = signalOriginalProcessGroup(
-      signal,
-      currentProcesses,
-      requireStableIdentity,
-    );
+    const originalProcessGroupSignaled = signalOriginalProcessGroup(signal, currentProcesses);
     const currentOwnedProcesses =
-      matchingProcesses(ownedProcesses.values(), currentProcesses, requireStableIdentity) ?? [];
+      matchingProcesses(ownedProcesses.values(), currentProcesses) ?? [];
     signalProcesses(
       originalProcessGroupSignaled
         ? currentOwnedProcesses.filter(
@@ -650,10 +769,10 @@ export const runProcess = async (
         retainOriginalProcessGroup(currentProcesses);
       }
       if (!processGroupConfirmedAbsent) {
-        signalOwnedProcessTree("SIGKILL", currentProcesses, true);
+        signalOwnedProcessTree("SIGKILL", currentProcesses);
       } else {
         signalProcesses(
-          matchingProcesses(ownedProcesses.values(), currentProcesses, true) ?? [],
+          matchingProcesses(ownedProcesses.values(), currentProcesses) ?? [],
           "SIGKILL",
         );
       }
@@ -672,7 +791,7 @@ export const runProcess = async (
       retainProcesses(descendantProcesses(child.pid, currentProcesses));
       retainOriginalProcessGroup(currentProcesses);
     }
-    signalOwnedProcessTree("SIGTERM", currentProcesses, false);
+    signalOwnedProcessTree("SIGTERM", currentProcesses);
     terminationPromise = new Promise((resolve) => {
       resolveTermination = resolve;
       escalationTimer = setTimeout(

@@ -121,6 +121,12 @@ kilin runs approve <run-id> <approval-node-id> --actor agent
 kilin runs cancel <run-id>
 ```
 
+Stopping the attached `kilin run` process itself also stops the run. `SIGINT`, `SIGTERM`, and
+`SIGHUP` all route through the same cancellation path, so a supervisor, container stop, CI
+cancellation, or a closed terminal terminates the provider process tree instead of orphaning it,
+and the command exits `130`. If a run is killed outright and cannot clean up, `kilin resume` ends
+the processes it left behind before continuing.
+
 Failures carry stable error codes — `NODE_TIMEOUT`, `LOOP_LIMIT_REACHED`, `APPROVAL_REJECTED`, and
 the rest — so a supervising agent can branch on the code rather than parse prose. `runs list`,
 `runs show`, and `workflow validate` also accept `--json`.

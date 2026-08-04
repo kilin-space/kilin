@@ -1058,6 +1058,54 @@ describe("ViewerApplication captured output", () => {
     expect(projected.nodes[0]?.availableOutputs).toEqual(["stdout", "stderr", "result"]);
   });
 
+  it("projects the recorded process of an executing agent node and drops it once terminal", async () => {
+    const { application, cwd, dataDirectory, plan } = await createFixture(
+      decisionPacketDefinition("json"),
+    );
+    const store = new StateStore(dataDirectory);
+    try {
+      const created = store.createRun({
+        plan,
+        identity: {
+          scope: { kind: "project", root: dirname(cwd) },
+          workflowId: plan.definition.workflow.id,
+        },
+        canonicalCwd: cwd,
+        options: {
+          nodeTimeoutMs: 60_000,
+          approvalTimeoutMs: 60_000,
+          maxOutputBytes: 1_048_576,
+          maxParallel: 1,
+        },
+      });
+      const node = created.nodes[0];
+      if (node?.kind !== "agent") {
+        throw new Error("Expected an agent node");
+      }
+      const paths = nodeOutputPaths(dataDirectory, created.run.id, node.nodeId, node.ordinal);
+      await prepareNodeOutput(paths);
+      store.transitionNode(created.run.id, node.nodeId, { status: "running", ...paths });
+      store.recordAttemptProcess(created.run.id, node.nodeId, 1, {
+        pid: 4242,
+        processGroupId: 4242,
+        startIdentifier: "recorded-start",
+      });
+
+      const runningDetail = store.getRun(created.run.id);
+      const running = await application.runDetail(runningDetail, [runningDetail]);
+      expect(running.nodes[0]).toMatchObject({ kind: "agent", status: "running", pid: 4242 });
+
+      store.transitionNode(created.run.id, node.nodeId, { status: "succeeded", exitCode: 0 });
+
+      const finishedDetail = store.getRun(created.run.id);
+      const finished = await application.runDetail(finishedDetail, [finishedDetail]);
+      expect(finished.nodes[0]).toMatchObject({ kind: "agent", status: "succeeded" });
+      expect(finished.nodes[0]).not.toHaveProperty("pid");
+    } finally {
+      store.close();
+    }
+  });
+
   it("authorizes output paths for the stored retry attempt", async () => {
     const { application, cwd, dataDirectory, plan } = await createFixture(
       decisionPacketDefinition("json"),

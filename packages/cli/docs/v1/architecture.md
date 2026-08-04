@@ -194,7 +194,9 @@ A zero process exit is successful only after required output and final-result ca
 
 Kilin starts each runtime in its own process group. Cancellation targets the group, applies bounded TERM/KILL cleanup to descendants, retains captured output, marks active state cancelled, and skips pending work. Cancellation during preflight similarly reaps the probe group but creates no record.
 
-Cancellation has two sources. The attached process maps `SIGINT` to its abort signal, and a second
+Cancellation has two sources. The attached process maps `SIGINT`, `SIGTERM`, and `SIGHUP` to its
+abort signal, so a supervisor or container stop terminates the process group instead of orphaning
+it, and a second
 local process can record a durable request with [`runs cancel`](cli.md#runs-cancel). After a run
 exists, one application-owned monitor polls `workflow_runs.cancel_requested_at` on the existing
 250 ms attention cadence and drives a single run-level `AbortController` that combines the caller's
@@ -244,7 +246,10 @@ configuration may differ.
 V1 uses `~/.kilin/kilin.db`. Mutating `StateStore` connections enable foreign keys and WAL
 journaling; all state connections use a five-second busy timeout. One transactional V1 baseline is
 serialized by a separate state-schema lock. Existing databases must match the complete current
-schema; partial, historical, future, or tampered shapes fail closed without mutation. Viewer
+schema. A database at the immediately preceding baseline is brought forward inside that same
+exclusive transaction by adding columns only; the current baseline is then asserted, so a shape that
+merely claims the older version rolls back untouched. Every other partial, historical, future, or
+tampered shape fails closed without mutation. Viewer
 projections use a distinct read-only, `query_only` connection and validate the same baseline before
 querying. The approval route opens the ordinary guarded state path only long enough to record one
 eligible Human Decision. Transactions are short and never remain open while a provider runs.
@@ -259,7 +264,7 @@ The six tables are:
 | `workflow_revisions` | ID, scope kind/root, workflow ID, schema version, hash, normalized definition, created time |
 | `workflow_runs` | revision, lineage, canonical cwd, options, parameter snapshot, trigger provenance, cancellation request, status, timestamps, failure |
 | `node_runs` | run/node identity, ordinal, runtime/model metadata, state, exit/failure, output paths |
-| `node_attempts` | run/node identity, attempt number, state, timestamps, exit/failure, output paths |
+| `node_attempts` | run/node identity, attempt number, state, timestamps, exit/failure, output paths, process identity while running |
 | `run_workspaces` | run ID, workspace ID, path, base commit, status, created time |
 
 `workflow_revisions` is unique by `(scope_kind, scope_root, workflow_id, content_hash)`, and each run has one node row per plan node. Streams remain ordinary files:

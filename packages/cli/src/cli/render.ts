@@ -145,6 +145,15 @@ type AgentNodeIdentityDocument = NodeIdentityDocument & {
   readonly reusedFromNodeId?: string;
 };
 
+/**
+ * What an executing agent node exposes about the process it is running: the operating-system pid,
+ * and how long it has been running as of this document. Both are absent once the node is terminal.
+ */
+interface RunningProcessDocument {
+  readonly pid?: number;
+  readonly durationMs: number;
+}
+
 interface NodeStartedDocument {
   readonly startedAt: string;
   readonly stdoutPath: string;
@@ -156,7 +165,7 @@ export type AgentNodeSummaryDocument = AgentNodeIdentityDocument &
   (
     | { readonly status: "pending" }
     | { readonly status: "skipped"; readonly finishedAt: string }
-    | (NodeStartedDocument & { readonly status: "running" })
+    | (NodeStartedDocument & RunningProcessDocument & { readonly status: "running" })
     | (NodeStartedDocument &
         CompletionDocument & {
           readonly status: "succeeded";
@@ -526,7 +535,14 @@ const agentNodeSummary = (
     };
   }
   if (node.status === "running") {
-    return { ...identity, ...nodeStarted(node), status: node.status };
+    const started = nodeStarted(node);
+    return {
+      ...identity,
+      ...started,
+      ...(node.process === undefined ? {} : { pid: node.process.pid }),
+      durationMs: Math.max(0, Date.now() - Date.parse(started.startedAt)),
+      status: node.status,
+    };
   }
   return terminalAgentNodeSummary(node, identity);
 };
@@ -990,6 +1006,9 @@ const renderExecutionSummary = (
     }
     if (node.attempt !== undefined) {
       lines.push(`${indent}   attempt: ${String(node.attempt)}`);
+    }
+    if ("pid" in node) {
+      lines.push(`${indent}   process: ${String(node.pid)}`);
     }
     if (nodeAttempts !== undefined) {
       for (const attempt of nodeAttempts) {

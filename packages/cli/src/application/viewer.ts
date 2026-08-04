@@ -324,6 +324,7 @@ const agentNodeRunDto = async (
     ...(finishedAt === undefined ? {} : { finishedAt }),
     ...(durationMs === undefined ? {} : { durationMs }),
     ...(node.exitCode === undefined ? {} : { exitCode: node.exitCode }),
+    ...(node.process === undefined ? {} : { pid: node.process.pid }),
     ...(failure === undefined ? {} : { failure }),
     availableOutputs: await availableOutputs(dataDirectory, runId, node),
   };

@@ -153,6 +153,8 @@ export interface AgentNodeRunDto extends NodeRunBaseDto {
   readonly status: AgentNodeRunStatus;
   readonly startedAt?: string;
   readonly exitCode?: number;
+  /** Operating-system process of the running attempt; absent once the node is terminal. */
+  readonly pid?: number;
 }
 
 export interface ApprovalNodeRunDto extends NodeRunBaseDto {

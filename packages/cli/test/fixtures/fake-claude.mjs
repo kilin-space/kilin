@@ -2,6 +2,11 @@
 
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
+// A fixture process must never outlive the suite that spawned it. Scenarios that block
+// indefinitely, and the TERM-resistant descendants they spawn, give up after this bound so a
+// failed or interrupted test run leaves no residue on the host.
+const fixtureLifetimeMs = 60_000;
+
 const args = process.argv.slice(2);
 const scenario = process.env.FAKE_CLAUDE_SCENARIO ?? "supported";
 const logPath = process.env.FAKE_CLAUDE_LOG;
@@ -13,7 +18,7 @@ if (logPath !== undefined) {
 if (args.length === 1 && args[0] === "--version") {
   if (scenario === "version-timeout") {
     await new Promise(() => {
-      setInterval(() => undefined, 60_000);
+      setTimeout(() => process.exit(0), fixtureLifetimeMs);
     });
   }
   const versions = {
@@ -36,7 +41,7 @@ if (args.length === 1 && args[0] === "--help") {
   if (scenario === "help-output-limit") {
     process.stdout.write("CAPABILITY_SECRET_FROM_PROVIDER".repeat(4_096));
     await new Promise(() => {
-      setInterval(() => undefined, 60_000);
+      setTimeout(() => process.exit(0), fixtureLifetimeMs);
     });
   }
   if (scenario === "pinned-help") {
@@ -90,7 +95,7 @@ if (args.length === 2 && args[0] === "auth" && args[1] === "status") {
   if (scenario === "auth-output-limit") {
     process.stdout.write("AUTH_SECRET_FROM_PROVIDER".repeat(4_096));
     await new Promise(() => {
-      setInterval(() => undefined, 60_000);
+      setTimeout(() => process.exit(0), fixtureLifetimeMs);
     });
   }
   process.stdout.write("Authenticated as FAKE_ACCOUNT_SECRET\n");

@@ -69,6 +69,39 @@ const createStore = async (): Promise<{ dataDirectory: string; store: TestStateS
   return { dataDirectory, store };
 };
 
+const createVersionOneDatabase = async (): Promise<string> => {
+  const dataDirectory = await createDirectory();
+  await mkdir(dataDirectory);
+  const database = new Database(join(dataDirectory, "kilin.db"));
+  try {
+    database.exec(
+      await readFile(new URL("../fixtures/state-version-1.sql", import.meta.url), "utf8"),
+    );
+    database.exec(`
+      INSERT INTO workflow_revisions
+        VALUES ('rev', 'user', '', 'wf', 1, 'hash', '{}', '${validStoredTimestamp}');
+      INSERT INTO workflow_runs (id, revision_id, canonical_cwd, options_json, status, started_at)
+        VALUES ('run', 'rev', '/tmp', '{}', 'running', '${validStoredTimestamp}');
+      INSERT INTO node_runs (
+        run_id, node_id, ordinal, kind, runtime, status, started_at,
+        stdout_path, stderr_path, result_path, current_attempt
+      ) VALUES (
+        'run', 'node', 0, 'agent', 'codex', 'running', '${validStoredTimestamp}',
+        '/tmp/stdout.log', '/tmp/stderr.log', '/tmp/result.txt', 1
+      );
+      INSERT INTO node_attempts (
+        run_id, node_id, attempt, status, started_at, stdout_path, stderr_path, result_path
+      ) VALUES (
+        'run', 'node', 1, 'running', '${validStoredTimestamp}',
+        '/tmp/stdout.log', '/tmp/stderr.log', '/tmp/result.txt'
+      );
+    `);
+  } finally {
+    database.close();
+  }
+  return dataDirectory;
+};
+
 const createLegacyMigrationOneDatabase = async (): Promise<string> => {
   const dataDirectory = await createDirectory();
   await mkdir(dataDirectory);
@@ -617,7 +650,7 @@ describe("StateStore bootstrap", () => {
       "workflow_revisions",
       "workflow_runs",
     ]);
-    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([1]);
+    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([2]);
     expect(database.pragma("foreign_key_check")).toEqual([]);
     expect(database.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(database.pragma("foreign_keys", { simple: true })).toBe(1);
@@ -677,7 +710,7 @@ describe("StateStore bootstrap", () => {
       { exitCode: 0, stdout: "[]", stderr: "" },
     ]);
     const database = new Database(join(dataDirectory, "kilin.db"), { readonly: true });
-    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([1]);
+    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([2]);
     expect(
       database
         .prepare(
@@ -710,7 +743,7 @@ describe("StateStore bootstrap", () => {
     ).toEqual([]);
     prepareSpy.mockRestore();
     initializeStateSchema(database, validStoredTimestamp, true);
-    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([1]);
+    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([2]);
     database.close();
   });
 
@@ -767,6 +800,93 @@ describe("StateStore bootstrap", () => {
     after.close();
   });
 
+  it("upgrades a version one database in place and keeps its recorded attempts", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const databasePath = join(dataDirectory, "kilin.db");
+
+    const store = new TestStateStore(dataDirectory);
+    store.close();
+
+    const database = new Database(databasePath, { readonly: true });
+    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([2]);
+    expect(database.prepare("SELECT * FROM node_attempts").all()).toEqual([
+      {
+        run_id: "run",
+        node_id: "node",
+        attempt: 1,
+        status: "running",
+        started_at: validStoredTimestamp,
+        finished_at: null,
+        exit_code: null,
+        failure_code: null,
+        failure_message: null,
+        stdout_path: "/tmp/stdout.log",
+        stderr_path: "/tmp/stderr.log",
+        result_path: "/tmp/result.txt",
+        process_pid: null,
+        process_group_id: null,
+        process_start_identifier: null,
+      },
+    ]);
+    expect(database.pragma("foreign_key_check")).toEqual([]);
+    database.close();
+  });
+
+  it("records a process identity on an upgraded database", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+
+    expect(store.listUnreapedAttemptProcesses("run")).toEqual([
+      {
+        nodeId: "node",
+        attempt: 1,
+        startedAt: validStoredTimestamp,
+        process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
+      },
+    ]);
+    store.close();
+  });
+
+  it("rejects a tampered database that claims version one without mutating it", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const databasePath = join(dataDirectory, "kilin.db");
+    const database = new Database(databasePath);
+    database.pragma("foreign_keys = OFF");
+    database.exec("DROP TABLE run_workspaces");
+    const beforeObjects = database
+      .prepare(
+        `
+          SELECT type, name, sql FROM sqlite_master
+          WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+        `,
+      )
+      .all();
+    database.close();
+
+    const error = expectKilinError(() => new StateStore(dataDirectory), "INTERNAL_ERROR");
+    expect(error.message).toContain("Archive or reset");
+
+    const after = new Database(databasePath, { readonly: true });
+    expect(
+      after
+        .prepare(
+          `
+            SELECT type, name, sql FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+          `,
+        )
+        .all(),
+    ).toEqual(beforeObjects);
+    expect(after.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([1]);
+    after.close();
+  });
+
   it("rejects the legacy eleven-entry migration ledger without changing it", async () => {
     const dataDirectory = await createDirectory();
     const store = new TestStateStore(dataDirectory);
@@ -776,7 +896,7 @@ describe("StateStore bootstrap", () => {
     const insert = database.prepare(
       "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
     );
-    for (let version = 2; version <= 11; version += 1) {
+    for (let version = 3; version <= 12; version += 1) {
       insert.run(version, validStoredTimestamp);
     }
     const beforeMigrations = database
@@ -800,7 +920,7 @@ describe("StateStore bootstrap", () => {
     [
       "a future ledger entry",
       `INSERT INTO schema_migrations (version, applied_at)
-       VALUES (2, '2026-07-26T00:00:00.000Z')`,
+       VALUES (3, '2026-07-26T00:00:00.000Z')`,
     ],
   ])("rejects current state with %s without repairing it", async (_name, mutation) => {
     const dataDirectory = await createDirectory();

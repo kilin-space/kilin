@@ -155,6 +155,26 @@ export type NodeExecutionProvenance =
       iteration: number;
     };
 
+/**
+ * Identifies the operating-system process an attempt started, so a survivor of a Kilin process that
+ * exited without cleaning up stays attributable to the attempt that spawned it. `startIdentifier`
+ * is an opaque host-specific process-start marker; it is only ever compared for equality against a
+ * later reading taken the same way.
+ */
+export interface AttemptProcessIdentity {
+  pid: number;
+  processGroupId: number;
+  startIdentifier: string;
+}
+
+/** An attempt whose recorded process Kilin never observed ending, with the identity to reap it. */
+export interface UnreapedAttemptProcess {
+  nodeId: string;
+  attempt: number;
+  startedAt: string;
+  process: AttemptProcessIdentity;
+}
+
 export type AgentNodeRunStatus = Exclude<NodeRunStatus, "waiting_for_approval">;
 
 export type AgentNodeRunRecord = NodeExecutionProvenance & {
@@ -178,6 +198,7 @@ export type AgentNodeRunRecord = NodeExecutionProvenance & {
   attempt?: number;
   reusedFromRunId?: string;
   reusedFromNodeId?: string;
+  process?: AttemptProcessIdentity;
 };
 
 export type ApprovalNodeRunStatus = Exclude<NodeRunStatus, "running">;
@@ -206,6 +227,7 @@ export type ApprovalNodeRunRecord = NodeExecutionProvenance & {
   attempt?: never;
   reusedFromRunId?: never;
   reusedFromNodeId?: never;
+  process?: never;
 };
 
 export type LoopNodeRunStatus = Exclude<NodeRunStatus, "waiting_for_approval">;
@@ -234,6 +256,7 @@ export interface LoopNodeRunRecord {
   attempt?: never;
   reusedFromRunId?: never;
   reusedFromNodeId?: never;
+  process?: never;
   requestedAt?: never;
   deadlineAt?: never;
   decision?: never;

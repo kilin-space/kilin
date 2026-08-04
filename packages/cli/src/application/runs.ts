@@ -73,6 +73,7 @@ import {
   resolvedInputsPath,
   runProcess,
   runtimeResultStagingPath,
+  terminateRecordedProcesses,
 } from "../infrastructure/process-runner.js";
 import type { ProcessRunOutcome } from "../infrastructure/process-runner.js";
 import {
@@ -1225,6 +1226,9 @@ const executeAgentNode = async (
           ? {}
           : { terminationGraceMs: executionEnvironment.terminationGraceMs }),
         ...(delivery.signal === undefined ? {} : { signal: delivery.signal }),
+        onProcessStarted: (identity) => {
+          store.recordAttemptProcess(created.run.id, node.id, attempt, identity);
+        },
       });
     } catch (error: unknown) {
       executionFailure = asKilinError(error);
@@ -2608,6 +2612,34 @@ export const rerunWorkflow = async (
   }
 };
 
+/**
+ * Terminates the processes a previous owner of this run left behind, then forgets their identities
+ * so a later recovery cannot signal a recycled pid.
+ *
+ * The caller holds the canonical-working-directory lock, which is the same probe `runs cancel` uses
+ * to decide that no owner is attached, so anything still recorded here is ownerless. Candidates are
+ * chosen by the presence of a recorded identity rather than by any status: reconciliation rewrites
+ * a stale run and its attempts to `interrupted` without touching the recorded process, and a single
+ * earlier `kilin runs show` is enough to trigger it.
+ */
+const reapRecordedProcesses = async (
+  store: StateStore,
+  runId: string,
+  terminationGraceMs: number | undefined,
+): Promise<void> => {
+  const unreaped = store.listUnreapedAttemptProcesses(runId);
+  if (unreaped.length === 0) {
+    return;
+  }
+  await terminateRecordedProcesses(
+    unreaped.map(({ startedAt, process: identity }) => ({ startedAt, identity })),
+    terminationGraceMs,
+  );
+  for (const { nodeId, attempt } of unreaped) {
+    store.clearAttemptProcess(runId, nodeId, attempt);
+  }
+};
+
 const recoverWorkflow = async (
   runId: string,
   mode: "retry" | "resume",
@@ -2633,6 +2665,9 @@ const recoverWorkflow = async (
       );
     }
     lock = await acquireCanonicalWorkspaceLock(canonicalCwd, executionEnvironment.dataDirectory);
+    if (mode === "resume") {
+      await reapRecordedProcesses(store, runId, executionEnvironment.terminationGraceMs);
+    }
     if (source.run.status === "running") {
       if (mode === "retry") {
         throw new KilinError(

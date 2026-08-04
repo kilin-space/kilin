@@ -145,6 +145,12 @@ V1 recovery creates a new continuation run from the exact stored revision, cwd, 
 reconciles an ownerless running source to `interrupted` before continuing. Eligible successful
 read-only checkpoints are copied into the new run, while approvals are always requested again.
 
+Once `resume` holds the canonical-cwd lock—the same probe that proves no owner is attached—it
+terminates any process the source run recorded and never observed ending, then forgets those
+identities so a later recovery cannot signal a recycled PID. This is keyed to the recorded process,
+not to a status, because reconciliation may already have rewritten the run. A host that rebooted
+after the attempt started, or a PID that a different process now holds, is left alone.
+
 The source run remains terminal and immutable. Recovery records `recoveryOfRunId` and
 `recoveryMode`. Workflows containing a source-workspace writer must use whole-workflow `rerun`;
 isolated worktree lanes are rerun from a fresh base worktree.
@@ -181,7 +187,9 @@ the failed attempt stays failed and no later attempt is scheduled.
 The canonical-cwd lock is a best-effort owner probe, not the race arbiter. A busy lock is evidence of
 a live attached owner. An acquirable lock means no owner exists, so the stale run is reconciled
 through the existing path and reported as not cancellable; reconciliation is never reported as a
-successful cancellation. No PID file, lease, daemon, or direct inter-process signal is added.
+successful cancellation. Cancelling a live run still adds no PID file, lease, daemon, or direct
+inter-process signal: the owner observes a durable request rather than being signalled. Signalling a
+recorded process is reserved for [`resume`](#resume), where there is no owner left to ask.
 
 ## `runs list`
 
@@ -196,6 +204,11 @@ ID.
 Shows one run and its full workflow scope identity plus ordered node runs, including statuses,
 timestamps, exit codes, actionable failures, runtime metadata, immutable attempt history,
 workspace records, and stdout/stderr/result paths.
+
+An executing agent node additionally reports `durationMs`, the time elapsed as of that document,
+and `pid`, the operating-system process of its current attempt. Both are absent once the node is
+terminal, and `pid` is absent when no process identity was recorded. The pid is reported as
+recorded, not probed for liveness.
 
 For a V1 loop, the top-level entry is the loop control with its bound and result
 projection. Body executions are grouped by iteration and carry an opaque `executionId`, authored
@@ -749,9 +762,9 @@ Messages and optional detail fields explain the precise cause. Automation branch
 | `0` | command and, when applicable, workflow run succeeded |
 | `1` | a recorded run failed or was interrupted |
 | `2` | invalid invocation, workflow, path, runtime capability, or authentication; no run started |
-| `130` | workflow execution or its preflight was stopped by user interrupt |
+| `130` | workflow execution or its preflight was stopped by an interrupt, supervisor termination, or terminal hangup |
 
-An internal Kilin failure after a run starts uses exit code `1` and persists an actionable run failure when possible. An internal failure before a run exists uses exit code `2`. User interruption during Codex preflight reaps the probe group, emits no lifecycle event or diagnostic, creates no run, and returns `130`. Interruption after run creation persists terminal cancelled state and lifecycle events before returning `130` when cleanup can complete.
+An internal Kilin failure after a run starts uses exit code `1` and persists an actionable run failure when possible. An internal failure before a run exists uses exit code `2`. `SIGINT`, `SIGTERM`, and `SIGHUP` all stop an attached run through the same path, so terminating `kilin run` from a supervisor, container stop, or CI cancellation is not different from pressing Ctrl-C. Interruption during Codex preflight reaps the probe group, emits no lifecycle event or diagnostic, creates no run, and returns `130`. Interruption after run creation persists terminal cancelled state and lifecycle events before returning `130` when cleanup can complete.
 
 ## Automation guarantees
 
