@@ -588,11 +588,11 @@ const renderStatusChip = (element: HTMLElement, status: string, label: string): 
   element.replaceChildren(statusGlyphElement(status), document.createTextNode(label));
 };
 
-const definitionLabel = (state: CurrentWorkflowResponse["state"] | ""): string => {
-  if (state === "") {
+const definitionLabel = (definitionState: CurrentWorkflowResponse["state"] | ""): string => {
+  if (definitionState === "") {
     return "Loading";
   }
-  return state === "valid" ? "Definition valid" : "Definition invalid";
+  return definitionState === "valid" ? "Definition valid" : "Definition invalid";
 };
 
 const relationLabel = (run: RunSummaryDto): string => {
