@@ -11,9 +11,7 @@ All notable changes to `@kilin-space/cli` are documented here.
 - Expand the Viewer graph strip when a workflow has more parallel branches than the short default
   viewport can show. An Expand control beside the workflow status raises the graph height cap to
   roughly 70% of the viewport height, works from the keyboard, keeps its state across polls, and
-  honours `prefers-reduced-motion`. It appears only while the graph is taller than the strip
-  (#23).
-
+  resizes without animation. It appears only while the graph is taller than the strip (#23).
 - State Viewer status in plain words: the steady connection reads `Live` instead of naming the
   attachment and approval guard, and the definition chip reads `Definition valid` or
   `Definition invalid` instead of a bare lowercase state (#17).

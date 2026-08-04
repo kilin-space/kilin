@@ -48,7 +48,7 @@ export const viewerHtml = `<!doctype html>
             </div>
             <div class="graph-heading-controls">
               <span id="graph-status" class="status-chip">Loading</span>
-              <button type="button" id="graph-expand-toggle" class="quiet-button graph-expand-toggle" aria-pressed="false">Expand</button>
+              <button type="button" id="graph-expand-toggle" class="quiet-button graph-expand-toggle" aria-pressed="false" hidden>Expand</button>
             </div>
           </div>
           <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
@@ -644,7 +644,6 @@ h3 {
   background-color: #fafbfc;
   background-image: radial-gradient(#dcdfe4 0.7px, transparent 0.7px);
   background-size: 16px 16px;
-  transition: max-height 160ms ease;
 }
 
 .graph-strip.expanded {
@@ -1048,9 +1047,9 @@ h3 {
 
 .decision-dock {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, auto);
   flex: 1 1 0;
-  min-height: 240px;
+  min-height: 290px;
   margin-top: 14px;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -1095,7 +1094,9 @@ h3 {
 .decision-footer {
   display: grid;
   gap: 8px;
+  min-height: 0;
   padding: 12px 16px;
+  overflow: auto;
   border-top: 1px solid var(--hairline);
   background: var(--panel);
 }
@@ -1228,6 +1229,8 @@ h3 {
 
 .decision-record-note {
   flex-basis: 100%;
+  max-height: 8em;
+  overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

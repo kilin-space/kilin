@@ -1709,11 +1709,18 @@ test("the graph expand toggle stays away while the whole graph already fits", as
   });
   await openViewer(page, viewer.launchUrl);
 
-  const strip = page.locator("#graph-strip");
-  await expect
-    .poll(() => strip.evaluate((element) => element.scrollHeight <= element.clientHeight))
-    .toBe(true);
-  await expect(page.locator("#graph-expand-toggle")).toBeHidden();
+  const stripHeight = await page
+    .locator("#graph-strip")
+    .evaluate((element) => element.clientHeight);
+  const graphHeight = await page
+    .locator("#workflow-graph")
+    .evaluate((element) => element.getBoundingClientRect().height);
+  expect(graphHeight).toBeGreaterThan(0);
+  expect(graphHeight).toBeLessThanOrEqual(stripHeight);
+
+  const toggle = page.locator("#graph-expand-toggle");
+  await expect(toggle).toBeAttached();
+  await expect(toggle).toBeHidden();
 });
 
 test("an approval note spans lines, stays bounded, and reaches the decision request", async ({
@@ -1763,7 +1770,6 @@ test("an approval note spans lines, stays bounded, and reaches the decision requ
   await page.keyboard.press("Enter");
   await page.keyboard.type("second line");
   await expect(note).toHaveValue(multilineNote);
-  expect(decisionBody).toBeNull();
 
   const overLongNote = "note line\n"
     .repeat(maximumApprovalNoteCharacters)
@@ -1774,6 +1780,16 @@ test("an approval note spans lines, stays bounded, and reaches the decision requ
   await expect(note).toHaveValue(overLongNote);
 
   await note.fill(multilineNote);
+  await saveScreenshot(page, "decision-note-desktop.png", "decision-note-1280x720", testInfo);
+
+  await page.setViewportSize({ width: 1_280, height: 520 });
+  const dockBox = await page.locator("#decision-dock").boundingBox();
+  const approveBox = await page.locator("#decision-approve").boundingBox();
+  if (dockBox === null || approveBox === null) {
+    throw new Error("The decision dock did not lay out at the short viewport.");
+  }
+  expect(approveBox.y + approveBox.height).toBeLessThanOrEqual(dockBox.y + dockBox.height);
+
   await page.setViewportSize({ width: 390, height: 844 });
   const noteBox = await note.boundingBox();
   if (noteBox === null) {
@@ -1783,6 +1799,7 @@ test("an approval note spans lines, stays bounded, and reaches the decision requ
   await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
   await saveScreenshot(page, "decision-note-mobile.png", "decision-note-390x844", testInfo);
 
+  expect(decisionBody).toBeNull();
   decided = true;
   await page.locator("#decision-approve").click();
   await expect(page.locator(".decision-record")).toContainText("human");
