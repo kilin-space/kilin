@@ -1122,51 +1122,38 @@ export class StateStore {
   }
 
   /**
-   * Every attempt of a run whose recorded process was never observed ending, newest attempt last.
+   * Every attempt in a working directory whose recorded process was never observed ending.
+   *
+   * The scope is the directory rather than one run because the caller's claim on these processes is
+   * the exclusive working-directory lock, which covers every run recorded against that directory.
    * Status is deliberately not part of the predicate: reconciliation rewrites a stale attempt to
    * `interrupted` without touching the process, so filtering on status would hide exactly the
    * orphans this exists to find.
    */
-  public listUnreapedAttemptProcesses(runId: string): UnreapedAttemptProcess[] {
+  public listUnreapedAttemptProcesses(canonicalCwd: string): UnreapedAttemptProcess[] {
     try {
-      const rows = this.#database
-        .prepare(
-          `
-        SELECT * FROM node_attempts
-        WHERE run_id = ? AND process_pid IS NOT NULL ORDER BY node_id, attempt
-      `,
-        )
-        .all(runId) as NodeAttemptRow[];
-      return rows.flatMap((row) => {
+      return this.#listAttemptRowsWithProcess({ canonicalCwd }).flatMap((row) => {
         const identity = decodeStoredAttemptProcessIdentity(row);
-        return identity === undefined
-          ? []
-          : [
-              {
-                nodeId: row.node_id,
-                attempt: row.attempt,
-                startedAt: row.started_at,
-                process: identity,
-              },
-            ];
+        return identity === undefined ? [] : [{ startedAt: row.started_at, process: identity }];
       });
     } catch (error: unknown) {
       throw asStateError(error);
     }
   }
 
-  /** Forgets a reaped identity so a later recovery cannot signal a recycled pid. */
-  public clearAttemptProcess(runId: string, nodeId: string, attempt: number): void {
+  /** Forgets reaped identities so a later command cannot signal a recycled pid. */
+  public clearAttemptProcesses(canonicalCwd: string): void {
     try {
       this.#database
         .prepare(
           `
         UPDATE node_attempts
         SET process_pid = NULL, process_group_id = NULL, process_start_identifier = NULL
-        WHERE run_id = ? AND node_id = ? AND attempt = ?
+        WHERE process_pid IS NOT NULL
+          AND run_id IN (SELECT id FROM workflow_runs WHERE canonical_cwd = ?)
       `,
         )
-        .run(runId, nodeId, attempt);
+        .run(canonicalCwd);
     } catch (error: unknown) {
       throw asStateError(error);
     }
@@ -1858,7 +1845,7 @@ export class StateStore {
     }
     const nodes = withRunningAttemptProcesses(
       this.#listNodeRows(runId).map(nodeFromRow),
-      this.#listRunningAttemptRows(runId),
+      this.#listAttemptRowsWithProcess({ runId }),
     );
     const retriedNodeIds = new Set(
       nodes
@@ -1880,10 +1867,29 @@ export class StateStore {
     };
   }
 
-  #listRunningAttemptRows(runId: string): NodeAttemptRow[] {
+  #listAttemptRowsWithProcess(
+    scope: { runId: string } | { canonicalCwd: string },
+  ): NodeAttemptRow[] {
+    if ("runId" in scope) {
+      return this.#database
+        .prepare(
+          `
+        SELECT * FROM node_attempts
+        WHERE run_id = ? AND process_pid IS NOT NULL ORDER BY node_id, attempt
+      `,
+        )
+        .all(scope.runId) as NodeAttemptRow[];
+    }
     return this.#database
-      .prepare("SELECT * FROM node_attempts WHERE run_id = ? AND process_pid IS NOT NULL")
-      .all(runId) as NodeAttemptRow[];
+      .prepare(
+        `
+        SELECT node_attempts.* FROM node_attempts
+        JOIN workflow_runs ON workflow_runs.id = node_attempts.run_id
+        WHERE workflow_runs.canonical_cwd = ? AND node_attempts.process_pid IS NOT NULL
+        ORDER BY node_attempts.run_id, node_attempts.node_id, node_attempts.attempt
+      `,
+      )
+      .all(scope.canonicalCwd) as NodeAttemptRow[];
   }
 
   #listRetriedNodeAttempts(

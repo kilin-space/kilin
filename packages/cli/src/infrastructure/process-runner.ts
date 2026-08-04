@@ -12,7 +12,11 @@ import type { TransformCallback } from "node:stream";
 
 import type { CompletedProcess, RuntimeInvocation } from "../application/runtime.js";
 import { KilinError } from "../domain/errors.js";
-import type { AttemptProcessIdentity, NodeOutputPaths } from "../domain/run-state.js";
+import type {
+  AttemptProcessIdentity,
+  NodeOutputPaths,
+  UnreapedAttemptProcess,
+} from "../domain/run-state.js";
 
 export interface ProcessRunOptions {
   readonly timeoutMs: number;
@@ -20,17 +24,12 @@ export interface ProcessRunOptions {
   readonly terminationGraceMs?: number;
   readonly signal?: AbortSignal;
   /**
-   * Called once with the identity of the spawned process group leader, before the process can
-   * produce output. Recording it lets a later command attribute and reap a survivor of a Kilin
-   * process that exited without cleaning up.
+   * Called synchronously with the identity of the spawned process group leader, before output
+   * capture is attached, and not at all when that identity cannot be read. Recording it lets a
+   * later command attribute and reap a survivor of a Kilin process that exited without cleaning up.
+   * A thrown error is swallowed rather than failing the run.
    */
   readonly onProcessStarted?: (identity: AttemptProcessIdentity) => void;
-}
-
-/** An attempt's recorded process, paired with the time the attempt started. */
-export interface RecordedProcess {
-  readonly startedAt: string;
-  readonly identity: AttemptProcessIdentity;
 }
 
 type CompletedProcessWithExitCode = CompletedProcess & {
@@ -264,55 +263,61 @@ const linuxProcessIdentity = (pid: number): Omit<ProcessIdentity, "pid"> | undef
  */
 const processListingEnvironment: Readonly<Record<string, string>> = { LC_ALL: "C", TZ: "UTC" };
 
+const processListingColumns = ["-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart="];
+
+const parseProcessListingRow = (line: string): ProcessIdentity | undefined => {
+  const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(line);
+  if (match === null) {
+    return undefined;
+  }
+  const [, pidText, parentPidText, processGroupIdText, startedAtText] = match;
+  const pid = Number(pidText);
+  const parentPid = Number(parentPidText);
+  const processGroupId = Number(processGroupIdText);
+  if (
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    !Number.isSafeInteger(parentPid) ||
+    parentPid < 0 ||
+    !Number.isSafeInteger(processGroupId) ||
+    processGroupId <= 0 ||
+    startedAtText === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    pid,
+    parentPid,
+    processGroupId,
+    startIdentifier: startedAtText.replace(/\s+/gu, " "),
+  };
+};
+
 const listProcessIdentities = (): readonly ProcessIdentity[] | undefined => {
-  const listed = spawnSync(
-    "/bin/ps",
-    ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart="],
-    {
-      encoding: "utf8",
-      env: processListingEnvironment,
-      maxBuffer: 1024 * 1024,
-      timeout: 1_000,
-    },
-  );
+  const listed = spawnSync("/bin/ps", ["-A", ...processListingColumns], {
+    encoding: "utf8",
+    env: processListingEnvironment,
+    maxBuffer: 1024 * 1024,
+    timeout: 1_000,
+  });
   if (listed.error !== undefined || listed.status !== 0) {
     return undefined;
   }
   const processes: ProcessIdentity[] = [];
   for (const line of listed.stdout.split("\n")) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(line);
-    if (match === null) {
-      continue;
-    }
-    const [, pidText, parentPidText, processGroupIdText, startedAtText] = match;
-    const pid = Number(pidText);
-    const parentPid = Number(parentPidText);
-    const processGroupId = Number(processGroupIdText);
-    if (
-      !Number.isSafeInteger(pid) ||
-      pid <= 0 ||
-      !Number.isSafeInteger(parentPid) ||
-      parentPid < 0 ||
-      !Number.isSafeInteger(processGroupId) ||
-      processGroupId <= 0 ||
-      startedAtText === undefined
-    ) {
+    const listedIdentity = parseProcessListingRow(line);
+    if (listedIdentity === undefined) {
       continue;
     }
     if (process.platform === "linux") {
-      const kernelIdentity = linuxProcessIdentity(pid);
+      const kernelIdentity = linuxProcessIdentity(listedIdentity.pid);
       if (kernelIdentity === undefined) {
         continue;
       }
-      processes.push({ pid, ...kernelIdentity });
+      processes.push({ pid: listedIdentity.pid, ...kernelIdentity });
       continue;
     }
-    processes.push({
-      pid,
-      parentPid,
-      processGroupId,
-      startIdentifier: startedAtText.replace(/\s+/gu, " "),
-    });
+    processes.push(listedIdentity);
   }
   return processes;
 };
@@ -381,43 +386,16 @@ const processIdentity = (pid: number): ProcessIdentity | undefined => {
     const kernelIdentity = linuxProcessIdentity(pid);
     return kernelIdentity === undefined ? undefined : { pid, ...kernelIdentity };
   }
-  const listed = spawnSync(
-    "/bin/ps",
-    ["-p", String(pid), "-o", "ppid=", "-o", "pgid=", "-o", "lstart="],
-    {
-      encoding: "utf8",
-      env: processListingEnvironment,
-      timeout: 1_000,
-    },
-  );
+  const listed = spawnSync("/bin/ps", ["-p", String(pid), ...processListingColumns], {
+    encoding: "utf8",
+    env: processListingEnvironment,
+    timeout: 1_000,
+  });
   if (listed.error !== undefined || listed.status !== 0) {
     return undefined;
   }
-  const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(listed.stdout.split("\n")[0] ?? "");
-  if (match === null) {
-    return undefined;
-  }
-  const [, parentPidText, processGroupIdText, startedAtText] = match;
-  const parentPid = Number(parentPidText);
-  const processGroupId = Number(processGroupIdText);
-  if (
-    !Number.isSafeInteger(parentPid) ||
-    parentPid < 0 ||
-    !Number.isSafeInteger(processGroupId) ||
-    processGroupId <= 0 ||
-    startedAtText === undefined
-  ) {
-    return undefined;
-  }
-  return {
-    pid,
-    parentPid,
-    processGroupId,
-    startIdentifier: startedAtText.replace(/\s+/gu, " "),
-  };
+  return parseProcessListingRow(listed.stdout.split("\n")[0] ?? "");
 };
-
-const hostBootedAt = (): number => Date.now() - uptime() * 1_000;
 
 /**
  * Selects the live processes a recorded identity still owns.
@@ -434,19 +412,20 @@ const hostBootedAt = (): number => Date.now() - uptime() * 1_000;
  * is the only remaining evidence. The residual risk is that the recorded pid is recycled, its new
  * holder leads a group, that holder exits, and its children survive carrying the same group id — at
  * which point unrelated processes would be signalled. Reaching it needs the pid space to wrap
- * within one boot, so the boot check above bounds it, and no post-mortem reading distinguishes such
+ * within one boot, which the `startedAt` boot check bounds, and no post-mortem reading tells such
  * a group from ours. Requiring a live leader instead would trade this for never reaping the orphan
  * the feature exists to reap.
  */
 const recordedSurvivors = (
-  record: RecordedProcess,
+  record: UnreapedAttemptProcess,
   currentProcesses: readonly ProcessIdentity[],
+  host: { readonly bootedAt: number; readonly ownGroupId: number | undefined },
 ): readonly ProcessIdentity[] => {
   const startedAt = Date.parse(record.startedAt);
-  if (!Number.isFinite(startedAt) || startedAt < hostBootedAt()) {
+  if (!Number.isFinite(startedAt) || startedAt < host.bootedAt) {
     return [];
   }
-  const { pid, processGroupId, startIdentifier } = record.identity;
+  const { pid, processGroupId, startIdentifier } = record.process;
   const leader = currentProcesses.find((candidate) => candidate.pid === pid);
   if (leader !== undefined && leader.startIdentifier !== startIdentifier) {
     return [];
@@ -454,10 +433,7 @@ const recordedSurvivors = (
   // Kilin spawns every runtime detached, into a group of its own, so the recorded group can never
   // legitimately be this process's. If it is, the record no longer describes anything Kilin
   // started, and claiming the group would signal this command's own siblings.
-  const ownGroupId = currentProcesses.find(
-    (candidate) => candidate.pid === process.pid,
-  )?.processGroupId;
-  if (ownGroupId === processGroupId) {
+  if (host.ownGroupId === processGroupId) {
     return [];
   }
   const claimed = new Map<number, ProcessIdentity>();
@@ -484,19 +460,20 @@ const recordedSurvivors = (
  * answers `false`, which tells the caller the records were never examined and must be kept.
  */
 export const terminateRecordedProcesses = async (
-  records: readonly RecordedProcess[],
+  records: readonly UnreapedAttemptProcess[],
   graceMs = defaultTerminationGraceMs,
 ): Promise<boolean> => {
-  if (records.length === 0) {
-    return true;
-  }
   const currentProcesses = listProcessIdentities();
   if (currentProcesses === undefined) {
     return false;
   }
+  const host = {
+    bootedAt: Date.now() - uptime() * 1_000,
+    ownGroupId: currentProcesses.find((candidate) => candidate.pid === process.pid)?.processGroupId,
+  };
   const survivors = new Map<number, ProcessIdentity>();
   for (const record of records) {
-    for (const survivor of recordedSurvivors(record, currentProcesses)) {
+    for (const survivor of recordedSurvivors(record, currentProcesses, host)) {
       survivors.set(survivor.pid, survivor);
     }
   }

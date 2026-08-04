@@ -142,8 +142,9 @@ Playwright exercises the built CLI/server/client with fake or pre-recorded state
 - Partial output remains inspectable. Cancellation and timeout signal the current process tree,
   retain capture, and force-terminate revalidated descendants on every host that exposes a process
   snapshot.
-- A run killed without a chance to clean up leaves its recorded process identity behind, and
-  `resume` terminates those survivors even after an intervening `runs show` reconciled the run.
+- A run killed without a chance to clean up leaves its recorded process identity behind, and the
+  next command to take that working directory — a plain `run` as much as a recovery — terminates
+  those survivors, even after an intervening `runs show` reconciled the run.
 - A passing decision publishes the declared bounded result through the loop control before outer
   consumers become eligible. A revising decision exposes only the declared bounded feedback to the
   next iteration's designated consumer. Revising at the final bound fails with

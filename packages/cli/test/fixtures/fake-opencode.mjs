@@ -2,9 +2,7 @@
 
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
-// A fixture process must never outlive the suite that spawned it. Scenarios that block
-// indefinitely, and the TERM-resistant descendants they spawn, give up after this bound so a
-// failed or interrupted test run leaves no residue on the host.
+// Bounds this process and any descendant it spawns, so a failed run leaves no residue.
 const fixtureLifetimeMs = 60_000;
 
 const args = process.argv.slice(2);

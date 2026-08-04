@@ -122,9 +122,9 @@ const readHostTriggerRequest = async (requestFile: string): Promise<HostTriggerR
 };
 
 /**
- * Every signal whose default disposition would kill an attached run before it can terminate the
- * process group it owns. A supervisor, container stop, or CI cancellation sends `SIGTERM`; closing
- * the terminal sends `SIGHUP`.
+ * Signals that would otherwise kill an attached run before it can terminate the process group it
+ * owns. A supervisor, container stop, or CI cancellation sends `SIGTERM`; closing the terminal
+ * sends `SIGHUP`.
  */
 const stopSignals: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 

@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { CompletedProcess, RuntimeInvocation } from "../../src/application/runtime.js";
+import type { AttemptProcessIdentity } from "../../src/domain/run-state.js";
 import {
   cleanupRuntimeResult,
   loopResultPath,
@@ -425,7 +426,7 @@ describe("process execution", () => {
     const directory = await createTemporaryDirectory();
     const paths = nodeOutputPaths(directory, "run", "identity", 0);
     await prepareNodeOutput(paths);
-    const reported: { pid: number; processGroupId: number; startIdentifier: string }[] = [];
+    const reported: AttemptProcessIdentity[] = [];
 
     const outcome = await runProcess(
       invocation(
@@ -682,14 +683,10 @@ describe("process execution", () => {
 });
 
 describe("recorded process termination", () => {
-  const spawnDetachedSurvivor = async (): Promise<{
-    pid: number;
-    processGroupId: number;
-    startIdentifier: string;
-  }> => {
+  const spawnDetachedSurvivor = async (): Promise<AttemptProcessIdentity> => {
     const paths = nodeOutputPaths(await createTemporaryDirectory(), "run", "survivor", 0);
     await prepareNodeOutput(paths);
-    let recorded: { pid: number; processGroupId: number; startIdentifier: string } | undefined;
+    let recorded: AttemptProcessIdentity | undefined;
     const running = runProcess(
       invocation(
         dirname(paths.stdoutPath),
@@ -720,7 +717,7 @@ describe("recorded process termination", () => {
     const recorded = await spawnDetachedSurvivor();
     try {
       const examined = await terminateRecordedProcesses(
-        [{ startedAt: new Date().toISOString(), identity: recorded }],
+        [{ startedAt: new Date().toISOString(), process: recorded }],
         30,
       );
 
@@ -737,7 +734,7 @@ describe("recorded process termination", () => {
       // A start time before the current boot cannot describe a live process, so the recorded pid
       // now belongs to somebody else.
       const examined = await terminateRecordedProcesses(
-        [{ startedAt: "1999-01-01T00:00:00.000Z", identity: recorded }],
+        [{ startedAt: "1999-01-01T00:00:00.000Z", process: recorded }],
         30,
       );
 
@@ -755,7 +752,7 @@ describe("recorded process termination", () => {
         [
           {
             startedAt: new Date().toISOString(),
-            identity: { ...recorded, startIdentifier: "some other process" },
+            process: { ...recorded, startIdentifier: "some other process" },
           },
         ],
         30,

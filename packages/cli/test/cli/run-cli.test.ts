@@ -168,6 +168,19 @@ const approvalDetail = (node: NodeRunRecord): RunDetail => ({
   nodes: [node],
 });
 
+/**
+ * A fixture publishes its descendant's pid by atomic rename, so a partial read should be
+ * impossible — but an empty or malformed file would parse to `0`, and `processIsRunning(0)` reports
+ * a dead process, which would let a termination assertion pass without asserting anything.
+ */
+const publishedPid = (contents: string): number => {
+  const pid = Number(contents.trim());
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error(`Fixture published an unusable descendant pid: ${JSON.stringify(contents)}`);
+  }
+  return pid;
+};
+
 const waitFor = async (
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 2_000,
@@ -1220,8 +1233,7 @@ describe("run CLI documents", () => {
       throw new Error("Expected a running agent summary");
     }
     expect(running.pid).toBe(4242);
-    // The node started in 2026 and has never finished, so the live figure is years, not a
-    // placeholder zero or a final duration.
+    // Not a placeholder zero, and not a final duration.
     expect(running.durationMs).toBeGreaterThan(Date.now() - Date.parse("2026-07-22T00:00:00.000Z"));
     expect(sortedKeys(document.nodes[1] ?? {})).toEqual([
       "kind",
@@ -1230,6 +1242,65 @@ describe("run CLI documents", () => {
       "runtime",
       "status",
     ]);
+  });
+
+  it("prints the process of an executing agent node in human output", () => {
+    const plan = compileWorkflow({
+      schemaVersion: 1,
+      workflow: { id: "workflow-human-process", name: "Workflow human process" },
+      nodes: [
+        {
+          id: "running-node",
+          kind: "agent",
+          runtime: "codex",
+          prompt: "run",
+          access: "read_only",
+        },
+      ],
+      edges: [],
+    });
+    const detail: RunDetail = {
+      run: {
+        id: "run-human-process",
+        revisionId: "revision-human-process",
+        canonicalCwd: "/project",
+        options: {
+          nodeTimeoutMs: 1_000,
+          approvalTimeoutMs: 1_000,
+          maxOutputBytes: 1_024,
+          maxParallel: 1,
+        },
+        status: "running",
+        startedAt: "2026-07-21T00:00:00.000Z",
+      },
+      revision: revisionForPlan(plan, "revision-human-process"),
+      nodes: [
+        {
+          kind: "agent",
+          runId: "run-human-process",
+          nodeId: "running-node",
+          ordinal: 0,
+          runtime: "codex",
+          status: "running",
+          startedAt: "2026-07-21T00:00:00.100Z",
+          outputPaths: {
+            stdoutPath: "/state/running/stdout.log",
+            stderrPath: "/state/running/stderr.log",
+            resultPath: "/state/running/result.txt",
+          },
+          process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
+        },
+      ],
+    };
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      renderRunDetail(detail, createRunDetailDocument(detail, plan));
+
+      expect(write.mock.calls.map(([value]) => String(value)).join("")).toContain("process: 4242");
+    } finally {
+      write.mockRestore();
+    }
   });
 
   it("omits the process from a running summary whose attempt recorded none", () => {
@@ -1865,7 +1936,7 @@ describe("run CLI lifecycle", () => {
       });
     });
     await waitFor(() => pathExists(descendantReadyPath));
-    const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
+    const descendantPid = publishedPid(await readFile(descendantPidPath, "utf8"));
     const interruptedAt = Date.now();
 
     child.kill("SIGINT");
@@ -1880,8 +1951,8 @@ describe("run CLI lifecycle", () => {
     await waitFor(() => !processIsRunning(descendantPid));
   }, 7_000);
 
-  it.each(["resume", "retry", "rerun"] as const)(
-    "reaps the process tree an unhandleably killed run left behind when it is recovered by %s",
+  it.each(["resume", "rerun", "run"] as const)(
+    "reaps the process tree an unhandleably killed run left behind when %s next takes the directory",
     async (recoveryCommand) => {
       const context = await createContext(["wait forever"]);
       const descendantPidPath = join(context.root, "orphan-descendant.pid");
@@ -1903,11 +1974,10 @@ describe("run CLI lifecycle", () => {
       let descendantPid: number | undefined;
       try {
         await waitFor(() => pathExists(descendantPidPath));
-        const provider = Number(await readFile(descendantPidPath, "utf8"));
+        const provider = publishedPid(await readFile(descendantPidPath, "utf8"));
         descendantPid = provider;
         const runId = String(jsonLines(stdout).find(({ type }) => type === "run.started")?.runId);
-        // SIGKILL cannot be handled, so no signal handler and no `finally` can clean up here. This is
-        // the crash the issue describes: the provider tree outlives the Kilin process entirely.
+        // SIGKILL cannot be handled, so no signal handler and no `finally` can clean up here.
         child.kill("SIGKILL");
         await new Promise<void>((resolve) => child.once("close", () => resolve()));
         expect(processIsRunning(provider)).toBe(true);
@@ -1918,7 +1988,13 @@ describe("run CLI lifecycle", () => {
         expect(JSON.parse(shownBefore.stdout)).toMatchObject({ run: { status: "interrupted" } });
         expect(processIsRunning(provider)).toBe(true);
 
-        const recovered = await runCli([recoveryCommand, runId, "--json"], {
+        // `run` starts fresh work in the same directory rather than recovering by id, which is
+        // exactly why it has to clear the previous owner's processes out of the way first.
+        const recoveryArguments =
+          recoveryCommand === "run"
+            ? ["run", context.workflowName, "--cwd", context.project, "--json"]
+            : [recoveryCommand, runId, "--json"];
+        const recovered = await runCli(recoveryArguments, {
           ...environment,
           FAKE_CODEX_BEHAVIOR: "success",
         });
@@ -1963,7 +2039,7 @@ describe("run CLI lifecycle", () => {
       let descendantPid: number | undefined;
       try {
         await waitFor(() => pathExists(descendantPidPath));
-        const provider = Number(await readFile(descendantPidPath, "utf8"));
+        const provider = publishedPid(await readFile(descendantPidPath, "utf8"));
         descendantPid = provider;
         child.kill(stopSignal);
 

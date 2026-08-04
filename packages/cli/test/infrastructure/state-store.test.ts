@@ -846,10 +846,8 @@ describe("StateStore bootstrap", () => {
       startIdentifier: "recorded-start",
     });
 
-    expect(store.listUnreapedAttemptProcesses("run")).toEqual([
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([
       {
-        nodeId: "node",
-        attempt: 1,
         startedAt: validStoredTimestamp,
         process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
       },
@@ -865,12 +863,80 @@ describe("StateStore bootstrap", () => {
       processGroupId: 4242,
       startIdentifier: "recorded-start",
     });
-    expect(store.listUnreapedAttemptProcesses("run")).toHaveLength(1);
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toHaveLength(1);
 
     store.transitionNode("run", "node", { status: "succeeded", exitCode: 0 });
 
     // A process Kilin watched exit is not an orphan, so a later recovery must not signal its pid.
-    expect(store.listUnreapedAttemptProcesses("run")).toEqual([]);
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([]);
+    store.close();
+  });
+
+  it("records and reaps process identities only within one working directory", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+    // A second run in a different working directory. Reaping is scoped by the directory lock the
+    // caller holds, so it must not reach a directory nobody has examined.
+    store.createRun({
+      plan: plan("elsewhere", [node("only")]),
+      identity: { scope: { kind: "user" }, workflowId: "elsewhere" },
+      canonicalCwd: "/elsewhere",
+      options,
+    });
+    const elsewhere = store.listRuns()[0];
+    if (elsewhere === undefined) {
+      throw new Error("Expected the second run");
+    }
+    store.transitionNode(elsewhere.id, "only", {
+      status: "running",
+      stdoutPath: "/elsewhere/stdout.log",
+      stderrPath: "/elsewhere/stderr.log",
+      resultPath: "/elsewhere/result.txt",
+    });
+    store.recordAttemptProcess(elsewhere.id, "only", 1, {
+      pid: 5150,
+      processGroupId: 5150,
+      startIdentifier: "elsewhere-start",
+    });
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([
+      {
+        startedAt: validStoredTimestamp,
+        process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
+      },
+    ]);
+
+    store.clearAttemptProcesses("/tmp");
+
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([]);
+    expect(store.listUnreapedAttemptProcesses("/elsewhere")).toEqual([
+      {
+        startedAt: expect.any(String) as unknown as string,
+        process: { pid: 5150, processGroupId: 5150, startIdentifier: "elsewhere-start" },
+      },
+    ]);
+    store.close();
+  });
+
+  it("records no process identity for an attempt that already finished", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+    store.transitionNode("run", "node", { status: "succeeded", exitCode: 0 });
+
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+
+    // The finishing transition clears identities, so one written afterwards would never be cleared
+    // and would name a process nobody needs to reap for the rest of the database's life.
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([]);
     store.close();
   });
 
@@ -888,10 +954,8 @@ describe("StateStore bootstrap", () => {
     // Reconciliation rewrites status without observing the process, so the identity has to survive
     // it — otherwise a single `runs show` would hide the orphan from `resume`.
     expect(store.getRun("run").run.status).toBe("interrupted");
-    expect(store.listUnreapedAttemptProcesses("run")).toEqual([
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([
       {
-        nodeId: "node",
-        attempt: 1,
         startedAt: validStoredTimestamp,
         process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
       },

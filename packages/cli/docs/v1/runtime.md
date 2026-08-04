@@ -168,10 +168,11 @@ the provider tree rather than orphaning it, and the command exits `130`.
 
 If the Kilin parent is killed before cleanup can run at all, the next command marks stale records
 interrupted. It does not assume the external process or workspace side effects were rolled back.
-Kilin records the process identity of each running attempt, so `retry`, `resume`, and `rerun`
-terminate the processes a killed owner left behind before they continue. Reaping does not depend on
-the recorded status, which an intervening `kilin runs show` or `runs list` may already have
-reconciled.
+Kilin records the process identity of each running attempt. Every command that takes the exclusive
+working-directory lock to start or continue work terminates the processes an earlier owner of that
+directory left behind before it proceeds, so a crashed run's provider never keeps editing a
+directory a new run has started using. Reaping does not depend on the recorded status, which an
+intervening `kilin runs show` or `runs list` may already have reconciled.
 
 ## Adding another runtime
 

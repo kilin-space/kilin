@@ -145,16 +145,6 @@ type AgentNodeIdentityDocument = NodeIdentityDocument & {
   readonly reusedFromNodeId?: string;
 };
 
-/**
- * What an executing agent node exposes about the process it is running: the operating-system pid,
- * and how long it has been running as of this document. A terminal node reports its final
- * `durationMs` through the completion shape instead, and never reports a pid.
- */
-interface RunningProcessDocument {
-  readonly pid?: number;
-  readonly durationMs: number;
-}
-
 interface NodeStartedDocument {
   readonly startedAt: string;
   readonly stdoutPath: string;
@@ -166,7 +156,12 @@ export type AgentNodeSummaryDocument = AgentNodeIdentityDocument &
   (
     | { readonly status: "pending" }
     | { readonly status: "skipped"; readonly finishedAt: string }
-    | (NodeStartedDocument & RunningProcessDocument & { readonly status: "running" })
+    | (NodeStartedDocument & {
+        readonly status: "running";
+        readonly pid?: number;
+        // Measured when this document is produced, not persisted.
+        readonly durationMs: number;
+      })
     | (NodeStartedDocument &
         CompletionDocument & {
           readonly status: "succeeded";
@@ -541,7 +536,7 @@ const agentNodeSummary = (
       ...identity,
       ...started,
       ...(node.process === undefined ? {} : { pid: node.process.pid }),
-      durationMs: Math.max(0, Date.now() - Date.parse(started.startedAt)),
+      durationMs: elapsedMs(started.startedAt, new Date().toISOString()),
       status: node.status,
     };
   }

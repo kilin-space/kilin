@@ -16,15 +16,18 @@ All notable changes to `@kilin-space/cli` are documented here.
   container stop, CI cancellation, or a closed terminal terminates the provider tree instead of
   orphaning it, and the command still exits `130` (#37).
 - Record the operating-system process of each running attempt so it stays attributable after Kilin
-  exits, and have `retry`, `resume`, and `rerun` terminate the processes a killed owner left behind
-  before they continue. Reaping is keyed to the recorded process rather than to a status, so an intervening
-  `runs show` or `runs list` does not hide an orphan; a host that rebooted, or a PID a different
+  exits, and terminate what a killed owner left behind before any command starts or continues work
+  in that working directory — including a plain `run` and an unattended `trigger`, which previously
+  had no cleanup path at all and could start a second agent beside the first. Reaping is keyed to
+  the recorded process rather than to a status, so an intervening `runs show` or `runs list` does
+  not hide an orphan; a host that rebooted, or a PID a different
   process now holds, is left alone. This is the first state-schema upgrade: a database at the
   previous baseline is brought forward in place by adding columns, and every other shape still fails
   closed without mutation (#37).
-- Show the live process on an executing agent node. `runs show --json` reports `pid` and `durationMs`
-  while a node runs, `runs show` prints the process, and the Viewer node inspector shows it beside
-  the elapsed time — so a stuck provider is visible without hunting for it with `ps` (#37).
+- Show the live process on an executing agent node. `runs show --json` reports `pid` and a live
+  `durationMs` while a node runs, `runs show` prints the process, and the Viewer node inspector
+  shows it beside the elapsed time — so a stuck provider is visible without hunting for it with
+  `ps` (#37).
 - Read a loop as a loop in the Viewer. A loop card keeps the word `loop` and gains its iteration
   progress — `loop · 2/3 · ◐ Running` — in the meta line and the accessible name, and it carries a
   stacked outline. Selecting it expands the card into a container that draws the body pipeline with

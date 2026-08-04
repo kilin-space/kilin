@@ -169,8 +169,6 @@ export interface AttemptProcessIdentity {
 
 /** An attempt whose recorded process Kilin never observed ending, with the identity to reap it. */
 export interface UnreapedAttemptProcess {
-  nodeId: string;
-  attempt: number;
   startedAt: string;
   process: AttemptProcessIdentity;
 }

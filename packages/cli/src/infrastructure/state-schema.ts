@@ -364,18 +364,24 @@ const storedSchemaVersions = (database: SqliteDatabase): readonly number[] =>
 const nodeAttemptColumnNames = (database: SqliteDatabase): readonly string[] =>
   (database.pragma("table_info(node_attempts)") as TableColumnRow[]).map(({ name }) => name);
 
-const VERSION_1_NODE_ATTEMPT_COLUMNS = ((): readonly string[] => {
-  const database = new Database(":memory:");
-  try {
-    database.exec(STATE_SCHEMA_SQL);
-    const added = new Set(
-      NODE_ATTEMPT_PROCESS_COLUMNS.map((column) => column.slice(0, column.indexOf(" "))),
-    );
-    return nodeAttemptColumnNames(database).filter((name) => !added.has(name));
-  } finally {
-    database.close();
-  }
-})();
+/**
+ * The `node_attempts` columns as version 1 shipped them, matching
+ * `test/fixtures/state-version-1.sql`.
+ */
+const VERSION_1_NODE_ATTEMPT_COLUMNS: readonly string[] = [
+  "run_id",
+  "node_id",
+  "attempt",
+  "status",
+  "started_at",
+  "finished_at",
+  "exit_code",
+  "failure_code",
+  "failure_message",
+  "stdout_path",
+  "stderr_path",
+  "result_path",
+];
 
 /**
  * Brings a version 1 database to version 2 by making room to record the process identity of each
@@ -384,8 +390,8 @@ const VERSION_1_NODE_ATTEMPT_COLUMNS = ((): readonly string[] => {
  * A recorded version of 1 is not enough on its own: pre-release databases exist that claim version
  * 1 without ever having had a `node_attempts` table, and altering one of those would replace the
  * actionable incompatible-state error with a raw SQLite failure. The version 1 column set is
- * therefore checked as well, derived from the current baseline so nothing historical is frozen
- * here. Everything runs inside the caller's exclusive transaction, so a database that passes both
+ * therefore checked as well. Everything runs inside the caller's exclusive transaction, so a
+ * database that passes both
  * checks yet still fails the baseline assertion afterwards rolls back without mutation.
  */
 const migrateStateSchema = (database: SqliteDatabase, appliedAt: string): void => {

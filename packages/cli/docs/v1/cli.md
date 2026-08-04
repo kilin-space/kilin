@@ -145,14 +145,13 @@ V1 recovery creates a new continuation run from the exact stored revision, cwd, 
 reconciles an ownerless running source to `interrupted` before continuing. Eligible successful
 read-only checkpoints are copied into the new run, while approvals are always requested again.
 
-Once recovery holds the canonical-cwd lock—the same probe that proves no owner is attached—it
-terminates any process the source run recorded and never observed ending, then forgets those
-identities so a later recovery cannot signal a recycled PID. `retry`, `resume`, and
-[`rerun`](#rerun) all do this, because each starts new provider work in a working directory a
-crashed run may still be occupying. This is keyed to the recorded process, not to a status, because
-reconciliation may already have rewritten the run. A host that rebooted after the attempt started,
-or a PID that a different process now holds, is left alone, and identities are kept rather than
-forgotten when the host's processes cannot be listed at all.
+Recovery inherits the working-directory process cleanup every execution path performs: on taking
+the canonical-cwd lock, any process an earlier owner of that directory recorded and never observed
+ending is terminated, and those identities are then forgotten so a later command cannot signal a
+recycled PID. This is keyed to the recorded process, not to a status, because reconciliation may
+already have rewritten the run. A host that rebooted after the attempt started, or a PID that a
+different process now holds, is left alone, and identities are kept rather than forgotten when the
+host's processes cannot be listed at all.
 
 The source run remains terminal and immutable. Recovery records `recoveryOfRunId` and
 `recoveryMode`. Workflows containing a source-workspace writer must use whole-workflow `rerun`;
@@ -191,9 +190,9 @@ The canonical-cwd lock is a best-effort owner probe, not the race arbiter. A bus
 a live attached owner. An acquirable lock means no owner exists, so the stale run is reconciled
 through the existing path and reported as not cancellable; reconciliation is never reported as a
 successful cancellation. Cancelling a live run still adds no PID file, lease, daemon, or direct
-inter-process signal: the owner observes a durable request rather than being signalled. Signalling a
-recorded process is reserved for recovery — [`retry`, `resume`](#retry-and-resume), and
-[`rerun`](#rerun) — where there is no owner left to ask.
+inter-process signal: the owner observes a durable request rather than being signalled. Signalling
+a recorded process happens only where Kilin already holds the working-directory lock and is about
+to declare that directory's earlier runs dead, so there is no owner left to ask.
 
 ## `runs list`
 

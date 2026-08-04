@@ -864,10 +864,7 @@ export const decodeStoredAttemptProcessIdentity = (
   };
 };
 
-/**
- * Attaches the recorded process to every agent node that is still running. The identity lives on the
- * attempt row, so without this an executing node could not name the process it is running.
- */
+/** Attaches the recorded process to every agent node that is still running. */
 export const withRunningAttemptProcesses = (
   nodes: readonly NodeRunRecord[],
   attemptRows: readonly StoredNodeAttemptRow[],
@@ -880,7 +877,7 @@ export const withRunningAttemptProcesses = (
     }
   }
   return nodes.map((node) => {
-    if (running.size === 0 || node.kind !== "agent" || node.status !== "running") {
+    if (node.kind !== "agent" || node.status !== "running") {
       return node;
     }
     const identity = running.get(`${node.nodeId} ${String(node.attempt ?? 1)}`);

@@ -5,9 +5,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-// A fixture process must never outlive the suite that spawned it. Scenarios that block
-// indefinitely, and the TERM-resistant descendants they spawn, give up after this bound so a
-// failed or interrupted test run leaves no residue on the host.
+// Bounds this process and any descendant it spawns, so a failed run leaves no residue.
 const fixtureLifetimeMs = 60_000;
 
 const args = process.argv.slice(2);
@@ -261,7 +259,7 @@ if (
             'const pendingPidPath = pidPath + ".pending";',
             "writeFileSync(pendingPidPath, String(process.pid));",
             "renameSync(pendingPidPath, pidPath);",
-            "setTimeout(()=>process.exit(0),60000);",
+            `setTimeout(()=>process.exit(0),${String(fixtureLifetimeMs)});`,
           ].join(""),
         ],
         { stdio: "ignore" },
