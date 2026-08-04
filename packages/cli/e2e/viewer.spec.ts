@@ -1540,30 +1540,30 @@ test("run history states recency in words and keeps the exact start time reachab
   await historyWorld(page, viewer.origin, [running, finished]);
   await openViewer(page, viewer.launchUrl);
 
+  const viewerTimestamp = (iso: string): Promise<string> =>
+    page.evaluate(
+      (value) =>
+        new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+          new Date(value),
+        ),
+      iso,
+    );
   const runningRow = page.locator(`.history-button[data-run-id="${running.runId}"]`);
   const finishedRow = page.locator(`.history-button[data-run-id="${finished.runId}"]`);
-  await expect(runningRow.locator("[data-live-relative]")).toHaveText("3 min ago");
-  await expect(finishedRow.locator("[data-live-relative]")).toHaveText("2 days ago");
+  const runningAbsolute = await viewerTimestamp(running.startedAt);
+  const finishedAbsolute = await viewerTimestamp(finished.startedAt);
+  await expect(runningRow.getByTitle(runningAbsolute)).toHaveText("3 min ago");
+  await expect(finishedRow.getByTitle(finishedAbsolute)).toHaveText("2 days ago");
 
-  const absolute = await page.evaluate(
-    (iso) =>
-      new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
-        new Date(iso),
-      ),
-    finished.startedAt,
-  );
-  await expect(finishedRow.locator("[data-live-relative]")).toHaveAttribute("title", absolute);
   const accessibleName = await finishedRow.getAttribute("aria-label");
-  expect(accessibleName).toContain(absolute);
+  expect(accessibleName).toContain(finishedAbsolute);
   expect(accessibleName).toContain(finished.runId);
 
-  const statusRow = (runId: string): Promise<string | null> =>
-    page.locator(`.history-button[data-run-id="${runId}"] .history-meta`).first().textContent();
   const recordedDuration = "Succeeded · 1m 00s";
-  expect(await statusRow(finished.runId)).toBe(recordedDuration);
-  const runningElapsed = await statusRow(running.runId);
-  await expect.poll(() => statusRow(running.runId)).not.toBe(runningElapsed);
-  expect(await statusRow(finished.runId)).toBe(recordedDuration);
+  await expect(finishedRow).toContainText(recordedDuration);
+  const runningText = await runningRow.textContent();
+  await expect.poll(() => runningRow.textContent()).not.toBe(runningText);
+  await expect(finishedRow).toContainText(recordedDuration);
 });
 
 test("a history row shows a short run id while copy still yields the whole id", async ({
@@ -1578,8 +1578,9 @@ test("a history row shows a short run id while copy still yields the whole id", 
   await openViewer(page, viewer.launchUrl);
 
   const row = page.locator(`.history-button[data-run-id="${running.runId}"]`);
-  await expect(row.locator(".history-run-id")).toHaveText(`${running.runId.slice(0, 12)}…`);
-  await page.locator(`.copy-run-id[data-run-id="${running.runId}"]`).click();
+  await expect(row).toContainText(`${running.runId.slice(0, 12)}…`);
+  await expect(row).not.toContainText(running.runId);
+  await page.getByRole("button", { name: `Copy run id ${running.runId}` }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(running.runId);
 });
 
@@ -1597,41 +1598,43 @@ test("the run inspector offers a cancel fallback only while the run is live", as
     .grantPermissions(["clipboard-read", "clipboard-write"], { origin: viewer.origin });
   await openViewer(page, viewer.launchUrl);
 
-  await expect(page.locator("#run-inspector .inspector-title")).toHaveText(running.runId);
+  const inspector = page.locator("#run-inspector");
+  await expect(inspector.locator(".inspector-title")).toHaveText(running.runId);
   await expect(page.locator("#lineage-section")).toBeHidden();
-  await expect(
-    page.locator("#run-inspector .property-list dt").filter({ hasText: "Revision" }),
-  ).toHaveText("Revision (content hash)");
+  await expect(inspector.getByRole("term").filter({ hasText: "Revision" })).toHaveText(
+    "Revision (content hash)",
+  );
 
-  const commands = page.locator("#run-inspector .run-commands");
+  const commands = page.getByRole("region", { name: "Run cancellation command" });
+  const copy = commands.getByRole("button", { name: "Copy" });
   const command = `kilin runs cancel ${running.runId}`;
-  await expect(commands.locator("code")).toHaveText(command);
-  await commands.getByRole("button", { name: "Copy" }).click();
+  await expect(commands).toContainText(command);
+  await copy.click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(command);
 
-  const focusedCommand = (): Promise<string | null> =>
-    page.evaluate(() => document.activeElement?.getAttribute("data-copy-command") ?? null);
-  await commands.getByRole("button", { name: "Copy" }).focus();
-  expect(await focusedCommand()).toBe(command);
+  await copy.focus();
+  const copyKeepsFocus = (): Promise<boolean> =>
+    copy.evaluate((element) => element === document.activeElement);
+  expect(await copyKeepsFocus()).toBe(true);
   for (let cycle = 0; cycle < 2; cycle += 1) {
     await page.waitForResponse(
       (response) => new URL(response.url()).pathname === `/api/runs/${running.runId}`,
     );
   }
-  expect(await focusedCommand()).toBe(command);
+  expect(await copyKeepsFocus()).toBe(true);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(commands.locator("code")).toBeVisible();
+  await expect(commands).toContainText(command);
   await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
 
   await page.locator(`.history-button[data-run-id="${draining.runId}"]`).click();
-  await expect(page.locator("#run-inspector .inspector-title")).toHaveText(draining.runId);
+  await expect(inspector.locator(".inspector-title")).toHaveText(draining.runId);
   await expect(
-    page.locator("#run-inspector .property-list dt").filter({ hasText: "Cancellation requested" }),
-  ).toHaveCount(1);
-  await expect(page.locator("#run-inspector .run-commands")).toHaveCount(0);
+    inspector.getByRole("term").filter({ hasText: "Cancellation requested" }),
+  ).toBeVisible();
+  await expect(commands).toHaveCount(0);
 
   await page.locator(`.history-button[data-run-id="${finished.runId}"]`).click();
-  await expect(page.locator("#run-inspector .inspector-title")).toHaveText(finished.runId);
-  await expect(page.locator("#run-inspector .run-commands")).toHaveCount(0);
+  await expect(inspector.locator(".inspector-title")).toHaveText(finished.runId);
+  await expect(commands).toHaveCount(0);
 });

@@ -14,7 +14,8 @@ All notable changes to `@kilin-space/cli` are documented here.
   history rows show a short run id while the copy button still yields the whole id, and the
   truncated content hash is labelled `Revision (content hash)` (#20).
 - Offer a copyable `kilin runs cancel <run-id>` command in the Viewer run inspector while a run is
-  live. It is presentation only and disappears once the run reaches a terminal state (#24).
+  running and no cancellation is recorded yet. It is presentation only, and it disappears once a
+  cancellation is requested or the run reaches a terminal state (#24).
 - Recover from a failed Viewer evidence read without reselecting the node: the error state now
   carries a Retry control that re-requests the stream. A Refresh control in the top bar runs a
   poll cycle at once, restarts the backoff, and re-requests a failed evidence read (#19).
