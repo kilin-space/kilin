@@ -48,7 +48,7 @@ export const viewerHtml = `<!doctype html>
             </div>
             <div class="graph-heading-controls">
               <span id="graph-status" class="status-chip">Loading</span>
-              <button type="button" id="graph-expand-toggle" class="quiet-button" aria-pressed="false">Expand</button>
+              <button type="button" id="graph-expand-toggle" class="quiet-button graph-expand-toggle" aria-pressed="false">Expand</button>
             </div>
           </div>
           <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
@@ -350,10 +350,13 @@ h3 {
 .history-heading-row,
 .graph-heading-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.graph-heading-row {
+  flex-wrap: wrap;
 }
 
 .graph-heading-controls {
@@ -374,6 +377,10 @@ h3 {
 .quiet-button[aria-pressed="true"] {
   color: var(--selection);
   background: var(--selection-soft);
+}
+
+.graph-expand-toggle[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 1px var(--selection);
 }
 
 .history-list,
@@ -1219,6 +1226,12 @@ h3 {
   font-size: 12px;
 }
 
+.decision-record-note {
+  flex-basis: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .decision-chip {
   padding: 2px 9px;
   border-radius: 999px;
@@ -1752,7 +1765,7 @@ h3 {
   }
 
   .graph-strip.expanded {
-    max-height: 70vh;
+    max-height: max(200px, 70vh);
   }
 
   .evidence-stage,

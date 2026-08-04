@@ -175,7 +175,7 @@ export const waitingGateNodes = (
   verifyPending,
 ];
 
-export const decidedGateNodes = (executionId: string): readonly NodeRunDto[] => [
+export const decidedGateNodes = (executionId: string, note?: string): readonly NodeRunDto[] => [
   analyzeSucceeded,
   {
     kind: "approval",
@@ -187,7 +187,12 @@ export const decidedGateNodes = (executionId: string): readonly NodeRunDto[] => 
     requestedAt: "2026-07-26T01:00:01.000Z",
     finishedAt: "2026-07-26T01:00:02.000Z",
     durationMs: 1_000,
-    decision: { decision: "approve", actor: "human", decidedAt: "2026-07-26T01:00:02.000Z" },
+    decision: {
+      decision: "approve",
+      actor: "human",
+      decidedAt: "2026-07-26T01:00:02.000Z",
+      ...(note === undefined ? {} : { note }),
+    },
     availableOutputs: [],
   },
   verifyPending,
@@ -518,11 +523,17 @@ export const loopRunListResponse = (waiting: boolean): ScopedRunListResponse => 
 export const syntheticApprovalDecision = (
   runId: string,
   executionId: string,
+  note?: string,
 ): ApprovalDecisionResponse => ({
   outputVersion: 1,
   runId,
   nodeId: executionId,
-  decision: { decision: "approve", actor: "human", decidedAt: "2026-07-26T01:00:05.000Z" },
+  decision: {
+    decision: "approve",
+    actor: "human",
+    decidedAt: "2026-07-26T01:00:05.000Z",
+    ...(note === undefined ? {} : { note }),
+  },
 });
 
 export const syntheticOutputResponse = (

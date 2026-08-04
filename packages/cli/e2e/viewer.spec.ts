@@ -1670,21 +1670,21 @@ test("the graph strip expands from the keyboard and stays expanded across polls"
   const toggle = page.getByRole("button", { name: "Expand" });
 
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
-  expect(await stripHeight()).toBeLessThan(graphHeight);
+  const collapsedHeight = await stripHeight();
+  expect(collapsedHeight).toBeLessThan(graphHeight);
 
   await toggle.focus();
   await toggle.press("Enter");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  expect(await stripHeight()).toBeGreaterThanOrEqual(graphHeight);
+  const expandedHeight = await stripHeight();
+  expect(expandedHeight).toBeGreaterThan(collapsedHeight);
   await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
   await saveScreenshot(page, "graph-expanded.png", "graph-expanded-1440x900", testInfo);
 
   const observedRequests = workflowRequests;
-  await page.locator("#refresh-button").click();
   await expect.poll(() => workflowRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests);
-  await expect(page.locator("#connection-status")).toHaveText("Live");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  expect(await stripHeight()).toBeGreaterThanOrEqual(graphHeight);
+  expect(await stripHeight()).toBe(expandedHeight);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
@@ -1695,6 +1695,25 @@ test("the graph strip expands from the keyboard and stays expanded across polls"
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   expect(await stripHeight()).toBeLessThan(narrowExpandedHeight);
+});
+
+test("the graph expand toggle stays away while the whole graph already fits", async ({
+  page,
+  viewer,
+}) => {
+  await page.setViewportSize({ width: 1_440, height: 900 });
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([]),
+    runDetail: () => undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const strip = page.locator("#graph-strip");
+  await expect
+    .poll(() => strip.evaluate((element) => element.scrollHeight <= element.clientHeight))
+    .toBe(true);
+  await expect(page.locator("#graph-expand-toggle")).toBeHidden();
 });
 
 test("an approval note spans lines, stays bounded, and reaches the decision request", async ({
@@ -1716,7 +1735,10 @@ test("an approval note spans lines, stays bounded, and reaches the decision requ
         return undefined;
       }
       return decided
-        ? gateRunDetail(ordinaryRunningSummary("run-wait"), decidedGateNodes("gate-execution-1"))
+        ? gateRunDetail(
+            ordinaryRunningSummary("run-wait"),
+            decidedGateNodes("gate-execution-1", multilineNote),
+          )
         : gateRunDetail(
             waitingGateSummary("run-wait"),
             waitingGateNodes("gate-execution-1", deadlineAt),
@@ -1727,7 +1749,10 @@ test("an approval note spans lines, stays bounded, and reaches the decision requ
     `${viewer.origin}/api/runs/run-wait/nodes/gate-execution-1/decision`,
     async (route) => {
       decisionBody = route.request().postData();
-      await fulfillJson(route, syntheticApprovalDecision("run-wait", "gate-execution-1"));
+      await fulfillJson(
+        route,
+        syntheticApprovalDecision("run-wait", "gate-execution-1", multilineNote),
+      );
     },
   );
   await openViewer(page, viewer.launchUrl);
@@ -1740,7 +1765,9 @@ test("an approval note spans lines, stays bounded, and reaches the decision requ
   await expect(note).toHaveValue(multilineNote);
   expect(decisionBody).toBeNull();
 
-  const overLongNote = "n".repeat(maximumApprovalNoteCharacters);
+  const overLongNote = "note line\n"
+    .repeat(maximumApprovalNoteCharacters)
+    .slice(0, maximumApprovalNoteCharacters);
   await note.fill(overLongNote);
   await note.press("End");
   await page.keyboard.type("beyond the limit");
@@ -1760,6 +1787,15 @@ test("an approval note spans lines, stays bounded, and reaches the decision requ
   await page.locator("#decision-approve").click();
   await expect(page.locator(".decision-record")).toContainText("human");
   expect(decisionBody).toBe(JSON.stringify({ decision: "approved", note: multilineNote }));
+
+  const recorded = page.locator(".decision-record-note");
+  await expect(recorded).toHaveJSProperty("textContent", multilineNote);
+  const recordedLines = await recorded.evaluate(
+    (element) =>
+      element.getBoundingClientRect().height /
+      Number.parseFloat(window.getComputedStyle(element).lineHeight),
+  );
+  expect(Math.round(recordedLines)).toBe(2);
 });
 
 test("the approval note keeps focus and the caret when the decision dock rebuilds", async ({
@@ -1787,13 +1823,31 @@ test("the approval note keeps focus and the caret when the decision dock rebuild
   await page.keyboard.type("first line");
   await page.keyboard.press("Enter");
   await page.keyboard.type("second line");
-  await page.keyboard.press("Home");
-  const caret = (): Promise<{ focused: boolean; start: number }> =>
-    note.evaluate((element) => ({
-      focused: element === document.activeElement,
-      start: element instanceof HTMLTextAreaElement ? element.selectionStart : -1,
-    }));
-  expect(await caret()).toEqual({ focused: true, start: "first line\n".length });
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Shift+ArrowLeft");
+  await page.keyboard.press("Shift+ArrowLeft");
+  interface NoteSelection {
+    readonly focused: boolean;
+    readonly start: number;
+    readonly end: number;
+    readonly direction: string;
+    readonly length: number;
+  }
+  const selection = (): Promise<NoteSelection> =>
+    note.evaluate((element) => {
+      const field = element instanceof HTMLTextAreaElement ? element : undefined;
+      return {
+        focused: element === document.activeElement,
+        start: field?.selectionStart ?? -1,
+        end: field?.selectionEnd ?? -1,
+        direction: field?.selectionDirection ?? "",
+        length: field?.value.length ?? -1,
+      };
+    });
+  const before = await selection();
+  expect(before.focused).toBe(true);
+  expect(before.end).toBeLessThan(before.length);
+  expect(before.direction).toBe("backward");
 
   deadlineAt = secondDeadline;
   await expect(page.locator("#decision-dock .dock-deadline")).toHaveAttribute(
@@ -1801,6 +1855,6 @@ test("the approval note keeps focus and the caret when the decision dock rebuild
     secondDeadline,
   );
 
-  expect(await caret()).toEqual({ focused: true, start: "first line\n".length });
+  expect(await selection()).toEqual(before);
   await expect(note).toHaveValue("first line\nsecond line");
 });

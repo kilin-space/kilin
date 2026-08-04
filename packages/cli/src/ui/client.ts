@@ -200,6 +200,7 @@ type ViewerFocusTarget =
       readonly type: "decision-note";
       readonly selectionStart: number;
       readonly selectionEnd: number;
+      readonly selectionDirection: "forward" | "backward" | "none";
     }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
   | { readonly type: "command-copy"; readonly command: string }
@@ -285,6 +286,7 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
       type: "decision-note",
       selectionStart: activeElement.selectionStart,
       selectionEnd: activeElement.selectionEnd,
+      selectionDirection: activeElement.selectionDirection,
     };
   }
   if (activeElement instanceof HTMLElement && activeElement.id === "decision-approve") {
@@ -406,7 +408,7 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     const note = elements.decisionDock.querySelector<HTMLTextAreaElement>("#decision-note");
     if (note !== null) {
       note.focus();
-      note.setSelectionRange(target.selectionStart, target.selectionEnd);
+      note.setSelectionRange(target.selectionStart, target.selectionEnd, target.selectionDirection);
     }
     return;
   }
@@ -1110,6 +1112,7 @@ const renderGraph = (): void => {
     setText(description, "Correct the workflow diagnostics to display its graph.");
     elements.graph.append(title, description);
     sizeGraphSurface(560, 148);
+    renderGraphExpansion();
     return;
   }
 
@@ -1261,6 +1264,16 @@ const renderGraph = (): void => {
     groups.push(group);
     elements.graph.append(group);
   }
+  renderGraphExpansion();
+};
+
+const renderGraphExpansion = (): void => {
+  elements.graphStrip.classList.toggle("expanded", state.graphExpanded);
+  elements.graphExpandToggle.setAttribute("aria-pressed", String(state.graphExpanded));
+  elements.graphExpandToggle.hidden =
+    !state.graphExpanded &&
+    document.activeElement !== elements.graphExpandToggle &&
+    elements.graphStrip.scrollHeight <= elements.graphStrip.clientHeight;
 };
 
 const renderRunInspector = (): void => {
@@ -2616,11 +2629,14 @@ const decisionRecordElement = (
   chip.className = `decision-chip ${label}`;
   setText(chip, label);
   const meta = document.createElement("span");
-  setText(
-    meta,
-    `· ${decision.actor} · ${formatTimestamp(decision.decidedAt)}${decision.note === undefined ? "" : ` · ${decision.note}`}`,
-  );
+  setText(meta, `· ${decision.actor} · ${formatTimestamp(decision.decidedAt)}`);
   record.append(chip, meta);
+  if (decision.note !== undefined) {
+    const note = document.createElement("span");
+    note.className = "decision-record-note";
+    setText(note, decision.note);
+    record.append(note);
+  }
   return record;
 };
 
@@ -3598,8 +3614,7 @@ elements.decisionNeededBanner.addEventListener("click", () => {
 });
 elements.graphExpandToggle.addEventListener("click", () => {
   state.graphExpanded = !state.graphExpanded;
-  elements.graphStrip.classList.toggle("expanded", state.graphExpanded);
-  elements.graphExpandToggle.setAttribute("aria-pressed", String(state.graphExpanded));
+  renderGraphExpansion();
 });
 elements.evidenceViewRendered.addEventListener("click", () => {
   setEvidenceView("rendered");
