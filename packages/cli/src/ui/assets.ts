@@ -867,16 +867,11 @@ h3 {
 .run-commands code {
   display: block;
   padding: 7px;
-  overflow-x: auto;
   color: var(--dim-ink);
   background: var(--code-surface);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  white-space: nowrap;
-}
-
-.run-commands .copy-button {
-  color: var(--dim-ink);
-  border-color: var(--border);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .lineage-list {
@@ -1240,11 +1235,16 @@ h3 {
 .copy-button {
   flex: 0 0 auto;
   padding: 0 10px;
-  color: #7c1f56;
+  color: var(--dim-ink);
   background: white;
-  border: 1px solid #e6b7d3;
+  border: 1px solid var(--muted);
   font-size: 11px;
   font-weight: 600;
+}
+
+.approval-commands .copy-button {
+  color: #7c1f56;
+  border-color: #e6b7d3;
 }
 
 .decision-packet {

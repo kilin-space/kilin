@@ -194,7 +194,7 @@ type ViewerFocusTarget =
   | { readonly type: "evidence-retry" }
   | { readonly type: "decision-note" }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
-  | { readonly type: "decision-copy"; readonly command: string }
+  | { readonly type: "command-copy"; readonly command: string }
   | { readonly type: "decision-needed"; readonly runId: string; readonly graphNodeId: string };
 
 class ViewerRequestError extends Error {
@@ -283,7 +283,7 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   }
   const copyCommand = focusedAttribute(activeElement, "copy-button", "data-copy-command");
   if (copyCommand !== undefined) {
-    return { type: "decision-copy", command: copyCommand };
+    return { type: "command-copy", command: copyCommand };
   }
   return undefined;
 };
@@ -431,12 +431,10 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     elements.currentWorkflowButton.focus();
     return;
   }
-  const copyButtons = Array.from(
-    elements.decisionDock.querySelectorAll<HTMLButtonElement>(".copy-button"),
-  );
-  copyButtons
-    .find((button) => button.getAttribute("data-copy-command") === target.command)
-    ?.focus();
+  const copyButton = matchingElement(document, ".copy-button", "data-copy-command", target.command);
+  if (copyButton instanceof HTMLButtonElement) {
+    copyButton.focus();
+  }
 };
 
 const formatTimestamp = (timestamp: string): string =>
@@ -467,18 +465,14 @@ const formatDuration = (durationMs: number | undefined): string => {
   if (durationMs < 1_000) {
     return `${String(durationMs)} ms`;
   }
-  if (durationMs < 60_000) {
+  if (durationMs < minuteMs) {
     return `${String(Math.round(durationMs / 100) / 10)} s`;
   }
   return formatElapsed(durationMs);
 };
 
 const formatRelativeTime = (timestamp: string, now: number): string => {
-  const startedMs = Date.parse(timestamp);
-  if (Number.isNaN(startedMs)) {
-    return timestamp;
-  }
-  const elapsedMs = now - startedMs;
+  const elapsedMs = now - Date.parse(timestamp);
   if (elapsedMs < minuteMs) {
     return "just now";
   }
@@ -526,9 +520,10 @@ const updateLiveElements = (): void => {
     document.querySelectorAll<HTMLElement>("[data-live-relative]"),
   )) {
     const timestamp = element.dataset.liveRelative;
-    if (timestamp !== undefined) {
-      setText(element, formatRelativeTime(timestamp, now));
+    if (timestamp === undefined) {
+      continue;
     }
+    setText(element, formatRelativeTime(timestamp, now));
   }
   for (const element of Array.from(
     document.querySelectorAll<HTMLElement>("[data-live-deadline]"),
@@ -1311,7 +1306,7 @@ const renderRunInspector = (): void => {
   appendProperty(list, "Attempts", String(detail.attempts.length));
   appendProperty(list, "Provisioned", String(detail.workspaces.length));
   elements.runInspector.append(title, list);
-  if (detail.run.status === "running") {
+  if (detail.run.status === "running" && detail.run.cancelRequestedAt === undefined) {
     elements.runInspector.append(cancelCommand(detail.run.runId));
   }
   if (detail.attempts.length > 0) {
@@ -1462,10 +1457,11 @@ const renderNodeInspector = (): void => {
 const renderLineage = (): void => {
   elements.lineageList.replaceChildren();
   const lineage = state.viewMode === "run" ? state.runDetail?.lineage : undefined;
-  elements.lineageSection.hidden = lineage === undefined || lineage.runs.length <= 1;
-  if (lineage === undefined) {
+  if (lineage === undefined || lineage.runs.length <= 1) {
+    elements.lineageSection.hidden = true;
     return;
   }
+  elements.lineageSection.hidden = false;
   for (const [index, run] of lineage.runs.entries()) {
     const presentedStatus = presentedRunStatus(run);
     const item = document.createElement("li");
