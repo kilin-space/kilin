@@ -1390,8 +1390,9 @@ const appendLoopBody = (
   const feedbackTo = body.positions.get(loop.feedback.toNodeId);
   if (feedbackFrom !== undefined && feedbackTo !== undefined) {
     const selfFeedback = loop.feedback.fromNodeId === loop.feedback.toNodeId;
-    const startX = feedbackFrom.x + bodyCardWidth / (selfFeedback ? 1.4 : 2);
-    const endX = feedbackTo.x + bodyCardWidth / (selfFeedback ? 3.5 : 2);
+    const spread = selfFeedback ? bodyCardWidth / 3 : 0;
+    const startX = feedbackFrom.x + bodyCardWidth / 2 + spread;
+    const endX = feedbackTo.x + bodyCardWidth / 2 - spread;
     const cardBottom = containerHeaderHeight + body.height;
     const depth = cardBottom + 22;
     const path = createSvgElement("path");
