@@ -687,7 +687,8 @@ h3 {
   stroke: none;
 }
 
-.dag-node text {
+.dag-node text,
+.dag-body-node text {
   pointer-events: none;
   fill: #292c33;
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -701,6 +702,37 @@ h3 {
 .dag-node .dag-node-meta {
   fill: #777c87;
   font-size: 10px;
+}
+
+.dag-loop-stack {
+  fill: var(--panel);
+  stroke: #cfd3da;
+  stroke-width: 1.5;
+}
+
+.dag-loop-surface {
+  fill: var(--subdued);
+}
+
+.dag-loop-edge-label {
+  fill: var(--muted);
+  font-size: 9px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.dag-loop-feedback {
+  stroke-dasharray: 4 3;
+}
+
+.dag-body-node .dag-node-title {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.dag-body-node .dag-node-meta {
+  fill: #777c87;
+  font-size: 9px;
 }
 
 .dag-node.succeeded .dag-node-body {

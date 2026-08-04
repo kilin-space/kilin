@@ -4,6 +4,15 @@ All notable changes to `@kilin-space/cli` are documented here.
 
 ## Unreleased
 
+- Read a loop as a loop in the Viewer. A loop card keeps the word `loop` and gains its iteration
+  progress — `loop · 2/2 · ◐ Running` — in the meta line and the accessible name, and it carries a
+  stacked outline. Selecting it expands the card into a container that draws the body pipeline at
+  the latest recorded iteration, with the revise feedback edge and the pass exit; a graph that is
+  one loop opens expanded. Body cards with a recorded execution are keyboard reachable and select
+  that execution. The Loop iterations panel is visible whenever the workflow has a loop and names
+  the body before the first iteration, the graph description enumerates body nodes whether or not
+  the container is expanded, and a selected loop node now explains that loop nodes capture no
+  evidence instead of reading as a defect (#27).
 - Write an approval note across several lines: the Viewer decision dock now offers a four-row text
   area where Enter starts a new line, and Approve and Reject remain the only submit path. The
   1000-character limit is unchanged, a background refresh no longer moves the caret to the end of

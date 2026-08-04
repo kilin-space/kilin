@@ -210,7 +210,7 @@ test("desktop viewer exposes the graph, stored states, bounded output, and linea
   await expect(scenario.runtimeInvocationCount()).resolves.toBe(invocationCount);
 });
 
-test("bounded loops stay compact and expose scoped iterations without parsing execution IDs", async ({
+test("a loop collapses to one card, expands on selection, and exposes scoped iterations without parsing execution IDs", async ({
   page,
   viewer,
 }) => {
@@ -219,11 +219,20 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     name: "Bounded review",
     nodes: [
       {
-        id: "refine",
+        id: "prepare",
         ordinal: 0,
+        kind: "agent",
+        runtime: "codex",
+        access: "read_only",
+        outputType: "text",
+        dependencies: [],
+      },
+      {
+        id: "refine",
+        ordinal: 1,
         kind: "loop",
         maxIterations: 2,
-        dependencies: [],
+        dependencies: ["prepare"],
         body: {
           nodes: [
             {
@@ -262,8 +271,8 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
         resultNodeId: "draft",
       },
     ],
-    edges: [],
-    executionOrder: ["refine"],
+    edges: [{ from: "prepare", to: "refine" }],
+    executionOrder: ["prepare", "refine"],
   };
   const run = {
     runId: "loop-run",
@@ -397,10 +406,24 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     },
     nodes: [
       {
+        kind: "agent",
+        executionId: "prepare-execution",
+        nodeId: "prepare",
+        ordinal: 0,
+        runtime: "codex",
+        outputType: "text",
+        status: "succeeded",
+        startedAt: "2026-07-26T00:59:59.000Z",
+        finishedAt: "2026-07-26T01:00:00.000Z",
+        durationMs: 1_000,
+        exitCode: 0,
+        availableOutputs: [],
+      },
+      {
         kind: "loop",
         executionId: "refine",
         nodeId: "refine",
-        ordinal: 0,
+        ordinal: 1,
         status: "running",
         startedAt: "2026-07-26T01:00:00.000Z",
         availableOutputs: [],
@@ -451,16 +474,67 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     });
   });
 
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await openViewer(page, viewer.launchUrl);
   await page.locator("#current-workflow-button").click();
   await expect(page.locator("#graph-context")).toHaveText("Current workflow");
+
+  const loopCard = page.locator('.dag-node[data-node-id="refine"]');
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText("loop · up to 2");
+  await expect(page.locator(".dag-body-node")).toHaveCount(0);
+  await expect(loopCard).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator("#workflow-graph desc")).toContainText(
-    "1 nodes in execution order: refine",
+    "Loop refine repeats up to 2 times over draft, gate, judge.",
   );
-  await expect(page.locator(".dag-node")).toHaveCount(1);
-  await expect(page.locator(".dag-node-meta")).toHaveText("loop · up to 2");
+  await expect(page.locator("#execution-list")).toContainText("draft · starts first");
+  await expect(page.locator("#loop-iterations-section")).toBeVisible();
+  await expect(page.locator("#loop-iterations-section")).toContainText(
+    "No iterations recorded yet. Body: draft → gate → judge.",
+  );
+
+  await loopCard.click();
+  await expect(loopCard).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".dag-body-node")).toHaveCount(3);
+  await page.locator('.dag-node[data-node-id="prepare"]').click();
+  await expect(loopCard).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".dag-body-node")).toHaveCount(0);
+
   await page.getByRole("button", { name: /Run loop-run, running/u }).click();
   await expect(page.locator("#execution-list button")).toHaveCount(0);
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
+    "loop · 2/2 · ◐ Running",
+  );
+  await expect(loopCard).toHaveAttribute("aria-label", /loop, iteration 2 of 2, running/u);
+  await expect(
+    page.getByRole("button", { name: /^draft, loop refine body step 1, iteration 1, succeeded$/u }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: /^gate, loop refine body step 2, iteration 1, waiting for approval$/u,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^judge, loop refine body step 3, iteration 1, pending$/u }),
+  ).toBeVisible();
+  await loopCard.click({ position: { x: 60, y: 20 } });
+  await expect(page.locator("#evidence-placeholder")).toBeVisible();
+  await expect(page.locator("#evidence-placeholder")).toHaveText(
+    "A loop node does not capture evidence. Select a body execution under Loop iterations.",
+  );
+
+  await loopCard.focus();
+  await loopCard.press("ArrowRight");
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-body-node-id")))
+    .toBe("draft");
+
+  await page.locator('.dag-body-node[data-body-node-id="gate"]').click();
+  await expect(page.locator("#decision-dock")).toBeVisible();
+  await expect(page.locator("#decision-dock")).toContainText("Approve the revised result?");
+  await expect(page.locator('.dag-body-node[data-body-node-id="gate"]')).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   const iterationRegion = page.locator("#loop-iterations-section");
   await expect(iterationRegion).toBeVisible();
   await expect(iterationRegion.locator(".loop-iteration")).toHaveCount(2);
@@ -494,6 +568,29 @@ test("bounded loops stay compact and expose scoped iterations without parsing ex
     "open",
     "",
   );
+});
+
+test("a graph that is one loop opens expanded and keeps its unstarted body out of the tab order", async ({
+  page,
+  viewer,
+}) => {
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: loopCurrentWorkflow,
+    runList: () => runListResponse([]),
+    runDetail: () => undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const loopCard = page.locator('.dag-node[data-node-id="refine"]');
+  await expect(loopCard).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".dag-body-node")).toHaveCount(3);
+  await expect(page.locator('.dag-body-node[aria-hidden="true"]')).toHaveCount(3);
+
+  await loopCard.focus();
+  await loopCard.press("ArrowRight");
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-node-id")))
+    .toBe("refine");
 });
 
 test("mobile viewer preserves layout and touch targets", async ({
