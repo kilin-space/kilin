@@ -62,6 +62,12 @@ const saveScreenshot = async (
 const documentHasNoHorizontalOverflow = async (page: Page): Promise<boolean> =>
   page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
 
+const graphStripHeight = async (page: Page): Promise<number> =>
+  page.locator("#graph-strip").evaluate((element) => element.clientHeight);
+
+const graphSurfaceHeight = async (page: Page): Promise<number> =>
+  page.locator("#workflow-graph").evaluate((element) => element.getBoundingClientRect().height);
+
 interface Deferred<Value> {
   readonly promise: Promise<Value>;
   resolve(value: Value): void;
@@ -117,6 +123,12 @@ test("desktop viewer exposes the graph, stored states, bounded output, and linea
     "3. verify · after change",
   ]);
   await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
+
+  const surfaceHeight = await graphSurfaceHeight(page);
+  expect(surfaceHeight).toBeGreaterThan(0);
+  expect(surfaceHeight).toBeLessThanOrEqual(await graphStripHeight(page));
+  await expect(page.locator("#graph-expand-toggle")).toBeAttached();
+  await expect(page.locator("#graph-expand-toggle")).toBeHidden();
 
   await page
     .getByRole("button", { name: new RegExp(`Run ${scenario.cancelledRunId}, cancelled`) })
@@ -1647,83 +1659,60 @@ test("the graph strip expands from the keyboard and stays expanded across polls"
   viewer,
 }, testInfo) => {
   await page.setViewportSize({ width: 1_440, height: 900 });
-  await page.emulateMedia({ reducedMotion: "reduce" });
   let workflowRequests = 0;
+  let shortGraph = false;
   await installWorldRoutes(page, viewer.origin, {
     currentWorkflow: () => {
       workflowRequests += 1;
-      return fanOutCurrentWorkflow();
+      return shortGraph ? gateCurrentWorkflow() : fanOutCurrentWorkflow();
     },
     runList: fanOutRunListResponse,
     runDetail: () => undefined,
   });
   await openViewer(page, viewer.launchUrl);
 
-  const strip = page.locator("#graph-strip");
-  const stripHeight = async (): Promise<number> => {
-    await waitForBrowserRendering(page);
-    return strip.evaluate((element) => element.clientHeight);
-  };
-  const graphHeight = await page
-    .locator("#workflow-graph")
-    .evaluate((element) => element.getBoundingClientRect().height);
+  const graphHeight = await graphSurfaceHeight(page);
   const toggle = page.getByRole("button", { name: "Expand" });
 
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
-  const collapsedHeight = await stripHeight();
+  const collapsedHeight = await graphStripHeight(page);
   expect(collapsedHeight).toBeLessThan(graphHeight);
 
   await toggle.focus();
   await toggle.press("Enter");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  const expandedHeight = await stripHeight();
+  const expandedHeight = await graphStripHeight(page);
   expect(expandedHeight).toBeGreaterThan(collapsedHeight);
   await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
   await saveScreenshot(page, "graph-expanded.png", "graph-expanded-1440x900", testInfo);
 
   const observedRequests = workflowRequests;
+  await page.locator("#refresh-button").click();
   await expect.poll(() => workflowRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests);
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  expect(await stripHeight()).toBe(expandedHeight);
+  expect(await graphStripHeight(page)).toBe(expandedHeight);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  const narrowExpandedHeight = await stripHeight();
+  const narrowExpandedHeight = await graphStripHeight(page);
   await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
   await saveScreenshot(page, "graph-expanded-mobile.png", "graph-expanded-390x844", testInfo);
 
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
-  expect(await stripHeight()).toBeLessThan(narrowExpandedHeight);
+  expect(await graphStripHeight(page)).toBeLessThan(narrowExpandedHeight);
+
+  await toggle.focus();
+  shortGraph = true;
+  await expect
+    .poll(() => graphSurfaceHeight(page), { timeout: 10_000 })
+    .toBeLessThan(await graphStripHeight(page));
+  await expect(toggle).toBeVisible();
+  await expect(toggle.evaluate((element) => element === document.activeElement)).resolves.toBe(
+    true,
+  );
 });
 
-test("the graph expand toggle stays away while the whole graph already fits", async ({
-  page,
-  viewer,
-}) => {
-  await page.setViewportSize({ width: 1_440, height: 900 });
-  await installWorldRoutes(page, viewer.origin, {
-    currentWorkflow: gateCurrentWorkflow,
-    runList: () => runListResponse([]),
-    runDetail: () => undefined,
-  });
-  await openViewer(page, viewer.launchUrl);
-
-  const stripHeight = await page
-    .locator("#graph-strip")
-    .evaluate((element) => element.clientHeight);
-  const graphHeight = await page
-    .locator("#workflow-graph")
-    .evaluate((element) => element.getBoundingClientRect().height);
-  expect(graphHeight).toBeGreaterThan(0);
-  expect(graphHeight).toBeLessThanOrEqual(stripHeight);
-
-  const toggle = page.locator("#graph-expand-toggle");
-  await expect(toggle).toBeAttached();
-  await expect(toggle).toBeHidden();
-});
-
-test("an approval note spans lines, stays bounded, and reaches the decision request", async ({
+test("an approval note spans lines, stays bounded, and keeps the decision controls reachable", async ({
   page,
   viewer,
 }, testInfo) => {
@@ -1772,7 +1761,7 @@ test("an approval note spans lines, stays bounded, and reaches the decision requ
   await expect(note).toHaveValue(multilineNote);
 
   const overLongNote = "note line\n"
-    .repeat(maximumApprovalNoteCharacters)
+    .repeat(Math.ceil(maximumApprovalNoteCharacters / "note line\n".length))
     .slice(0, maximumApprovalNoteCharacters);
   await note.fill(overLongNote);
   await note.press("End");
@@ -1847,18 +1836,20 @@ test("the approval note keeps focus and the caret when the decision dock rebuild
     readonly focused: boolean;
     readonly start: number;
     readonly end: number;
-    readonly direction: string;
+    readonly direction: HTMLTextAreaElement["selectionDirection"];
     readonly length: number;
   }
   const selection = (): Promise<NoteSelection> =>
     note.evaluate((element) => {
-      const field = element instanceof HTMLTextAreaElement ? element : undefined;
+      if (!(element instanceof HTMLTextAreaElement)) {
+        throw new Error("The approval note field is not a textarea.");
+      }
       return {
         focused: element === document.activeElement,
-        start: field?.selectionStart ?? -1,
-        end: field?.selectionEnd ?? -1,
-        direction: field?.selectionDirection ?? "",
-        length: field?.value.length ?? -1,
+        start: element.selectionStart,
+        end: element.selectionEnd,
+        direction: element.selectionDirection,
+        length: element.value.length,
       };
     });
   const before = await selection();

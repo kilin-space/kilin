@@ -58,39 +58,37 @@ export const gateCurrentWorkflow = (): CurrentWorkflowResponse => ({
 const fanOutWorkflowId = "fan-out-viewer";
 const fanOutBranches = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"] as const;
 
-const fanOutWorkflowGraph = (): WorkflowGraphDto => ({
-  workflowId: fanOutWorkflowId,
-  name: "Fan-out review",
-  nodes: [
-    {
-      id: "collect",
-      ordinal: 0,
-      kind: "agent",
-      runtime: "codex",
-      access: "read_only",
-      outputType: "text",
-      dependencies: [],
-    },
-    ...fanOutBranches.map((branch, index) => ({
-      id: branch,
-      ordinal: index + 1,
-      kind: "agent" as const,
-      runtime: "codex" as const,
-      access: "read_only" as const,
-      outputType: "text" as const,
-      dependencies: ["collect"],
-    })),
-  ],
-  edges: fanOutBranches.map((branch) => ({ from: "collect", to: branch })),
-  executionOrder: ["collect", ...fanOutBranches],
-});
-
 /** A graph whose seven nodes occupy six lanes, so it is taller than the collapsed graph strip. */
 export const fanOutCurrentWorkflow = (): CurrentWorkflowResponse => ({
   outputVersion: 1,
   state: "valid",
   contentHash: "fan-out-content",
-  workflow: fanOutWorkflowGraph(),
+  workflow: {
+    workflowId: fanOutWorkflowId,
+    name: "Fan-out review",
+    nodes: [
+      {
+        id: "collect",
+        ordinal: 0,
+        kind: "agent",
+        runtime: "codex",
+        access: "read_only",
+        outputType: "text",
+        dependencies: [],
+      },
+      ...fanOutBranches.map((branch, index) => ({
+        id: branch,
+        ordinal: index + 1,
+        kind: "agent" as const,
+        runtime: "codex" as const,
+        access: "read_only" as const,
+        outputType: "text" as const,
+        dependencies: ["collect"],
+      })),
+    ],
+    edges: fanOutBranches.map((branch) => ({ from: "collect", to: branch })),
+    executionOrder: ["collect", ...fanOutBranches],
+  },
   diagnostics: [],
 });
 

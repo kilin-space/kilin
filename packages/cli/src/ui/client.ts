@@ -200,7 +200,7 @@ type ViewerFocusTarget =
       readonly type: "decision-note";
       readonly selectionStart: number;
       readonly selectionEnd: number;
-      readonly selectionDirection: "forward" | "backward" | "none";
+      readonly selectionDirection: HTMLTextAreaElement["selectionDirection"];
     }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
   | { readonly type: "command-copy"; readonly command: string }
@@ -1112,7 +1112,6 @@ const renderGraph = (): void => {
     setText(description, "Correct the workflow diagnostics to display its graph.");
     elements.graph.append(title, description);
     sizeGraphSurface(560, 148);
-    renderGraphExpansion();
     return;
   }
 
@@ -1264,16 +1263,14 @@ const renderGraph = (): void => {
     groups.push(group);
     elements.graph.append(group);
   }
-  renderGraphExpansion();
 };
 
 const renderGraphExpansion = (): void => {
   elements.graphStrip.classList.toggle("expanded", state.graphExpanded);
   elements.graphExpandToggle.setAttribute("aria-pressed", String(state.graphExpanded));
-  elements.graphExpandToggle.hidden =
-    !state.graphExpanded &&
-    document.activeElement !== elements.graphExpandToggle &&
-    elements.graphStrip.scrollHeight <= elements.graphStrip.clientHeight;
+  const graphOverflowsStrip = elements.graphStrip.scrollHeight > elements.graphStrip.clientHeight;
+  const keepsFocus = document.activeElement === elements.graphExpandToggle;
+  elements.graphExpandToggle.hidden = !state.graphExpanded && !keepsFocus && !graphOverflowsStrip;
 };
 
 const renderRunInspector = (): void => {
@@ -3138,6 +3135,7 @@ const renderPresentation = (): void => {
   renderDecisionNeededBanner();
   announceApprovalGateTransitions();
   updateLiveElements();
+  renderGraphExpansion();
   restoreViewerFocus(focusTarget);
 };
 

@@ -48,7 +48,7 @@ export const viewerHtml = `<!doctype html>
             </div>
             <div class="graph-heading-controls">
               <span id="graph-status" class="status-chip">Loading</span>
-              <button type="button" id="graph-expand-toggle" class="quiet-button graph-expand-toggle" aria-pressed="false" hidden>Expand</button>
+              <button type="button" id="graph-expand-toggle" class="quiet-button" aria-pressed="false" hidden>Expand</button>
             </div>
           </div>
           <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
@@ -350,13 +350,10 @@ h3 {
 .history-heading-row,
 .graph-heading-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.graph-heading-row {
-  flex-wrap: wrap;
 }
 
 .graph-heading-controls {
@@ -377,9 +374,6 @@ h3 {
 .quiet-button[aria-pressed="true"] {
   color: var(--selection);
   background: var(--selection-soft);
-}
-
-.graph-expand-toggle[aria-pressed="true"] {
   box-shadow: inset 0 0 0 1px var(--selection);
 }
 
@@ -1094,7 +1088,6 @@ h3 {
 .decision-footer {
   display: grid;
   gap: 8px;
-  min-height: 0;
   padding: 12px 16px;
   overflow: auto;
   border-top: 1px solid var(--hairline);
@@ -1765,10 +1758,6 @@ h3 {
 
   .graph-strip {
     max-height: 200px;
-  }
-
-  .graph-strip.expanded {
-    max-height: max(200px, 70vh);
   }
 
   .evidence-stage,
