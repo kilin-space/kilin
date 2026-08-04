@@ -1796,6 +1796,10 @@ test("an approval note spans lines, stays bounded, and keeps the decision contro
 
   const recorded = page.locator(".decision-record-note");
   await expect(recorded).toHaveJSProperty("textContent", multilineNote);
+  await recorded.focus();
+  await expect(recorded.evaluate((element) => element === document.activeElement)).resolves.toBe(
+    true,
+  );
   const recordedLines = await recorded.evaluate(
     (element) =>
       element.getBoundingClientRect().height /

@@ -2631,6 +2631,7 @@ const decisionRecordElement = (
   if (decision.note !== undefined) {
     const note = document.createElement("span");
     note.className = "decision-record-note";
+    note.tabIndex = 0;
     setText(note, decision.note);
     record.append(note);
   }
