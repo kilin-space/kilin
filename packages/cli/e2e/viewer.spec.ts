@@ -1,5 +1,6 @@
 import type { Page, Response, Route, TestInfo } from "@playwright/test";
 
+import { maximumApprovalNoteCharacters } from "../src/domain/run-state.js";
 import type {
   CurrentWorkflowResponse,
   LoopIterationDto,
@@ -12,6 +13,8 @@ import type {
 import {
   cancelRequestedSummary,
   decidedGateNodes,
+  fanOutCurrentWorkflow,
+  fanOutRunListResponse,
   fulfillJson,
   fulfillTransientFailure,
   gateCurrentWorkflow,
@@ -1637,4 +1640,167 @@ test("the run inspector offers a cancel fallback only while the run is live", as
   await page.locator(`.history-button[data-run-id="${finished.runId}"]`).click();
   await expect(inspector.locator(".inspector-title")).toHaveText(finished.runId);
   await expect(commands).toHaveCount(0);
+});
+
+test("the graph strip expands from the keyboard and stays expanded across polls", async ({
+  page,
+  viewer,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1_440, height: 900 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  let workflowRequests = 0;
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: () => {
+      workflowRequests += 1;
+      return fanOutCurrentWorkflow();
+    },
+    runList: fanOutRunListResponse,
+    runDetail: () => undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const strip = page.locator("#graph-strip");
+  const stripHeight = async (): Promise<number> => {
+    await waitForBrowserRendering(page);
+    return strip.evaluate((element) => element.clientHeight);
+  };
+  const graphHeight = await page
+    .locator("#workflow-graph")
+    .evaluate((element) => element.getBoundingClientRect().height);
+  const toggle = page.getByRole("button", { name: "Expand" });
+
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(await stripHeight()).toBeLessThan(graphHeight);
+
+  await toggle.focus();
+  await toggle.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  expect(await stripHeight()).toBeGreaterThanOrEqual(graphHeight);
+  await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
+  await saveScreenshot(page, "graph-expanded.png", "graph-expanded-1440x900", testInfo);
+
+  const observedRequests = workflowRequests;
+  await page.locator("#refresh-button").click();
+  await expect.poll(() => workflowRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests);
+  await expect(page.locator("#connection-status")).toHaveText("Live");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  expect(await stripHeight()).toBeGreaterThanOrEqual(graphHeight);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  const narrowExpandedHeight = await stripHeight();
+  await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
+  await saveScreenshot(page, "graph-expanded-mobile.png", "graph-expanded-390x844", testInfo);
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(await stripHeight()).toBeLessThan(narrowExpandedHeight);
+});
+
+test("an approval note spans lines, stays bounded, and reaches the decision request", async ({
+  page,
+  viewer,
+}, testInfo) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  const multilineNote = "first line\nsecond line";
+  let decided = false;
+  let decisionBody: string | null = null;
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () =>
+      runListResponse([
+        decided ? ordinaryRunningSummary("run-wait") : waitingGateSummary("run-wait"),
+      ]),
+    runDetail: (runId) => {
+      if (runId !== "run-wait") {
+        return undefined;
+      }
+      return decided
+        ? gateRunDetail(ordinaryRunningSummary("run-wait"), decidedGateNodes("gate-execution-1"))
+        : gateRunDetail(
+            waitingGateSummary("run-wait"),
+            waitingGateNodes("gate-execution-1", deadlineAt),
+          );
+    },
+  });
+  await page.route(
+    `${viewer.origin}/api/runs/run-wait/nodes/gate-execution-1/decision`,
+    async (route) => {
+      decisionBody = route.request().postData();
+      await fulfillJson(route, syntheticApprovalDecision("run-wait", "gate-execution-1"));
+    },
+  );
+  await openViewer(page, viewer.launchUrl);
+
+  const note = page.locator("#decision-note");
+  await note.click();
+  await page.keyboard.type("first line");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("second line");
+  await expect(note).toHaveValue(multilineNote);
+  expect(decisionBody).toBeNull();
+
+  const overLongNote = "n".repeat(maximumApprovalNoteCharacters);
+  await note.fill(overLongNote);
+  await note.press("End");
+  await page.keyboard.type("beyond the limit");
+  await expect(note).toHaveValue(overLongNote);
+
+  await note.fill(multilineNote);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const noteBox = await note.boundingBox();
+  if (noteBox === null) {
+    throw new Error("The approval note field was not laid out at the narrow viewport.");
+  }
+  expect(noteBox.x + noteBox.width).toBeLessThanOrEqual(390);
+  await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
+  await saveScreenshot(page, "decision-note-mobile.png", "decision-note-390x844", testInfo);
+
+  decided = true;
+  await page.locator("#decision-approve").click();
+  await expect(page.locator(".decision-record")).toContainText("human");
+  expect(decisionBody).toBe(JSON.stringify({ decision: "approved", note: multilineNote }));
+});
+
+test("the approval note keeps focus and the caret when the decision dock rebuilds", async ({
+  page,
+  viewer,
+}) => {
+  const firstDeadline = new Date(Date.now() + 3_600_000).toISOString();
+  const secondDeadline = new Date(Date.now() + 7_200_000).toISOString();
+  let deadlineAt = firstDeadline;
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([waitingGateSummary("run-wait")]),
+    runDetail: (runId) =>
+      runId === "run-wait"
+        ? gateRunDetail(
+            waitingGateSummary("run-wait"),
+            waitingGateNodes("gate-execution-1", deadlineAt),
+          )
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const note = page.locator("#decision-note");
+  await note.click();
+  await page.keyboard.type("first line");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("second line");
+  await page.keyboard.press("Home");
+  const caret = (): Promise<{ focused: boolean; start: number }> =>
+    note.evaluate((element) => ({
+      focused: element === document.activeElement,
+      start: element instanceof HTMLTextAreaElement ? element.selectionStart : -1,
+    }));
+  expect(await caret()).toEqual({ focused: true, start: "first line\n".length });
+
+  deadlineAt = secondDeadline;
+  await expect(page.locator("#decision-dock .dock-deadline")).toHaveAttribute(
+    "data-live-deadline",
+    secondDeadline,
+  );
+
+  expect(await caret()).toEqual({ focused: true, start: "first line\n".length });
+  await expect(note).toHaveValue("first line\nsecond line");
 });

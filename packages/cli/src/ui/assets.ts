@@ -46,10 +46,13 @@ export const viewerHtml = `<!doctype html>
               <p id="graph-context" class="eyebrow">Current workflow</p>
               <h2 id="graph-heading">Workflow</h2>
             </div>
-            <span id="graph-status" class="status-chip">Loading</span>
+            <div class="graph-heading-controls">
+              <span id="graph-status" class="status-chip">Loading</span>
+              <button type="button" id="graph-expand-toggle" class="quiet-button" aria-pressed="false">Expand</button>
+            </div>
           </div>
           <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
-          <div class="graph-strip">
+          <div id="graph-strip" class="graph-strip">
             <svg id="workflow-graph" class="workflow-graph" role="group" aria-labelledby="workflow-graph-title" aria-describedby="workflow-graph-description"></svg>
           </div>
           <section class="execution-equivalent sr-only" aria-labelledby="execution-heading">
@@ -347,9 +350,17 @@ h3 {
 .history-heading-row,
 .graph-heading-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.graph-heading-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
 }
 
 .quiet-button {
@@ -626,6 +637,11 @@ h3 {
   background-color: #fafbfc;
   background-image: radial-gradient(#dcdfe4 0.7px, transparent 0.7px);
   background-size: 16px 16px;
+  transition: max-height 160ms ease;
+}
+
+.graph-strip.expanded {
+  max-height: clamp(320px, 70vh, 720px);
 }
 
 .workflow-graph {
@@ -1135,13 +1151,14 @@ h3 {
 
 .decision-note {
   min-height: 44px;
-  padding: 0 10px;
+  padding: 8px 10px;
   border: 1px solid #e6b7d3;
   border-radius: 7px;
   color: inherit;
   background: white;
   font: inherit;
   font-size: 12px;
+  resize: vertical;
 }
 
 .decision-note:focus-visible {
@@ -1732,6 +1749,10 @@ h3 {
 
   .graph-strip {
     max-height: 200px;
+  }
+
+  .graph-strip.expanded {
+    max-height: 70vh;
   }
 
   .evidence-stage,
