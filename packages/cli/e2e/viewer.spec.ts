@@ -302,7 +302,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
     },
     {
       kind: "approval" as const,
-      executionId: "opaque-occurrence-approved-gate",
+      executionId: "opaque-occurrence-beta",
       nodeId: "gate",
       loopNodeId: "refine",
       iteration: 0,
@@ -321,7 +321,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
     },
     {
       kind: "agent" as const,
-      executionId: "opaque-occurrence-beta",
+      executionId: "opaque-occurrence-gamma",
       nodeId: "judge",
       loopNodeId: "refine",
       iteration: 0,
@@ -339,7 +339,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   const secondIterationExecutions: LoopIterationDto["executions"] = [
     {
       kind: "agent" as const,
-      executionId: "opaque-occurrence-second-draft",
+      executionId: "opaque-occurrence-delta",
       nodeId: "draft",
       loopNodeId: "refine",
       iteration: 1,
@@ -355,7 +355,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
     },
     {
       kind: "approval" as const,
-      executionId: "opaque-occurrence-gate",
+      executionId: "opaque-occurrence-epsilon",
       nodeId: "gate",
       loopNodeId: "refine",
       iteration: 1,
@@ -368,7 +368,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
     },
     {
       kind: "agent" as const,
-      executionId: "opaque-occurrence-second-judge",
+      executionId: "opaque-occurrence-zeta",
       nodeId: "judge",
       loopNodeId: "refine",
       iteration: 1,
@@ -380,35 +380,42 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
     },
   ];
   const unreachedIterationExecutions: LoopIterationDto["executions"] = [
-    "draft",
-    "gate",
-    "judge",
-  ].map((nodeId, index) =>
-    nodeId === "gate"
-      ? {
-          kind: "approval" as const,
-          executionId: `opaque-occurrence-third-${nodeId}`,
-          nodeId,
-          loopNodeId: "refine",
-          iteration: 2,
-          ordinal: 7 + index,
-          question: "Approve the revised result?",
-          status: "pending" as const,
-          availableOutputs: [],
-        }
-      : {
-          kind: "agent" as const,
-          executionId: `opaque-occurrence-third-${nodeId}`,
-          nodeId,
-          loopNodeId: "refine",
-          iteration: 2,
-          ordinal: 7 + index,
-          runtime: "codex" as const,
-          outputType: "text" as const,
-          status: "pending" as const,
-          availableOutputs: [],
-        },
-  );
+    {
+      kind: "agent" as const,
+      executionId: "opaque-occurrence-eta",
+      nodeId: "draft",
+      loopNodeId: "refine",
+      iteration: 2,
+      ordinal: 7,
+      runtime: "codex" as const,
+      outputType: "text" as const,
+      status: "pending" as const,
+      availableOutputs: [],
+    },
+    {
+      kind: "approval" as const,
+      executionId: "opaque-occurrence-theta",
+      nodeId: "gate",
+      loopNodeId: "refine",
+      iteration: 2,
+      ordinal: 8,
+      question: "Approve the revised result?",
+      status: "pending" as const,
+      availableOutputs: [],
+    },
+    {
+      kind: "agent" as const,
+      executionId: "opaque-occurrence-iota",
+      nodeId: "judge",
+      loopNodeId: "refine",
+      iteration: 2,
+      ordinal: 9,
+      runtime: "codex" as const,
+      outputType: "choice" as const,
+      status: "pending" as const,
+      availableOutputs: [],
+    },
+  ];
   const currentWorkflow: CurrentWorkflowResponse = {
     outputVersion: 1,
     state: "valid",
@@ -437,7 +444,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
     nodes: [
       {
         kind: "agent",
-        executionId: "prepare-execution",
+        executionId: "opaque-occurrence-omega",
         nodeId: "prepare",
         ordinal: 0,
         runtime: "codex",
@@ -538,7 +545,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
     "loop · 2/3 · ◐ Running",
   );
-  await expect(loopCard).toHaveAttribute("aria-label", /loop, iteration 2 of 3, running/u);
+  await expect(loopCard).toHaveAttribute("aria-label", /loop, 2 of 3 iterations started, running/u);
   await expect(
     page.getByRole("button", { name: /^draft, loop refine body step 1, iteration 1, succeeded$/u }),
   ).toBeVisible();
@@ -583,7 +590,12 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   await expect(page.locator(".loop-execution-provenance").first()).toContainText(
     "executionId opaque-occurrence-alpha · bodyNodeId draft · loopNodeId refine",
   );
+  const prepareCard = page.locator('.dag-node[data-node-id="prepare"]');
+  await prepareCard.click();
+  await expect(page.locator(".dag-body-node")).toHaveCount(0);
   await page.getByRole("button", { name: /^draft, loop refine, iteration 0,/u }).click();
+  await expect(prepareCard).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator(".dag-body-node")).toHaveCount(3);
   await expect(page.locator("#node-inspector")).toContainText("opaque-occurrence-alpha");
   await expect(page.locator("#node-inspector")).toContainText("Iteration0");
   const gateButton = page.getByRole("button", { name: /^gate, loop refine, iteration 1,/u });
@@ -591,7 +603,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   await expect(page.locator("#decision-dock")).toBeVisible();
   await expect(page.locator("#decision-dock")).toContainText("Approve the revised result?");
   await expect(page.locator(".approval-commands")).toContainText(
-    "kilin runs approve loop-run opaque-occurrence-gate --actor human",
+    "kilin runs approve loop-run opaque-occurrence-epsilon --actor human",
   );
   await gateButton.focus();
   await expect(gateButton).toBeFocused();
@@ -620,11 +632,16 @@ test("a graph that is one loop opens expanded and keeps its unstarted body out o
   await expect(page.locator(".dag-body-node")).toHaveCount(3);
   await expect(page.locator('.dag-body-node[aria-hidden="true"]')).toHaveCount(3);
 
+  await expect(page.locator(".dag-body-node[tabindex]")).toHaveCount(0);
   await loopCard.focus();
-  await loopCard.press("ArrowRight");
+  await loopCard.press("Tab");
   await expect
-    .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-node-id")))
-    .toBe("refine");
+    .poll(() =>
+      page.evaluate(() =>
+        document.activeElement?.closest("#workflow-graph") === null ? "outside" : "graph",
+      ),
+    )
+    .toBe("outside");
 });
 
 test("mobile viewer preserves layout and touch targets", async ({
@@ -1223,7 +1240,10 @@ test("the banner targets the outer loop node and occurrence of a waiting loop ga
   await banner.click();
 
   const outerNode = page.locator('.dag-node[data-node-id="refine"]');
-  await expect(outerNode).toHaveAttribute("aria-selected", "true");
+  await expect(outerNode).toBeVisible();
+  await expect(
+    page.locator('.dag-body-node[data-loop-node-id="refine"][data-body-node-id="gate"]'),
+  ).toHaveAttribute("aria-selected", "true");
   const dock = page.locator("#decision-dock");
   await expect(dock).toBeVisible();
   await expect(dock.locator(".dock-question")).toHaveText("Approve the revised result?");

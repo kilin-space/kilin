@@ -359,9 +359,12 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
   }
   if (target.type === "graph") {
     const cards = graphCards();
+    const containerKey = target.cardKey.split("/")[0] ?? target.cardKey;
     const index = cards.findIndex((card) => graphCardKey(card) === target.cardKey);
-    if (index >= 0) {
-      updateGraphRovingFocus(cards, index);
+    const fallbackIndex =
+      index >= 0 ? index : cards.findIndex((card) => graphCardKey(card) === containerKey);
+    if (fallbackIndex >= 0) {
+      updateGraphRovingFocus(cards, fallbackIndex);
     }
     return;
   }
@@ -1002,11 +1005,26 @@ const rankedLayout = (
   origin: GraphPosition,
 ): RankedLayout => {
   const ranks = new Map<string, number>();
+  const rankOf = (node: LayoutNode): number =>
+    node.dependencies.length === 0
+      ? 0
+      : Math.max(...node.dependencies.map((dependency) => ranks.get(dependency) ?? 0)) + 1;
+  let settled = false;
+  let remainingPasses = nodes.length;
+  while (!settled && remainingPasses > 0) {
+    settled = true;
+    remainingPasses -= 1;
+    for (const node of nodes) {
+      const rank = rankOf(node);
+      if (rank !== ranks.get(node.id)) {
+        ranks.set(node.id, rank);
+        settled = false;
+      }
+    }
+  }
   const columnWidths = new Map<number, number>();
   for (const node of nodes) {
-    const dependencyRanks = node.dependencies.map((dependency) => ranks.get(dependency) ?? 0);
-    const rank = dependencyRanks.length === 0 ? 0 : Math.max(...dependencyRanks) + 1;
-    ranks.set(node.id, rank);
+    const rank = ranks.get(node.id) ?? 0;
     columnWidths.set(rank, Math.max(columnWidths.get(rank) ?? 0, sizeOf(node).width));
   }
   const columnOffsets = new Map<number, number>();
@@ -1048,7 +1066,7 @@ const loopBodyLayout = (loop: LoopWorkflowNodeDto): RankedLayout =>
   );
 
 const containerSize = (body: RankedLayout): CardSize => ({
-  width: Math.max(cardWidth, containerPadLeft + body.width + containerPadRight),
+  width: containerPadLeft + body.width + containerPadRight,
   height: containerHeaderHeight + body.height + containerFeedbackLane + containerPadBottom,
 });
 
@@ -1280,12 +1298,13 @@ const cubicEdgePath = (startX: number, startY: number, endX: number, endY: numbe
 
 const feedbackEdgePath = (
   startX: number,
+  startY: number,
   endX: number,
-  cardBottom: number,
+  endY: number,
   depth: number,
 ): string => {
-  const control = (4 * depth - cardBottom) / 3;
-  return `M ${String(startX)} ${String(cardBottom)} C ${String(startX)} ${String(control)}, ${String(endX)} ${String(control)}, ${String(endX)} ${String(cardBottom)}`;
+  const control = (8 * depth - startY - endY) / 6;
+  return `M ${String(startX)} ${String(startY)} C ${String(startX)} ${String(control)}, ${String(endX)} ${String(control)}, ${String(endX)} ${String(endY)}`;
 };
 
 const expandedLoopNodeId = (graph: WorkflowGraphDto): string | undefined => {
@@ -1312,7 +1331,7 @@ const loopCardSummary = (
   const started = String(iteration === undefined ? 0 : iteration.iteration + 1);
   return {
     meta: `loop · ${started}/${bound} · ${statusCardCopy(status)}`,
-    aria: `loop, iteration ${started} of ${bound}, ${formatStatus(status)}`,
+    aria: `loop, ${started} of ${bound} iterations started, ${formatStatus(status)}`,
   };
 };
 
@@ -1396,11 +1415,12 @@ const appendLoopBody = (
     const spread = selfFeedback ? bodyCardWidth / 3 : 0;
     const startX = feedbackFrom.x + bodyCardWidth / 2 + spread;
     const endX = feedbackTo.x + bodyCardWidth / 2 - spread;
-    const cardBottom = containerHeaderHeight + body.height;
-    const depth = cardBottom + 22;
+    const startY = feedbackFrom.y + bodyCardHeight;
+    const endY = feedbackTo.y + bodyCardHeight;
+    const depth = containerHeaderHeight + body.height + 22;
     const path = createSvgElement("path");
     path.classList.add("dag-edge", "dag-loop-feedback");
-    path.setAttribute("d", feedbackEdgePath(startX, endX, cardBottom, depth));
+    path.setAttribute("d", feedbackEdgePath(startX, startY, endX, endY, depth));
     path.setAttribute("marker-end", "url(#dag-arrow)");
     const label = createSvgElement("text");
     label.classList.add("dag-loop-edge-label");
@@ -1443,7 +1463,7 @@ const appendLoopBody = (
     );
     group.setAttribute("data-loop-node-id", loop.id);
     group.setAttribute("data-body-node-id", bodyNode.id);
-    if (execution === undefined) {
+    if (iteration === undefined || execution === undefined) {
       group.setAttribute("aria-hidden", "true");
     } else {
       group.classList.add("dag-node", execution.status);
@@ -1455,7 +1475,7 @@ const appendLoopBody = (
       );
       group.setAttribute(
         "aria-label",
-        `${bodyNode.id}, loop ${loop.id} body step ${String(bodyNode.ordinal + 1)}, iteration ${String(iteration?.iteration ?? 0)}, ${formatStatus(execution.status)}`,
+        `${bodyNode.id}, loop ${loop.id} body step ${String(bodyNode.ordinal + 1)}, iteration ${String(iteration.iteration)}, ${formatStatus(execution.status)}`,
       );
     }
     const selection = createSvgElement("rect");
@@ -1592,6 +1612,7 @@ const renderGraph = (): void => {
   }
 
   const cards: SVGGElement[] = [];
+  const selectedBodyLoopId = selectedNodeRun()?.loopNodeId;
   for (const node of orderedGraphNodes(graph)) {
     const card = layout.cards.get(node.id);
     if (card === undefined) {
@@ -1610,7 +1631,10 @@ const renderGraph = (): void => {
     );
     group.setAttribute("role", "button");
     group.setAttribute("data-node-id", node.id);
-    group.setAttribute("aria-selected", String(node.id === state.selectedNodeId));
+    group.setAttribute(
+      "aria-selected",
+      String(node.id === state.selectedNodeId && node.id !== selectedBodyLoopId),
+    );
     const summary =
       node.kind === "loop"
         ? loopCardSummary(node, status, iteration)

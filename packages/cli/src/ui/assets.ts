@@ -714,11 +714,10 @@ h3 {
   fill: var(--subdued);
 }
 
-.dag-loop-edge-label {
+.dag-node .dag-loop-edge-label {
   fill: var(--dim-ink);
   font-size: 9px;
   text-anchor: middle;
-  pointer-events: none;
 }
 
 .dag-loop-feedback {
