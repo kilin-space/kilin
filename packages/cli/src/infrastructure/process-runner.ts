@@ -451,6 +451,15 @@ const recordedSurvivors = (
   if (leader !== undefined && leader.startIdentifier !== startIdentifier) {
     return [];
   }
+  // Kilin spawns every runtime detached, into a group of its own, so the recorded group can never
+  // legitimately be this process's. If it is, the record no longer describes anything Kilin
+  // started, and claiming the group would signal this command's own siblings.
+  const ownGroupId = currentProcesses.find(
+    (candidate) => candidate.pid === process.pid,
+  )?.processGroupId;
+  if (ownGroupId === processGroupId) {
+    return [];
+  }
   const claimed = new Map<number, ProcessIdentity>();
   for (const candidate of currentProcesses) {
     if (candidate.processGroupId === processGroupId) {
@@ -469,19 +478,21 @@ const recordedSurvivors = (
 
 /**
  * Terminates the processes recorded attempts left behind, escalating once for all of them so a run
- * with several recorded attempts waits one grace period rather than one per attempt. Returns the
- * number of processes signalled.
+ * with several recorded attempts waits one grace period rather than one per attempt.
+ *
+ * Reports whether every record was actually considered. A host that cannot list its processes
+ * answers `false`, which tells the caller the records were never examined and must be kept.
  */
 export const terminateRecordedProcesses = async (
   records: readonly RecordedProcess[],
   graceMs = defaultTerminationGraceMs,
-): Promise<number> => {
+): Promise<boolean> => {
   if (records.length === 0) {
-    return 0;
+    return true;
   }
   const currentProcesses = listProcessIdentities();
   if (currentProcesses === undefined) {
-    return 0;
+    return false;
   }
   const survivors = new Map<number, ProcessIdentity>();
   for (const record of records) {
@@ -490,12 +501,12 @@ export const terminateRecordedProcesses = async (
     }
   }
   if (survivors.size === 0) {
-    return 0;
+    return true;
   }
   signalProcesses(survivors.values(), "SIGTERM");
   await new Promise((resolve) => setTimeout(resolve, graceMs));
   signalProcesses(matchingProcesses(survivors.values(), listProcessIdentities()) ?? [], "SIGKILL");
-  return survivors.size;
+  return true;
 };
 
 const signalProcessGroup = (child: ChildProcess, signal: NodeJS.Signals): boolean => {

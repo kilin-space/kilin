@@ -2539,6 +2539,40 @@ export const runTriggeredWorkflow = (
     request.source,
   );
 
+/**
+ * Terminates the processes a previous owner of this run left behind, then forgets their identities
+ * so a later recovery cannot signal a recycled pid.
+ *
+ * Every caller holds the canonical-working-directory lock, which is the same probe `runs cancel`
+ * uses to decide that no owner is attached, so anything still recorded here is ownerless. Candidates
+ * are chosen by the presence of a recorded identity rather than by any status: reconciliation
+ * rewrites a stale run and its attempts to `interrupted` without touching the recorded process, and
+ * a single earlier `kilin runs show` is enough to trigger it.
+ *
+ * The identities are kept when the host could not be examined at all, because forgetting them would
+ * discard the only record of survivors nobody has looked for yet.
+ */
+const reapRecordedProcesses = async (
+  store: StateStore,
+  runId: string,
+  terminationGraceMs: number | undefined,
+): Promise<void> => {
+  const unreaped = store.listUnreapedAttemptProcesses(runId);
+  if (unreaped.length === 0) {
+    return;
+  }
+  const examined = await terminateRecordedProcesses(
+    unreaped.map(({ startedAt, process: identity }) => ({ startedAt, identity })),
+    terminationGraceMs,
+  );
+  if (!examined) {
+    return;
+  }
+  for (const { nodeId, attempt } of unreaped) {
+    store.clearAttemptProcess(runId, nodeId, attempt);
+  }
+};
+
 export const rerunWorkflow = async (
   runId: string,
   control: RunControl = {},
@@ -2570,6 +2604,7 @@ export const rerunWorkflow = async (
       control.signal,
     );
     lock = await acquireCanonicalWorkspaceLock(canonicalCwd, executionEnvironment.dataDirectory);
+    await reapRecordedProcesses(store, runId, executionEnvironment.terminationGraceMs);
     const worktreeQualification = requiresGitWorktrees(plan)
       ? await qualifyGitWorktreeSource(canonicalCwd)
       : undefined;
@@ -2612,34 +2647,6 @@ export const rerunWorkflow = async (
   }
 };
 
-/**
- * Terminates the processes a previous owner of this run left behind, then forgets their identities
- * so a later recovery cannot signal a recycled pid.
- *
- * The caller holds the canonical-working-directory lock, which is the same probe `runs cancel` uses
- * to decide that no owner is attached, so anything still recorded here is ownerless. Candidates are
- * chosen by the presence of a recorded identity rather than by any status: reconciliation rewrites
- * a stale run and its attempts to `interrupted` without touching the recorded process, and a single
- * earlier `kilin runs show` is enough to trigger it.
- */
-const reapRecordedProcesses = async (
-  store: StateStore,
-  runId: string,
-  terminationGraceMs: number | undefined,
-): Promise<void> => {
-  const unreaped = store.listUnreapedAttemptProcesses(runId);
-  if (unreaped.length === 0) {
-    return;
-  }
-  await terminateRecordedProcesses(
-    unreaped.map(({ startedAt, process: identity }) => ({ startedAt, identity })),
-    terminationGraceMs,
-  );
-  for (const { nodeId, attempt } of unreaped) {
-    store.clearAttemptProcess(runId, nodeId, attempt);
-  }
-};
-
 const recoverWorkflow = async (
   runId: string,
   mode: "retry" | "resume",
@@ -2665,9 +2672,7 @@ const recoverWorkflow = async (
       );
     }
     lock = await acquireCanonicalWorkspaceLock(canonicalCwd, executionEnvironment.dataDirectory);
-    if (mode === "resume") {
-      await reapRecordedProcesses(store, runId, executionEnvironment.terminationGraceMs);
-    }
+    await reapRecordedProcesses(store, runId, executionEnvironment.terminationGraceMs);
     if (source.run.status === "running") {
       if (mode === "retry") {
         throw new KilinError(

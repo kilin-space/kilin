@@ -145,11 +145,14 @@ V1 recovery creates a new continuation run from the exact stored revision, cwd, 
 reconciles an ownerless running source to `interrupted` before continuing. Eligible successful
 read-only checkpoints are copied into the new run, while approvals are always requested again.
 
-Once `resume` holds the canonical-cwd lock—the same probe that proves no owner is attached—it
+Once recovery holds the canonical-cwd lock—the same probe that proves no owner is attached—it
 terminates any process the source run recorded and never observed ending, then forgets those
-identities so a later recovery cannot signal a recycled PID. This is keyed to the recorded process,
-not to a status, because reconciliation may already have rewritten the run. A host that rebooted
-after the attempt started, or a PID that a different process now holds, is left alone.
+identities so a later recovery cannot signal a recycled PID. `retry`, `resume`, and
+[`rerun`](#rerun) all do this, because each starts new provider work in a working directory a
+crashed run may still be occupying. This is keyed to the recorded process, not to a status, because
+reconciliation may already have rewritten the run. A host that rebooted after the attempt started,
+or a PID that a different process now holds, is left alone, and identities are kept rather than
+forgotten when the host's processes cannot be listed at all.
 
 The source run remains terminal and immutable. Recovery records `recoveryOfRunId` and
 `recoveryMode`. Workflows containing a source-workspace writer must use whole-workflow `rerun`;
@@ -189,7 +192,8 @@ a live attached owner. An acquirable lock means no owner exists, so the stale ru
 through the existing path and reported as not cancellable; reconciliation is never reported as a
 successful cancellation. Cancelling a live run still adds no PID file, lease, daemon, or direct
 inter-process signal: the owner observes a durable request rather than being signalled. Signalling a
-recorded process is reserved for [`resume`](#retry-and-resume), where there is no owner left to ask.
+recorded process is reserved for recovery — [`retry`, `resume`](#retry-and-resume), and
+[`rerun`](#rerun) — where there is no owner left to ask.
 
 ## `runs list`
 
@@ -205,10 +209,11 @@ Shows one run and its full workflow scope identity plus ordered node runs, inclu
 timestamps, exit codes, actionable failures, runtime metadata, immutable attempt history,
 workspace records, and stdout/stderr/result paths.
 
-An executing agent node additionally reports `durationMs`, the time elapsed as of that document,
-and `pid`, the operating-system process of its current attempt. Both are absent once the node is
-terminal, and `pid` is absent when no process identity was recorded. The pid is reported as
-recorded, not probed for liveness.
+An executing agent node additionally reports `pid`, the operating-system process of its current
+attempt, and `durationMs`, the time elapsed as of that document rather than a final duration. A
+terminal node reports no `pid`, and its `durationMs` is the recorded total. `pid` is also absent
+when no process identity was recorded, and it is reported as recorded rather than probed for
+liveness.
 
 For a V1 loop, the top-level entry is the loop control with its bound and result
 projection. Body executions are grouped by iteration and carry an opaque `executionId`, authored
@@ -405,19 +410,22 @@ type AgentNodeSummary = AgentNodeIdentity &
     | { status: "pending" }
     | { status: "skipped"; finishedAt: string }
     | (NodeStarted & { status: "running" })
-    | (NodeStarted & Completion & {
-        status: "succeeded";
-        exitCode: 0;
-      })
-    | (NodeStarted & Completion & {
-        status: "cancelled";
-        exitCode?: number;
-      })
-    | (NodeStarted & Completion & {
-        status: "failed" | "interrupted";
-        exitCode?: number;
-        error: ErrorInfo;
-      })
+    | (NodeStarted &
+        Completion & {
+          status: "succeeded";
+          exitCode: 0;
+        })
+    | (NodeStarted &
+        Completion & {
+          status: "cancelled";
+          exitCode?: number;
+        })
+    | (NodeStarted &
+        Completion & {
+          status: "failed" | "interrupted";
+          exitCode?: number;
+          error: ErrorInfo;
+        })
   );
 
 interface RecordedApprovalDecision {
@@ -445,19 +453,22 @@ type ApprovalNodeSummary = ApprovalNodeIdentity &
         status: "waiting_for_approval";
         decision?: RecordedApprovalDecision;
       })
-    | (ApprovalRequest & Completion & {
-        status: "succeeded";
-        decision: RecordedApprovalDecision & { decision: "approve" };
-      })
-    | (ApprovalRequest & Completion & {
-        status: "cancelled";
-        decision?: RecordedApprovalDecision;
-      })
-    | (ApprovalRequest & Completion & {
-        status: "failed" | "interrupted";
-        decision?: RecordedApprovalDecision;
-        error: ErrorInfo;
-      })
+    | (ApprovalRequest &
+        Completion & {
+          status: "succeeded";
+          decision: RecordedApprovalDecision & { decision: "approve" };
+        })
+    | (ApprovalRequest &
+        Completion & {
+          status: "cancelled";
+          decision?: RecordedApprovalDecision;
+        })
+    | (ApprovalRequest &
+        Completion & {
+          status: "failed" | "interrupted";
+          decision?: RecordedApprovalDecision;
+          error: ErrorInfo;
+        })
   );
 
 interface LoopIterationSummary {
@@ -489,8 +500,7 @@ type LoopNodeSummary = {
       resultPath: string;
     })
   | ({ status: "cancelled"; finishedAt: string } & (
-      | { startedAt?: never; durationMs?: never }
-      | { startedAt: string; durationMs: number }
+      { startedAt?: never; durationMs?: never } | { startedAt: string; durationMs: number }
     ))
   | (Completion & {
       status: "failed" | "interrupted";
@@ -595,10 +605,7 @@ interface RunStartedEvent extends EventBase {
   cwd: string;
 }
 
-interface NodeStartedEvent
-  extends EventBase,
-    NodeEventIdentity,
-    NodeOutputPaths {
+interface NodeStartedEvent extends EventBase, NodeEventIdentity, NodeOutputPaths {
   type: "node.started";
   runtime: string;
   model?: string;
@@ -606,9 +613,7 @@ interface NodeStartedEvent
 }
 
 type AgentNodeFinishedEvent = EventBase &
-  NodeEventIdentity &
-  { type: "node.finished"; attempt?: number } &
-  (
+  NodeEventIdentity & { type: "node.finished"; attempt?: number } & (
     | { status: "skipped" }
     | (NodeOutputPaths & {
         status: "succeeded";
@@ -642,9 +647,7 @@ interface ApprovalResolvedEvent extends EventBase, NodeEventIdentity {
 }
 
 type ApprovalNodeFinishedEvent = EventBase &
-  NodeEventIdentity &
-  { type: "node.finished"; nodeKind: "approval" } &
-  (
+  NodeEventIdentity & { type: "node.finished"; nodeKind: "approval" } & (
     | { status: "skipped" }
     | { status: "succeeded" | "cancelled"; durationMs: number }
     | {
@@ -656,11 +659,8 @@ type ApprovalNodeFinishedEvent = EventBase &
 
 type NodeFinishedEvent = AgentNodeFinishedEvent | ApprovalNodeFinishedEvent;
 
-type RunFinishedEvent = EventBase &
-  { type: "run.finished"; runId: string; durationMs: number } &
-  (
-    | { status: "succeeded" | "cancelled" }
-    | { status: "failed" | "interrupted"; error: ErrorInfo }
+type RunFinishedEvent = EventBase & { type: "run.finished"; runId: string; durationMs: number } & (
+    { status: "succeeded" | "cancelled" } | { status: "failed" | "interrupted"; error: ErrorInfo }
   );
 
 interface CommandError extends EventBase, ErrorInfo {
@@ -718,50 +718,50 @@ Error messages state what happened and what the user can do next.
 
 V1 uses this closed top-level vocabulary:
 
-| Code | Meaning |
-|---|---|
-| `OPTION_INVALID` | a command, flag, value, or positional argument is invalid |
-| `INIT_TARGET_EXISTS` | `workflow init` would overwrite an existing path |
-| `WORKFLOW_NOT_FOUND` | no selected project or user package has the requested workflow name |
-| `WORKFLOW_PACKAGE_INVALID` | a workflow package, manifest, package path, or package-scope root violates the package standard |
-| `WORKFLOW_SCOPE_INVALID` | a project workflow was asked to run outside its owning project tree |
-| `WORKFLOW_SOURCE_NOT_FOUND` | the requested workflow file cannot be read |
-| `WORKFLOW_PARSE_FAILED` | YAML bytes or safe parsing rules are invalid |
-| `WORKFLOW_SCHEMA_INVALID` | the parsed definition does not match the structural schema |
-| `WORKFLOW_GRAPH_INVALID` | node identity, edge, ordering, or DAG semantics are invalid |
-| `WORKING_DIRECTORY_INVALID` | `--cwd` or a stored cwd cannot resolve to an existing directory |
-| `WORKSPACE_BUSY` | another Kilin process holds the canonical cwd lock |
-| `STATE_BUSY` | SQLite remained busy beyond the documented timeout |
-| `RUN_NOT_CANCELLABLE` | the cancellation target is already terminal or has no attached owner |
-| `RUN_NOT_FOUND` | the requested run ID does not exist |
-| `RUN_PARAM_INVALID` | a supplied run parameter is missing, undeclared, or oversized for the workflow |
-| `RUNTIME_NOT_FOUND` | the required runtime executable cannot be resolved |
-| `RUNTIME_UNSUPPORTED` | the workflow names an adapter the installed build does not contain |
-| `RUNTIME_ACCESS_UNSUPPORTED` | the selected runtime cannot provide the node's declared access mode |
-| `RUNTIME_CAPABILITY_MISSING` | the installed runtime cannot satisfy a required invocation contract |
-| `RUNTIME_AUTH_REQUIRED` | runtime authentication preflight failed |
-| `NODE_EXIT_NONZERO` | the agent process exited unsuccessfully |
-| `NODE_TIMEOUT` | the node exceeded its effective wall-clock limit |
-| `NODE_OUTPUT_LIMIT` | captured output exceeded its effective byte limit |
-| `NODE_CAPTURE_FAILED` | a required log or final result could not be made durable |
-| `NODE_INPUT_INVALID` | a declared upstream value cannot be resolved or consumed as the requested input |
-| `NODE_OUTPUT_INVALID` | a node's declared structured or artifact output is missing or invalid |
-| `LOOP_LIMIT_REACHED` | a bounded loop exhausted its configured iterations without selecting the pass choice |
-| `APPROVAL_NOT_WAITING` | the requested approval target is not an active undecided approval gate |
-| `APPROVAL_REJECTED` | a human rejected the approval gate |
-| `APPROVAL_TIMEOUT` | no decision was recorded before the approval deadline |
-| `RUN_INTERRUPTED` | a stale active run was reconciled after its owner disappeared |
-| `INTERNAL_ERROR` | Kilin failed outside a more specific documented category |
+| Code                         | Meaning                                                                                         |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `OPTION_INVALID`             | a command, flag, value, or positional argument is invalid                                       |
+| `INIT_TARGET_EXISTS`         | `workflow init` would overwrite an existing path                                                |
+| `WORKFLOW_NOT_FOUND`         | no selected project or user package has the requested workflow name                             |
+| `WORKFLOW_PACKAGE_INVALID`   | a workflow package, manifest, package path, or package-scope root violates the package standard |
+| `WORKFLOW_SCOPE_INVALID`     | a project workflow was asked to run outside its owning project tree                             |
+| `WORKFLOW_SOURCE_NOT_FOUND`  | the requested workflow file cannot be read                                                      |
+| `WORKFLOW_PARSE_FAILED`      | YAML bytes or safe parsing rules are invalid                                                    |
+| `WORKFLOW_SCHEMA_INVALID`    | the parsed definition does not match the structural schema                                      |
+| `WORKFLOW_GRAPH_INVALID`     | node identity, edge, ordering, or DAG semantics are invalid                                     |
+| `WORKING_DIRECTORY_INVALID`  | `--cwd` or a stored cwd cannot resolve to an existing directory                                 |
+| `WORKSPACE_BUSY`             | another Kilin process holds the canonical cwd lock                                              |
+| `STATE_BUSY`                 | SQLite remained busy beyond the documented timeout                                              |
+| `RUN_NOT_CANCELLABLE`        | the cancellation target is already terminal or has no attached owner                            |
+| `RUN_NOT_FOUND`              | the requested run ID does not exist                                                             |
+| `RUN_PARAM_INVALID`          | a supplied run parameter is missing, undeclared, or oversized for the workflow                  |
+| `RUNTIME_NOT_FOUND`          | the required runtime executable cannot be resolved                                              |
+| `RUNTIME_UNSUPPORTED`        | the workflow names an adapter the installed build does not contain                              |
+| `RUNTIME_ACCESS_UNSUPPORTED` | the selected runtime cannot provide the node's declared access mode                             |
+| `RUNTIME_CAPABILITY_MISSING` | the installed runtime cannot satisfy a required invocation contract                             |
+| `RUNTIME_AUTH_REQUIRED`      | runtime authentication preflight failed                                                         |
+| `NODE_EXIT_NONZERO`          | the agent process exited unsuccessfully                                                         |
+| `NODE_TIMEOUT`               | the node exceeded its effective wall-clock limit                                                |
+| `NODE_OUTPUT_LIMIT`          | captured output exceeded its effective byte limit                                               |
+| `NODE_CAPTURE_FAILED`        | a required log or final result could not be made durable                                        |
+| `NODE_INPUT_INVALID`         | a declared upstream value cannot be resolved or consumed as the requested input                 |
+| `NODE_OUTPUT_INVALID`        | a node's declared structured or artifact output is missing or invalid                           |
+| `LOOP_LIMIT_REACHED`         | a bounded loop exhausted its configured iterations without selecting the pass choice            |
+| `APPROVAL_NOT_WAITING`       | the requested approval target is not an active undecided approval gate                          |
+| `APPROVAL_REJECTED`          | a human rejected the approval gate                                                              |
+| `APPROVAL_TIMEOUT`           | no decision was recorded before the approval deadline                                           |
+| `RUN_INTERRUPTED`            | a stale active run was reconciled after its owner disappeared                                   |
+| `INTERNAL_ERROR`             | Kilin failed outside a more specific documented category                                        |
 
 Messages and optional detail fields explain the precise cause. Automation branches on `code`, not English prose.
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| `0` | command and, when applicable, workflow run succeeded |
-| `1` | a recorded run failed or was interrupted |
-| `2` | invalid invocation, workflow, path, runtime capability, or authentication; no run started |
+| Code  | Meaning                                                                                                     |
+| ----- | ----------------------------------------------------------------------------------------------------------- |
+| `0`   | command and, when applicable, workflow run succeeded                                                        |
+| `1`   | a recorded run failed or was interrupted                                                                    |
+| `2`   | invalid invocation, workflow, path, runtime capability, or authentication; no run started                   |
 | `130` | workflow execution or its preflight was stopped by an interrupt, supervisor termination, or terminal hangup |
 
 An internal Kilin failure after a run starts uses exit code `1` and persists an actionable run failure when possible. An internal failure before a run exists uses exit code `2`. `SIGINT`, `SIGTERM`, and `SIGHUP` all stop an attached run through the same path, so terminating `kilin run` from a supervisor, container stop, or CI cancellation is not different from pressing Ctrl-C. Interruption during Codex preflight reaps the probe group, emits no lifecycle event or diagnostic, creates no run, and returns `130`. Interruption after run creation persists terminal cancelled state and lifecycle events before returning `130` when cleanup can complete.

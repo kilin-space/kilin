@@ -29,6 +29,7 @@ import {
   resolvedInputsPath,
   runProcess,
   runtimeResultStagingPath,
+  terminateRecordedProcesses,
 } from "../../src/infrastructure/process-runner.js";
 import { killProcessIfRunning, processIsRunning } from "../helpers/subprocess.js";
 
@@ -677,5 +678,93 @@ describe("process execution", () => {
 
     expect(outcome.status).toBe("capture_failed");
     expect(outcome.completed).toMatchObject({ exitCode: null, signal: null });
+  });
+});
+
+describe("recorded process termination", () => {
+  const spawnDetachedSurvivor = async (): Promise<{
+    pid: number;
+    processGroupId: number;
+    startIdentifier: string;
+  }> => {
+    const paths = nodeOutputPaths(await createTemporaryDirectory(), "run", "survivor", 0);
+    await prepareNodeOutput(paths);
+    let recorded: { pid: number; processGroupId: number; startIdentifier: string } | undefined;
+    const running = runProcess(
+      invocation(
+        dirname(paths.stdoutPath),
+        runtimeResultStagingPath(paths),
+        join(dirname(paths.stdoutPath), "record.json"),
+        "wait",
+      ),
+      paths,
+      {
+        timeoutMs: 30_000,
+        maxOutputBytes: 10_000,
+        terminationGraceMs: 30,
+        onProcessStarted: (identity) => {
+          recorded = identity;
+        },
+      },
+    );
+    await waitFor(() => recorded !== undefined);
+    if (recorded === undefined) {
+      throw new Error("Expected a recorded process identity");
+    }
+    // Abandon the runProcess promise the way a killed Kilin process would: the child stays alive.
+    void running.catch(() => undefined);
+    return recorded;
+  };
+
+  it("terminates a recorded process that is still running", async () => {
+    const recorded = await spawnDetachedSurvivor();
+    try {
+      const examined = await terminateRecordedProcesses(
+        [{ startedAt: new Date().toISOString(), identity: recorded }],
+        30,
+      );
+
+      expect(examined).toBe(true);
+      await waitFor(() => !processIsRunning(recorded.pid));
+    } finally {
+      killProcessIfRunning(recorded.pid);
+    }
+  });
+
+  it("leaves a recorded process alone when the host booted after the attempt started", async () => {
+    const recorded = await spawnDetachedSurvivor();
+    try {
+      // A start time before the current boot cannot describe a live process, so the recorded pid
+      // now belongs to somebody else.
+      const examined = await terminateRecordedProcesses(
+        [{ startedAt: "1999-01-01T00:00:00.000Z", identity: recorded }],
+        30,
+      );
+
+      expect(examined).toBe(true);
+      expect(processIsRunning(recorded.pid)).toBe(true);
+    } finally {
+      killProcessIfRunning(recorded.pid);
+    }
+  });
+
+  it("leaves a recorded process alone when its start identifier no longer matches", async () => {
+    const recorded = await spawnDetachedSurvivor();
+    try {
+      const examined = await terminateRecordedProcesses(
+        [
+          {
+            startedAt: new Date().toISOString(),
+            identity: { ...recorded, startIdentifier: "some other process" },
+          },
+        ],
+        30,
+      );
+
+      expect(examined).toBe(true);
+      expect(processIsRunning(recorded.pid)).toBe(true);
+    } finally {
+      killProcessIfRunning(recorded.pid);
+    }
   });
 });

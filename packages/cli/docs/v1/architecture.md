@@ -249,7 +249,9 @@ serialized by a separate state-schema lock. Existing databases must match the co
 schema. A database at the immediately preceding baseline is brought forward inside that same
 exclusive transaction by adding columns only; the current baseline is then asserted, so a shape that
 merely claims the older version rolls back untouched. Every other partial, historical, future, or
-tampered shape fails closed without mutation. Viewer
+tampered shape fails closed without mutation. Only a mutating command upgrades a database; the
+read-only Viewer connection validates the current baseline and reports the state as unreadable until
+one has run. Viewer
 projections use a distinct read-only, `query_only` connection and validate the same baseline before
 querying. The approval route opens the ordinary guarded state path only long enough to record one
 eligible Human Decision. Transactions are short and never remain open while a provider runs.
@@ -258,14 +260,14 @@ output files, subject to stricter host policy.
 
 The six tables are:
 
-| Table | Required data |
-|---|---|
-| `schema_migrations` | the applied V1 baseline marker and timestamp |
-| `workflow_revisions` | ID, scope kind/root, workflow ID, schema version, hash, normalized definition, created time |
-| `workflow_runs` | revision, lineage, canonical cwd, options, parameter snapshot, trigger provenance, cancellation request, status, timestamps, failure |
-| `node_runs` | run/node identity, ordinal, runtime/model metadata, state, exit/failure, output paths |
-| `node_attempts` | run/node identity, attempt number, state, timestamps, exit/failure, output paths, process identity while running |
-| `run_workspaces` | run ID, workspace ID, path, base commit, status, created time |
+| Table                | Required data                                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `schema_migrations`  | the one applied baseline version and the time it was applied                                                                         |
+| `workflow_revisions` | ID, scope kind/root, workflow ID, schema version, hash, normalized definition, created time                                          |
+| `workflow_runs`      | revision, lineage, canonical cwd, options, parameter snapshot, trigger provenance, cancellation request, status, timestamps, failure |
+| `node_runs`          | run/node identity, ordinal, runtime/model metadata, state, exit/failure, output paths                                                |
+| `node_attempts`      | run/node identity, attempt number, state, timestamps, exit/failure, output paths, process identity while running                     |
+| `run_workspaces`     | run ID, workspace ID, path, base commit, status, created time                                                                        |
 
 `workflow_revisions` is unique by `(scope_kind, scope_root, workflow_id, content_hash)`, and each run has one node row per plan node. Streams remain ordinary files:
 
@@ -309,12 +311,12 @@ The active agent indexes every sanitized family manifest page, shortlists plausi
 
 Only current boundaries are stable enough to extend:
 
-| Future capability | Existing seam | Required future change |
-|---|---|---|
-| another execution CLI | `RuntimeAdapter` | add one adapter and pass the shared contract tests |
-| Canvas or other authoring UI | `WorkflowDefinition` | emit and validate the same YAML contract without changing execution |
-| new graph semantics | schema/domain/compiler | define explicit semantics and make a deliberate future contract decision |
-| another host trigger kind | strict trigger contract and existing executor | define bounded provenance and preserve host ownership |
+| Future capability            | Existing seam                                 | Required future change                                                   |
+| ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------ |
+| another execution CLI        | `RuntimeAdapter`                              | add one adapter and pass the shared contract tests                       |
+| Canvas or other authoring UI | `WorkflowDefinition`                          | emit and validate the same YAML contract without changing execution      |
+| new graph semantics          | schema/domain/compiler                        | define explicit semantics and make a deliberate future contract decision |
+| another host trigger kind    | strict trigger contract and existing executor | define bounded provenance and preserve host ownership                    |
 
 Additional writable-workspace behavior must preserve the existing named-lane ownership contract.
 Managed artifact storage requires an artifact lifecycle. Additional scheduling integrations must

@@ -14,8 +14,8 @@ All notable changes to `@kilin-space/cli` are documented here.
   container stop, CI cancellation, or a closed terminal terminates the provider tree instead of
   orphaning it, and the command still exits `130` (#37).
 - Record the operating-system process of each running attempt so it stays attributable after Kilin
-  exits, and have `kilin resume` terminate the processes a killed owner left behind before it
-  continues. Reaping is keyed to the recorded process rather than to a status, so an intervening
+  exits, and have `retry`, `resume`, and `rerun` terminate the processes a killed owner left behind
+  before they continue. Reaping is keyed to the recorded process rather than to a status, so an intervening
   `runs show` or `runs list` does not hide an orphan; a host that rebooted, or a PID a different
   process now holds, is left alone. This is the first state-schema upgrade: a database at the
   previous baseline is brought forward in place by adding columns, and every other shape still fails

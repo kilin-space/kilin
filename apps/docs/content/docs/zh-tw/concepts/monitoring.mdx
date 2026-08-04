@@ -112,7 +112,8 @@ kilin runs cancel <run-id>
 
 停止附著的 `kilin run` 行程本身也會停止該執行。`SIGINT`、`SIGTERM` 與 `SIGHUP` 都經由同一條取消路徑，
 因此監督行程、容器停止、CI 取消或關閉終端機都會終止提供方行程樹，而不是讓它變成孤兒行程，命令以 `130`
-結束。若某次執行被直接終止且無法清理，`kilin resume` 會在繼續之前結束它遺留的行程。
+結束。若某次執行被直接終止且無法清理，使用 `kilin retry`、`kilin resume` 或 `kilin rerun` 還原它時，
+會在繼續之前結束它遺留的行程。
 
 失敗會帶有穩定的錯誤碼 —— `NODE_TIMEOUT`、`LOOP_LIMIT_REACHED`、`APPROVAL_REJECTED` 等 ——
 因此監督方 Agent 可以依錯誤碼分支，而不必解析散文。`runs list`、`runs show` 與 `workflow validate`

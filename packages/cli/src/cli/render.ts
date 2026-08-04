@@ -147,7 +147,8 @@ type AgentNodeIdentityDocument = NodeIdentityDocument & {
 
 /**
  * What an executing agent node exposes about the process it is running: the operating-system pid,
- * and how long it has been running as of this document. Both are absent once the node is terminal.
+ * and how long it has been running as of this document. A terminal node reports its final
+ * `durationMs` through the completion shape instead, and never reports a pid.
  */
 interface RunningProcessDocument {
   readonly pid?: number;

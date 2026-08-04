@@ -1220,7 +1220,9 @@ describe("run CLI documents", () => {
       throw new Error("Expected a running agent summary");
     }
     expect(running.pid).toBe(4242);
-    expect(running.durationMs).toBeGreaterThanOrEqual(0);
+    // The node started in 2026 and has never finished, so the live figure is years, not a
+    // placeholder zero or a final duration.
+    expect(running.durationMs).toBeGreaterThan(Date.now() - Date.parse("2026-07-22T00:00:00.000Z"));
     expect(sortedKeys(document.nodes[1] ?? {})).toEqual([
       "kind",
       "nodeId",
@@ -1285,7 +1287,7 @@ describe("run CLI documents", () => {
       throw new Error("Expected a running agent summary");
     }
     expect(sortedKeys(running)).not.toContain("pid");
-    expect(running.durationMs).toBeGreaterThanOrEqual(0);
+    expect(running.durationMs).toBeGreaterThan(Date.now() - Date.parse("2026-07-22T00:00:00.000Z"));
   });
 
   it("renders interrupted and skipped summaries without inventing skipped paths", () => {
@@ -1878,52 +1880,56 @@ describe("run CLI lifecycle", () => {
     await waitFor(() => !processIsRunning(descendantPid));
   }, 7_000);
 
-  it("reaps the process tree an unhandleably killed run left behind when it is resumed", async () => {
-    const context = await createContext(["wait forever"]);
-    const descendantPidPath = join(context.root, "orphan-descendant.pid");
-    const environment = {
-      ...context.environment,
-      FAKE_CODEX_BEHAVIOR: "cancel-child",
-      FAKE_CODEX_DESCENDANT_PID: descendantPidPath,
-    };
-    const child = spawn(
-      process.execPath,
-      [cliFile, "run", context.workflowName, "--cwd", context.project, "--json"],
-      { env: environment, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    let stdout = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    await waitFor(() => pathExists(descendantPidPath));
-    const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
-    const runId = String(jsonLines(stdout).find(({ type }) => type === "run.started")?.runId);
-
-    try {
-      // SIGKILL cannot be handled, so no signal handler and no `finally` can clean up here. This is
-      // the crash the issue describes: the provider tree outlives the Kilin process entirely.
-      child.kill("SIGKILL");
-      await new Promise<void>((resolve) => child.once("close", () => resolve()));
-      expect(processIsRunning(descendantPid)).toBe(true);
-
-      // Inspecting the run first reconciles it to `interrupted`. The reap must survive that, since
-      // looking up the run id is the normal thing to do before resuming.
-      const shownBefore = await runCli(["runs", "show", runId, "--json"], environment);
-      expect(JSON.parse(shownBefore.stdout)).toMatchObject({ run: { status: "interrupted" } });
-      expect(processIsRunning(descendantPid)).toBe(true);
-
-      const resumed = await runCli(["resume", runId, "--json"], {
-        ...environment,
-        FAKE_CODEX_BEHAVIOR: "success",
+  it.each(["resume", "retry", "rerun"] as const)(
+    "reaps the process tree an unhandleably killed run left behind when it is recovered by %s",
+    async (recoveryCommand) => {
+      const context = await createContext(["wait forever"]);
+      const descendantPidPath = join(context.root, "orphan-descendant.pid");
+      const environment = {
+        ...context.environment,
+        FAKE_CODEX_BEHAVIOR: "cancel-child",
+        FAKE_CODEX_DESCENDANT_PID: descendantPidPath,
+      };
+      const child = spawn(
+        process.execPath,
+        [cliFile, "run", context.workflowName, "--cwd", context.project, "--json"],
+        { env: environment, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "";
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
       });
+      await waitFor(() => pathExists(descendantPidPath));
+      const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
+      const runId = String(jsonLines(stdout).find(({ type }) => type === "run.started")?.runId);
 
-      expect(resumed.exitCode).toBe(0);
-      await waitFor(() => !processIsRunning(descendantPid));
-    } finally {
-      killProcessIfRunning(descendantPid);
-    }
-  }, 20_000);
+      try {
+        // SIGKILL cannot be handled, so no signal handler and no `finally` can clean up here. This is
+        // the crash the issue describes: the provider tree outlives the Kilin process entirely.
+        child.kill("SIGKILL");
+        await new Promise<void>((resolve) => child.once("close", () => resolve()));
+        expect(processIsRunning(descendantPid)).toBe(true);
+
+        // Inspecting the run first reconciles it to `interrupted`. The reap must survive that, since
+        // looking up the run id is the normal thing to do before resuming.
+        const shownBefore = await runCli(["runs", "show", runId, "--json"], environment);
+        expect(JSON.parse(shownBefore.stdout)).toMatchObject({ run: { status: "interrupted" } });
+        expect(processIsRunning(descendantPid)).toBe(true);
+
+        const recovered = await runCli([recoveryCommand, runId, "--json"], {
+          ...environment,
+          FAKE_CODEX_BEHAVIOR: "success",
+        });
+
+        expect(recovered.exitCode).toBe(0);
+        await waitFor(() => !processIsRunning(descendantPid));
+      } finally {
+        killProcessIfRunning(descendantPid);
+      }
+    },
+    20_000,
+  );
 
   it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
     "cancels an attached run on %s, reaps the process tree, persists cancellation, and exits 130",
@@ -1942,7 +1948,6 @@ describe("run CLI lifecycle", () => {
       );
       let stdout = "";
       let stderr = "";
-      let interrupted = false;
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
@@ -1953,7 +1958,6 @@ describe("run CLI lifecycle", () => {
       });
       await waitFor(() => pathExists(descendantPidPath));
       const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
-      interrupted = true;
       child.kill(stopSignal);
 
       const exitCode = await new Promise<number>((resolve, reject) => {
@@ -1973,7 +1977,6 @@ describe("run CLI lifecycle", () => {
       });
       const events = jsonLines(stdout);
 
-      expect(interrupted).toBe(true);
       expect(exitCode).toBe(130);
       expect(stderr).toBe("");
       await waitFor(() => !processIsRunning(descendantPid));

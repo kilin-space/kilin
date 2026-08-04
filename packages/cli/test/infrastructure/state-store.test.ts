@@ -81,7 +81,11 @@ const createVersionOneDatabase = async (): Promise<string> => {
       INSERT INTO workflow_revisions
         VALUES ('rev', 'user', '', 'wf', 1, 'hash', '{}', '${validStoredTimestamp}');
       INSERT INTO workflow_runs (id, revision_id, canonical_cwd, options_json, status, started_at)
-        VALUES ('run', 'rev', '/tmp', '{}', 'running', '${validStoredTimestamp}');
+        VALUES (
+          'run', 'rev', '/tmp',
+          '{"nodeTimeoutMs":60000,"approvalTimeoutMs":60000,"maxOutputBytes":1048576,"maxParallel":1}',
+          'running', '${validStoredTimestamp}'
+        );
       INSERT INTO node_runs (
         run_id, node_id, ordinal, kind, runtime, status, started_at,
         stdout_path, stderr_path, result_path, current_attempt
@@ -851,6 +855,80 @@ describe("StateStore bootstrap", () => {
       },
     ]);
     store.close();
+  });
+
+  it("forgets a recorded process once its attempt reaches a terminal state", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+    expect(store.listUnreapedAttemptProcesses("run")).toHaveLength(1);
+
+    store.transitionNode("run", "node", { status: "succeeded", exitCode: 0 });
+
+    // A process Kilin watched exit is not an orphan, so a later recovery must not signal its pid.
+    expect(store.listUnreapedAttemptProcesses("run")).toEqual([]);
+    store.close();
+  });
+
+  it("keeps a recorded process through the reconciliation of an ownerless run", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+
+    store.reconcileStaleRuns("/tmp");
+
+    // Reconciliation rewrites status without observing the process, so the identity has to survive
+    // it — otherwise a single `runs show` would hide the orphan from `resume`.
+    expect(store.getRun("run").run.status).toBe("interrupted");
+    expect(store.listUnreapedAttemptProcesses("run")).toEqual([
+      {
+        nodeId: "node",
+        attempt: 1,
+        startedAt: validStoredTimestamp,
+        process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
+      },
+    ]);
+    store.close();
+  });
+
+  it("rejects a version-one database whose ledger table is missing without mutating it", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const databasePath = join(dataDirectory, "kilin.db");
+    const database = new Database(databasePath);
+    database.exec("DROP TABLE schema_migrations");
+    const beforeObjects = database
+      .prepare(
+        `
+          SELECT type, name, sql FROM sqlite_master
+          WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+        `,
+      )
+      .all();
+    database.close();
+
+    const error = expectKilinError(() => new StateStore(dataDirectory), "INTERNAL_ERROR");
+    expect(error.message).toContain("Archive or reset");
+
+    const after = new Database(databasePath, { readonly: true });
+    expect(
+      after
+        .prepare(
+          `
+            SELECT type, name, sql FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+          `,
+        )
+        .all(),
+    ).toEqual(beforeObjects);
+    after.close();
   });
 
   it("rejects a tampered database that claims version one without mutating it", async () => {

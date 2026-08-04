@@ -389,14 +389,19 @@ const VERSION_1_NODE_ATTEMPT_COLUMNS = ((): readonly string[] => {
  * checks yet still fails the baseline assertion afterwards rolls back without mutation.
  */
 const migrateStateSchema = (database: SqliteDatabase, appliedAt: string): void => {
-  const versions = storedSchemaVersions(database);
+  // The shape is checked before the ledger is read, because reading it from a database that has no
+  // `schema_migrations` table would raise a raw SQLite error in place of the actionable one.
+  const tables = new Set(readSchemaObjects(database).map(({ name }) => name));
   const columns = nodeAttemptColumnNames(database);
   if (
-    versions.length !== 1 ||
-    versions[0] !== 1 ||
+    !tables.has("schema_migrations") ||
     columns.length !== VERSION_1_NODE_ATTEMPT_COLUMNS.length ||
     columns.some((name, index) => name !== VERSION_1_NODE_ATTEMPT_COLUMNS[index])
   ) {
+    return;
+  }
+  const versions = storedSchemaVersions(database);
+  if (versions.length !== 1 || versions[0] !== 1) {
     return;
   }
   for (const column of NODE_ATTEMPT_PROCESS_COLUMNS) {
