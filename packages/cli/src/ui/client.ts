@@ -147,6 +147,7 @@ const elements = {
   outputPanel: requiredElement("#output-panel", HTMLElement),
   outputSection: requiredElement("#output-section", HTMLElement),
   outputTabs: requiredElement("#output-tabs", HTMLElement),
+  refreshButton: requiredElement("#refresh-button", HTMLButtonElement),
   runInspector: requiredElement("#run-inspector", HTMLElement),
   selectionAnnouncement: requiredElement("#selection-announcement", HTMLElement),
 };
@@ -167,8 +168,16 @@ let pollInProgress = false;
 let runDetailRequestGeneration = 0;
 let outputRequestGeneration = 0;
 let initialSelectionPending = true;
-let renderedEvidence:
-  { readonly key: string; readonly view: EvidenceView; readonly text: string } | undefined;
+type RenderedEvidence =
+  | {
+      readonly kind: "stream";
+      readonly key: string;
+      readonly view: EvidenceView;
+      readonly text: string;
+    }
+  | { readonly kind: "failure"; readonly key: string; readonly message: string };
+
+let renderedEvidence: RenderedEvidence | undefined;
 
 type ViewerFocusTarget =
   | { readonly type: "current-workflow" }
@@ -179,6 +188,7 @@ type ViewerFocusTarget =
   | { readonly type: "loop-execution"; readonly executionId: string }
   | { readonly type: "output"; readonly stream: OutputStream }
   | { readonly type: "evidence-view"; readonly view: EvidenceView }
+  | { readonly type: "evidence-retry" }
   | { readonly type: "decision-note" }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
   | { readonly type: "decision-copy"; readonly command: string }
@@ -255,6 +265,9 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   }
   if (activeElement === elements.evidenceViewRaw) {
     return { type: "evidence-view", view: "raw" };
+  }
+  if (activeElement?.classList.contains("evidence-retry") === true) {
+    return { type: "evidence-retry" };
   }
   if (activeElement instanceof HTMLElement && activeElement.id === "decision-note") {
     return { type: "decision-note" };
@@ -367,6 +380,11 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     if (!toggle.disabled) {
       toggle.focus();
     }
+    return;
+  }
+  if (target.type === "evidence-retry") {
+    const retry = elements.outputPanel.querySelector<HTMLButtonElement>(".evidence-retry");
+    (retry ?? elements.outputPanel).focus();
     return;
   }
   if (target.type === "decision-note") {
@@ -2814,10 +2832,39 @@ const announceApprovalGateTransitions = (): void => {
   }
 };
 
-const resetEvidencePanel = (message: string): void => {
+const resetEvidencePanel = (content: Node | string): void => {
   renderedEvidence = undefined;
-  setText(elements.outputPanel, message);
+  elements.outputPanel.replaceChildren(content);
   elements.evidenceBanner.hidden = true;
+};
+
+const showEvidenceError = (key: string, message: string): void => {
+  if (
+    renderedEvidence?.kind === "failure" &&
+    renderedEvidence.key === key &&
+    renderedEvidence.message === message
+  ) {
+    return;
+  }
+  const failure = document.createElement("div");
+  failure.className = "evidence-error";
+  failure.setAttribute("role", "alert");
+  const description = document.createElement("p");
+  description.className = "failure-copy";
+  setText(description, message);
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "quiet-button evidence-retry";
+  setText(retry, "Retry");
+  retry.addEventListener("click", () => {
+    void selectOutput(state.selectedOutputStream, false);
+  });
+  failure.append(description, retry);
+  resetEvidencePanel(failure);
+  renderedEvidence = { kind: "failure", key, message };
+  if (document.activeElement === elements.outputPanel) {
+    retry.focus();
+  }
 };
 
 const renderEvidenceSelection = (selection: OutputSelection, liveNode: boolean): void => {
@@ -2840,7 +2887,8 @@ const renderEvidenceSelection = (selection: OutputSelection, liveNode: boolean):
       : `${formatBytes(response.returnedBytes)} of ${formatBytes(response.totalBytes)}${liveSuffix}.`,
   );
   if (
-    renderedEvidence?.key === selection.key &&
+    renderedEvidence?.kind === "stream" &&
+    renderedEvidence.key === selection.key &&
     renderedEvidence.view === state.evidenceView &&
     renderedEvidence.text === response.text
   ) {
@@ -2871,7 +2919,12 @@ const renderEvidenceSelection = (selection: OutputSelection, liveNode: boolean):
       details.open = true;
     }
   }
-  renderedEvidence = { key: selection.key, view: state.evidenceView, text: response.text };
+  renderedEvidence = {
+    kind: "stream",
+    key: selection.key,
+    view: state.evidenceView,
+    text: response.text,
+  };
   if ((liveNode || selection.fetchedWhileRunning) && state.followTail) {
     elements.outputPanel.scrollTop = elements.outputPanel.scrollHeight;
   }
@@ -2934,8 +2987,11 @@ const renderOutput = (): void => {
   if (state.output?.key === key) {
     renderEvidenceSelection(state.output, nodeRun.kind === "agent" && nodeRun.status === "running");
   } else if (state.outputError !== undefined) {
-    resetEvidencePanel(state.outputError);
-    setText(elements.outputMeta, "Inspect the terminal or restart Kilin UI, then try again.");
+    showEvidenceError(key, state.outputError);
+    setText(
+      elements.outputMeta,
+      "If Retry fails again, examine the terminal output, then run kilin ui again.",
+    );
   } else {
     resetEvidencePanel("Loading captured output…");
     elements.outputMeta.textContent = "";
@@ -3131,7 +3187,7 @@ const selectOutput = async (
   }
 };
 
-const maybeRefreshEvidence = (): void => {
+const maybeRefreshEvidence = (retryFailedRead = false): void => {
   if (state.viewMode !== "run" || state.selectedRunId === undefined || state.outputLoading) {
     return;
   }
@@ -3144,7 +3200,7 @@ const maybeRefreshEvidence = (): void => {
   }
   const key = outputKey(state.selectedRunId, nodeRun.ordinal, state.selectedOutputStream);
   if (state.output?.key !== key) {
-    if (state.outputError === undefined) {
+    if (retryFailedRead || state.outputError === undefined) {
       void selectOutput(state.selectedOutputStream, false);
     }
     return;
@@ -3423,6 +3479,13 @@ const pollViewer = async (): Promise<void> => {
   }
 };
 
+const refreshNow = (): void => {
+  state.pollFailures = 0;
+  setText(elements.connectionStatus, "Refreshing…");
+  maybeRefreshEvidence(true);
+  void pollViewer();
+};
+
 const launchToken = (): string | undefined => {
   if (window.location.hash.length <= 1) {
     return undefined;
@@ -3462,6 +3525,7 @@ const setEvidenceView = (view: EvidenceView): void => {
 window.setInterval(updateLiveElements, liveTickIntervalMs);
 
 elements.currentWorkflowButton.addEventListener("click", selectCurrentWorkflow);
+elements.refreshButton.addEventListener("click", refreshNow);
 elements.decisionNeededBanner.addEventListener("click", () => {
   const waitingNode = waitingApprovalNodeRun();
   if (waitingNode === undefined) {

@@ -12,6 +12,7 @@ import {
   cancelRequestedSummary,
   decidedGateNodes,
   fulfillJson,
+  fulfillTransientFailure,
   gateCurrentWorkflow,
   gateRunDetail,
   installApprovalEventLog,
@@ -834,14 +835,7 @@ test("polling reports lifecycle changes, retries after a transient error, and re
   await page.route("**/api/runs", async (route) => {
     if (!failedOnePoll) {
       failedOnePoll = true;
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          outputVersion: 1,
-          error: { code: "TRANSIENT_TEST_FAILURE", message: "Synthetic refresh failure." },
-        }),
-      });
+      await fulfillTransientFailure(route, "Synthetic refresh failure.");
       return;
     }
     await route.continue();
@@ -1433,4 +1427,41 @@ test("the banner fits the narrow topbar without overlap or overflow at 390x844",
   await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
 
   await saveScreenshot(page, "viewer-banner-mobile.png", "viewer-banner-mobile-390x844", testInfo);
+});
+
+test("refresh polls at once and restarts the poll backoff after failures", async ({
+  page,
+  viewer,
+}) => {
+  test.slow();
+  await openViewer(page, viewer.launchUrl);
+
+  let pollRequests = 0;
+  let pollFails = true;
+  await page.route("**/api/workflow", async (route) => {
+    pollRequests += 1;
+    if (!pollFails) {
+      await route.continue();
+      return;
+    }
+    await fulfillTransientFailure(route, `Synthetic refresh failure ${String(pollRequests)}.`);
+  });
+
+  const status = page.locator("#connection-status");
+  await expect(status).toContainText("Synthetic refresh failure 2.", { timeout: 15_000 });
+
+  const refresh = page.getByRole("button", { name: "Refresh" });
+  const beforeManualCycle = pollRequests;
+  await refresh.press("Enter");
+  await expect.poll(() => pollRequests, { timeout: 1_000 }).toBeGreaterThan(beforeManualCycle);
+
+  const afterManualCycle = pollRequests;
+  await expect.poll(() => pollRequests, { timeout: 6_000 }).toBeGreaterThan(afterManualCycle);
+  await expect(status).toContainText("Synthetic refresh failure 4.");
+
+  pollFails = false;
+  const beforeRecovery = pollRequests;
+  await refresh.press("Enter");
+  await expect.poll(() => pollRequests, { timeout: 2_000 }).toBeGreaterThan(beforeRecovery);
+  await expect(status).toHaveText("Attached · guarded approval", { timeout: 3_000 });
 });

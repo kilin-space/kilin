@@ -60,6 +60,10 @@ running run, then the newest finished run — and selects the node that explains
 With no stored runs it keeps the current definition view. The selected run, node, stream, and
 rendered or raw view persist in the URL hash, so a reload restores your place.
 
+The top bar carries a Refresh control that requests the current state at once and restarts the
+poll backoff. When a captured stream fails to load, the output panel offers a Retry control that
+requests that stream again, and Refresh requests it again too.
+
 When a run stops at an approval, the Viewer shows guarded Approve and Reject buttons alongside the
 equivalent CLI commands. That decision is its only state mutation: it cannot edit workflows, start
 provider runs, or schedule work. Pass `--no-open` to print the launch URL instead of opening a
