@@ -1147,8 +1147,9 @@ interface LoopIterationView {
 }
 
 /**
- * The canvas counts iterations from one; `LoopIterationDto.iteration` and the provenance surfaces
- * that quote it — the Loop iterations panel and the node inspector — stay zero-based.
+ * Presentation counts iterations from one. The node inspector still reports the stored
+ * zero-based `LoopIterationDto.iteration` beside the other occurrence provenance, because that is
+ * the value `kilin runs show --json` returns.
  */
 const iterationOrdinal = (iteration: number): number => iteration + 1;
 
@@ -1266,7 +1267,7 @@ const renderLoopIterations = (): void => {
       const summary = document.createElement("summary");
       setText(
         summary,
-        `Iteration ${String(iteration.iteration)} · ${formatStatus(iteration.status)}`,
+        `Iteration ${String(iterationOrdinal(iteration.iteration))} · ${formatStatus(iteration.status)}`,
       );
       const executions = document.createElement("ol");
       executions.className = "loop-execution-list";
@@ -1278,7 +1279,7 @@ const renderLoopIterations = (): void => {
         button.setAttribute("data-execution-id", execution.executionId);
         button.setAttribute(
           "aria-label",
-          `${execution.nodeId}, loop ${iteration.loopNodeId}, iteration ${String(iteration.iteration)}, execution ${execution.executionId}, ${formatStatus(execution.status)}`,
+          `${execution.nodeId}, loop ${iteration.loopNodeId}, iteration ${String(iterationOrdinal(iteration.iteration))}, execution ${execution.executionId}, ${formatStatus(execution.status)}`,
         );
         setText(button, `${execution.nodeId} · ${formatStatus(execution.status)}`);
         button.addEventListener("click", () => {

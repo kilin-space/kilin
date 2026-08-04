@@ -593,19 +593,18 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   const prepareCard = page.locator('.dag-node[data-node-id="prepare"]');
   await prepareCard.click();
   await expect(page.locator(".dag-body-node")).toHaveCount(0);
-  await page.getByRole("button", { name: /^draft, loop refine, iteration 0,/u }).click();
+  await page.getByRole("button", { name: /^draft, loop refine, iteration 1,/u }).click();
   await expect(prepareCard).toHaveAttribute("aria-selected", "false");
   await expect(page.locator(".dag-body-node")).toHaveCount(3);
   await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
     "loop · 1/3 · ◐ Running",
   );
-  await expect(page.locator('.dag-body-node[data-body-node-id="draft"]')).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expect(
+    page.getByRole("button", { name: /^draft, loop refine body step 1, iteration 1, succeeded$/u }),
+  ).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#node-inspector")).toContainText("opaque-occurrence-alpha");
   await expect(page.locator("#node-inspector")).toContainText("Iteration0");
-  const gateButton = page.getByRole("button", { name: /^gate, loop refine, iteration 1,/u });
+  const gateButton = page.getByRole("button", { name: /^gate, loop refine, iteration 2,/u });
   await gateButton.click();
   await expect(page.locator("#decision-dock")).toBeVisible();
   await expect(page.locator("#decision-dock")).toContainText("Approve the revised result?");
