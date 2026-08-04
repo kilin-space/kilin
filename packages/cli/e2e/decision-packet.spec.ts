@@ -12,7 +12,7 @@ const openViewer = async (page: Page, launchUrl: string): Promise<void> => {
     throw new Error("The viewer navigation did not return an HTTP response.");
   }
   await expect(page.locator("#app-shell")).toHaveAttribute("aria-busy", "false");
-  await expect(page.locator("#connection-status")).toHaveText("Attached · guarded approval");
+  await expect(page.locator("#connection-status")).toHaveText("Live");
 };
 
 const selectPacketRun = async (

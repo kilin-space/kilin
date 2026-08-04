@@ -828,27 +828,48 @@ h3 {
   font-weight: 650;
 }
 
-.approval-commands {
+.approval-commands,
+.run-commands {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   margin-top: 12px;
   padding: 10px;
-  border: 1px solid #f0c9e1;
   border-radius: 7px;
-  color: #7c1f56;
-  background: var(--gate-soft);
   font-size: 11px;
 }
 
-.approval-commands code {
+.approval-commands {
+  border: 1px solid #f0c9e1;
+  color: #7c1f56;
+  background: var(--gate-soft);
+}
+
+.run-commands {
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--subdued);
+}
+
+.approval-commands code,
+.run-commands code {
   display: block;
   padding: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.approval-commands code {
   overflow-x: auto;
   color: #5c163f;
   background: #f9e3f1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap;
+}
+
+.run-commands code {
+  color: var(--dim-ink);
+  background: var(--code-surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .lineage-list {
@@ -1212,11 +1233,16 @@ h3 {
 .copy-button {
   flex: 0 0 auto;
   padding: 0 10px;
-  color: #7c1f56;
+  color: var(--dim-ink);
   background: white;
-  border: 1px solid #e6b7d3;
+  border: 1px solid var(--muted);
   font-size: 11px;
   font-weight: 600;
+}
+
+.approval-commands .copy-button {
+  color: #7c1f56;
+  border-color: #e6b7d3;
 }
 
 .decision-packet {

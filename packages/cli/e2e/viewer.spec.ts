@@ -4,6 +4,7 @@ import type {
   CurrentWorkflowResponse,
   LoopIterationDto,
   NodeRunDto,
+  RunSummaryDto,
   ScopedRunDetailResponse,
   ScopedRunListResponse,
   WorkflowGraphDto,
@@ -40,7 +41,7 @@ const openViewer = async (page: Page, launchUrl: string): Promise<Response> => {
     throw new Error("The viewer navigation did not return an HTTP response.");
   }
   await expect(page.locator("#app-shell")).toHaveAttribute("aria-busy", "false");
-  await expect(page.locator("#connection-status")).toHaveText("Attached · guarded approval");
+  await expect(page.locator("#connection-status")).toHaveText("Live");
   return navigation;
 };
 
@@ -841,16 +842,42 @@ test("polling reports lifecycle changes, retries after a transient error, and re
     await route.continue();
   });
   await expect(page.locator("#connection-status")).toContainText("Retrying");
-  await expect(page.locator("#connection-status")).toHaveText("Attached · guarded approval");
+  await expect(page.locator("#connection-status")).toHaveText("Live");
 
   await page.locator("#current-workflow-button").click();
   await scenario.setWorkflowSource("schemaVersion: 1\n");
-  await expect(page.locator("#graph-status")).toHaveText("invalid");
+  await expect(page.locator("#graph-status")).toHaveText("Definition invalid");
+  await expect(page.locator("#graph-status")).toHaveClass(/\binvalid\b/u);
   await expect(page.locator("#diagnostics")).toContainText("SCHEMA_INVALID");
   await scenario.setWorkflowSource(scenario.workflowSource);
-  await expect(page.locator("#graph-status")).toHaveText("valid");
+  await expect(page.locator("#graph-status")).toHaveText("Definition valid");
   await expect(page.locator("#diagnostics")).toBeEmpty();
 });
+
+const withAncestorLineage = async (page: Page, origin: string, runId: string): Promise<void> => {
+  const ancestorRunId = `${runId}-ancestor`;
+  await page.route(`${origin}/api/runs/${runId}`, async (route) => {
+    const response = await route.fetch();
+    const detail = (await response.json()) as ScopedRunDetailResponse;
+    const ancestor: RunSummaryDto = {
+      runId: ancestorRunId,
+      workflowId: detail.run.workflowId,
+      workflowScope: detail.run.workflowScope,
+      revisionId: detail.run.revisionId,
+      cwd: detail.run.cwd,
+      status: "succeeded",
+      startedAt: detail.run.startedAt,
+      finishedAt: detail.run.startedAt,
+      durationMs: 0,
+    };
+    const selected: RunSummaryDto = { ...detail.run, rerunOfRunId: ancestorRunId };
+    await fulfillJson(route, {
+      ...detail,
+      run: selected,
+      lineage: { runs: [ancestor, selected], selectedRunIndex: 1 },
+    });
+  });
+};
 
 test("the decision-needed banner tracks the waiting gate and clears when approved", async ({
   page,
@@ -859,6 +886,7 @@ test("the decision-needed banner tracks the waiting gate and clears when approve
 }) => {
   const approvalRun = await scenario.startApprovalRun();
   try {
+    await withAncestorLineage(page, viewer.origin, approvalRun.runId);
     await openViewer(page, viewer.launchUrl);
 
     const banner = page.locator("#decision-needed-banner");
@@ -871,7 +899,7 @@ test("the decision-needed banner tracks the waiting gate and clears when approve
     await expect(waitingRow).toHaveAttribute("aria-current", "true");
     await expect(waitingRow).toContainText("Waiting for approval");
     await expect(waitingRow.locator(".status-glyph.waiting_for_approval")).toHaveCount(1);
-    const lineageButton = page.locator("#lineage-list .lineage-button");
+    const lineageButton = page.locator("#lineage-list .lineage-button").last();
     await expect(lineageButton).toContainText("waiting for approval");
     await expect(lineageButton).toHaveAccessibleName(
       new RegExp(`^Inspect lineage run ${approvalRun.runId}, waiting for approval$`, "u"),
@@ -1463,5 +1491,150 @@ test("refresh polls at once and restarts the poll backoff after failures", async
   const beforeRecovery = pollRequests;
   await refresh.press("Enter");
   await expect.poll(() => pollRequests, { timeout: 2_000 }).toBeGreaterThan(beforeRecovery);
-  await expect(status).toHaveText("Attached · guarded approval", { timeout: 3_000 });
+  await expect(status).toHaveText("Live", { timeout: 3_000 });
+});
+
+const historyWorld = async (
+  page: Page,
+  origin: string,
+  runs: readonly RunSummaryDto[],
+): Promise<void> => {
+  await installWorldRoutes(page, origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse(runs),
+    runDetail: (runId) => {
+      const summary = runs.find((run) => run.runId === runId);
+      if (summary === undefined) {
+        return undefined;
+      }
+      return gateRunDetail(
+        summary,
+        summary.status === "running" ? runningNodes() : succeededNodes(),
+      );
+    },
+  });
+};
+
+const runningThreeMinutesAgo = (now: number): RunSummaryDto => ({
+  ...ordinaryRunningSummary("0f2b8c14-9a3d-4a71-8b52-6c1d9e4f2a37"),
+  startedAt: new Date(now - 210_000).toISOString(),
+});
+
+const succeededTwoDaysAgo = (now: number): RunSummaryDto => {
+  const startedAt = new Date(now - 216_000_000).toISOString();
+  return {
+    ...succeededSummary("5c7e1a92-4d68-4f03-9e21-7b0a3c6d5e84"),
+    startedAt,
+    finishedAt: new Date(Date.parse(startedAt) + 60_000).toISOString(),
+    durationMs: 60_000,
+  };
+};
+
+test("run history states recency in words and keeps the exact start time reachable", async ({
+  page,
+  viewer,
+}) => {
+  const now = Date.now();
+  const running = runningThreeMinutesAgo(now);
+  const finished = succeededTwoDaysAgo(now);
+  await historyWorld(page, viewer.origin, [running, finished]);
+  await openViewer(page, viewer.launchUrl);
+
+  const viewerTimestamp = (iso: string): Promise<string> =>
+    page.evaluate(
+      (value) =>
+        new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+          new Date(value),
+        ),
+      iso,
+    );
+  const runningRow = page.locator(`.history-button[data-run-id="${running.runId}"]`);
+  const finishedRow = page.locator(`.history-button[data-run-id="${finished.runId}"]`);
+  const runningAbsolute = await viewerTimestamp(running.startedAt);
+  const finishedAbsolute = await viewerTimestamp(finished.startedAt);
+  await expect(runningRow.getByTitle(runningAbsolute)).toHaveText("3 min ago");
+  await expect(finishedRow.getByTitle(finishedAbsolute)).toHaveText("2 days ago");
+
+  const accessibleName = await finishedRow.getAttribute("aria-label");
+  expect(accessibleName).toContain(finishedAbsolute);
+  expect(accessibleName).toContain(finished.runId);
+
+  const recordedDuration = "Succeeded · 1m 00s";
+  await expect(finishedRow).toContainText(recordedDuration);
+  const runningText = await runningRow.textContent();
+  await expect.poll(() => runningRow.textContent()).not.toBe(runningText);
+  await expect(finishedRow).toContainText(recordedDuration);
+});
+
+test("a history row shows a short run id while copy still yields the whole id", async ({
+  page,
+  viewer,
+}) => {
+  const running = runningThreeMinutesAgo(Date.now());
+  await historyWorld(page, viewer.origin, [running]);
+  await page
+    .context()
+    .grantPermissions(["clipboard-read", "clipboard-write"], { origin: viewer.origin });
+  await openViewer(page, viewer.launchUrl);
+
+  const row = page.locator(`.history-button[data-run-id="${running.runId}"]`);
+  await expect(row).toContainText(`${running.runId.slice(0, 12)}…`);
+  await expect(row).not.toContainText(running.runId);
+  await page.getByRole("button", { name: `Copy run id ${running.runId}` }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(running.runId);
+});
+
+test("the run inspector offers a cancel fallback only while the run is live", async ({
+  page,
+  viewer,
+}) => {
+  const now = Date.now();
+  const running = runningThreeMinutesAgo(now);
+  const finished = succeededTwoDaysAgo(now);
+  const draining = cancelRequestedSummary("9b41d7e0-2c85-4a19-b6f3-8e5a0d1c7f26");
+  await historyWorld(page, viewer.origin, [running, draining, finished]);
+  await page
+    .context()
+    .grantPermissions(["clipboard-read", "clipboard-write"], { origin: viewer.origin });
+  await openViewer(page, viewer.launchUrl);
+
+  const inspector = page.locator("#run-inspector");
+  await expect(inspector.locator(".inspector-title")).toHaveText(running.runId);
+  await expect(page.locator("#lineage-section")).toBeHidden();
+  await expect(inspector.getByRole("term").filter({ hasText: "Revision" })).toHaveText(
+    "Revision (content hash)",
+  );
+
+  const commands = page.getByRole("region", { name: "Run cancellation command" });
+  const copy = commands.getByRole("button", { name: "Copy" });
+  const command = `kilin runs cancel ${running.runId}`;
+  await expect(commands).toContainText(command);
+  await copy.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(command);
+
+  await copy.focus();
+  const copyKeepsFocus = (): Promise<boolean> =>
+    copy.evaluate((element) => element === document.activeElement);
+  expect(await copyKeepsFocus()).toBe(true);
+  const focusedCopy = await copy.elementHandle();
+  if (focusedCopy === null) {
+    throw new Error("The cancel command copy control was not rendered.");
+  }
+  await page.waitForFunction((element) => !element.isConnected, focusedCopy);
+  expect(await copyKeepsFocus()).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(commands).toContainText(command);
+  await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
+
+  await page.locator(`.history-button[data-run-id="${draining.runId}"]`).click();
+  await expect(inspector.locator(".inspector-title")).toHaveText(draining.runId);
+  await expect(
+    inspector.getByRole("term").filter({ hasText: "Cancellation requested" }),
+  ).toBeVisible();
+  await expect(commands).toHaveCount(0);
+
+  await page.locator(`.history-button[data-run-id="${finished.runId}"]`).click();
+  await expect(inspector.locator(".inspector-title")).toHaveText(finished.runId);
+  await expect(commands).toHaveCount(0);
 });
