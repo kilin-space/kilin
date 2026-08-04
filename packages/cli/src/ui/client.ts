@@ -1128,10 +1128,13 @@ interface LoopIterationView {
   readonly executions: ReadonlyMap<string, NodeRunDto>;
 }
 
+const iterationHasStarted = (iteration: LoopIterationDto): boolean =>
+  iteration.executions.some(({ status }) => status !== "pending" && status !== "skipped");
+
 const currentLoopIteration = (loopNodeId: string): LoopIterationView | undefined => {
   const iterations = state.viewMode === "run" ? (state.runDetail?.loopIterations ?? []) : [];
   const latest = iterations
-    .filter((iteration) => iteration.loopNodeId === loopNodeId && iteration.executions.length > 0)
+    .filter((iteration) => iteration.loopNodeId === loopNodeId && iterationHasStarted(iteration))
     .reduce<LoopIterationDto | undefined>(
       (highest, iteration) =>
         highest === undefined || iteration.iteration > highest.iteration ? iteration : highest,
@@ -1168,7 +1171,7 @@ const renderExecutionList = (graph: WorkflowGraphDto | undefined): void => {
         const bodyStatus = iteration?.executions.get(bodyNode.id)?.status;
         setText(
           bodyItem,
-          `${bodyNode.id} · ${bodyStatus === undefined ? dependencyCopy(bodyNode) : formatStatus(bodyStatus)}`,
+          `${bodyNode.id} · ${nodeKindCopy(bodyNode)} · ${bodyStatus === undefined ? dependencyCopy(bodyNode) : formatStatus(bodyStatus)}`,
         );
         bodyList.append(bodyItem);
       }
@@ -1608,9 +1611,6 @@ const renderGraph = (): void => {
     group.setAttribute("role", "button");
     group.setAttribute("data-node-id", node.id);
     group.setAttribute("aria-selected", String(node.id === state.selectedNodeId));
-    if (node.kind === "loop") {
-      group.setAttribute("aria-expanded", String(card.body !== undefined));
-    }
     const summary =
       node.kind === "loop"
         ? loopCardSummary(node, status, iteration)

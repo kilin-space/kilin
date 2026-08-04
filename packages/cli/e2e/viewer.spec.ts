@@ -231,7 +231,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
         id: "refine",
         ordinal: 1,
         kind: "loop",
-        maxIterations: 2,
+        maxIterations: 3,
         dependencies: ["prepare"],
         body: {
           nodes: [
@@ -379,6 +379,36 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
       availableOutputs: [],
     },
   ];
+  const unreachedIterationExecutions: LoopIterationDto["executions"] = [
+    "draft",
+    "gate",
+    "judge",
+  ].map((nodeId, index) =>
+    nodeId === "gate"
+      ? {
+          kind: "approval" as const,
+          executionId: `opaque-occurrence-third-${nodeId}`,
+          nodeId,
+          loopNodeId: "refine",
+          iteration: 2,
+          ordinal: 7 + index,
+          question: "Approve the revised result?",
+          status: "pending" as const,
+          availableOutputs: [],
+        }
+      : {
+          kind: "agent" as const,
+          executionId: `opaque-occurrence-third-${nodeId}`,
+          nodeId,
+          loopNodeId: "refine",
+          iteration: 2,
+          ordinal: 7 + index,
+          runtime: "codex" as const,
+          outputType: "text" as const,
+          status: "pending" as const,
+          availableOutputs: [],
+        },
+  );
   const currentWorkflow: CurrentWorkflowResponse = {
     outputVersion: 1,
     state: "valid",
@@ -430,6 +460,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
       },
       ...firstIterationExecutions,
       ...secondIterationExecutions,
+      ...unreachedIterationExecutions,
     ],
     loopIterations: [
       {
@@ -443,6 +474,12 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
         iteration: 1,
         status: "waiting_for_approval",
         executions: secondIterationExecutions,
+      },
+      {
+        loopNodeId: "refine",
+        iteration: 2,
+        status: "pending",
+        executions: unreachedIterationExecutions,
       },
     ],
     attempts: [],
@@ -480,31 +517,28 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   await expect(page.locator("#graph-context")).toHaveText("Current workflow");
 
   const loopCard = page.locator('.dag-node[data-node-id="refine"]');
-  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText("loop · up to 2");
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText("loop · up to 3");
   await expect(page.locator(".dag-body-node")).toHaveCount(0);
-  await expect(loopCard).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator("#workflow-graph desc")).toContainText(
-    "Loop refine repeats up to 2 times over draft, gate, judge.",
+    "Loop refine repeats up to 3 times over draft, gate, judge.",
   );
-  await expect(page.locator("#execution-list")).toContainText("draft · starts first");
+  await expect(page.locator("#execution-list")).toContainText("gate · approval · after draft");
   await expect(page.locator("#loop-iterations-section")).toBeVisible();
   await expect(page.locator("#loop-iterations-section")).toContainText(
     "No iterations recorded yet. Body: draft → gate → judge.",
   );
 
   await loopCard.click();
-  await expect(loopCard).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator(".dag-body-node")).toHaveCount(3);
   await page.locator('.dag-node[data-node-id="prepare"]').click();
-  await expect(loopCard).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator(".dag-body-node")).toHaveCount(0);
 
   await page.getByRole("button", { name: /Run loop-run, running/u }).click();
   await expect(page.locator("#execution-list button")).toHaveCount(0);
   await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
-    "loop · 2/2 · ◐ Running",
+    "loop · 2/3 · ◐ Running",
   );
-  await expect(loopCard).toHaveAttribute("aria-label", /loop, iteration 2 of 2, running/u);
+  await expect(loopCard).toHaveAttribute("aria-label", /loop, iteration 2 of 3, running/u);
   await expect(
     page.getByRole("button", { name: /^draft, loop refine body step 1, iteration 1, succeeded$/u }),
   ).toBeVisible();
@@ -537,7 +571,7 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   );
   const iterationRegion = page.locator("#loop-iterations-section");
   await expect(iterationRegion).toBeVisible();
-  await expect(iterationRegion.locator(".loop-iteration")).toHaveCount(2);
+  await expect(iterationRegion.locator(".loop-iteration")).toHaveCount(3);
   await expect(
     iterationRegion.locator('[data-iteration-status="waiting_for_approval"]'),
   ).toHaveAttribute("open", "");
@@ -582,7 +616,7 @@ test("a graph that is one loop opens expanded and keeps its unstarted body out o
   await openViewer(page, viewer.launchUrl);
 
   const loopCard = page.locator('.dag-node[data-node-id="refine"]');
-  await expect(loopCard).toHaveAttribute("aria-expanded", "true");
+  await expect(loopCard).toHaveAttribute("aria-selected", "true");
   await expect(page.locator(".dag-body-node")).toHaveCount(3);
   await expect(page.locator('.dag-body-node[aria-hidden="true"]')).toHaveCount(3);
 

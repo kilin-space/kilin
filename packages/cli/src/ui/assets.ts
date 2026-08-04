@@ -700,13 +700,13 @@ h3 {
 }
 
 .dag-node .dag-node-meta {
-  fill: #777c87;
+  fill: var(--muted);
   font-size: 10px;
 }
 
 .dag-loop-stack {
   fill: var(--panel);
-  stroke: #cfd3da;
+  stroke: var(--dim);
   stroke-width: 1.5;
 }
 
@@ -715,7 +715,7 @@ h3 {
 }
 
 .dag-loop-edge-label {
-  fill: var(--muted);
+  fill: var(--dim-ink);
   font-size: 9px;
   text-anchor: middle;
   pointer-events: none;
@@ -725,13 +725,17 @@ h3 {
   stroke-dasharray: 4 3;
 }
 
+.dag-body-node:not(.dag-node) {
+  pointer-events: none;
+}
+
 .dag-body-node .dag-node-title {
   font-size: 11px;
   font-weight: 650;
 }
 
 .dag-body-node .dag-node-meta {
-  fill: #777c87;
+  fill: var(--muted);
   font-size: 9px;
 }
 
@@ -757,7 +761,7 @@ h3 {
   stroke-dasharray: 4 4;
 }
 
-.dag-node.skipped {
+.dag-node.skipped:not(.dag-body-node) {
   opacity: 0.55;
 }
 
