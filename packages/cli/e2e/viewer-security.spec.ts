@@ -213,7 +213,7 @@ test("viewer authentication and routes enforce the local guarded boundary", asyn
   expect(client.headers["content-type"]).toContain("text/javascript");
 
   await page.reload();
-  await expect(page.locator("#connection-status")).toHaveText("Attached · guarded approval");
+  await expect(page.locator("#connection-status")).toHaveText("Live");
   await expect(scenario.runtimeInvocationCount()).resolves.toBe(invocationCount);
 });
 

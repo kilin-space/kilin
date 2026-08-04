@@ -20,7 +20,7 @@ const openViewer = async (page: Page, launchUrl: string): Promise<void> => {
     throw new Error("The viewer navigation did not return an HTTP response.");
   }
   await expect(page.locator("#app-shell")).toHaveAttribute("aria-busy", "false");
-  await expect(page.locator("#connection-status")).toHaveText("Attached · guarded approval");
+  await expect(page.locator("#connection-status")).toHaveText("Live");
 };
 
 const reloadViewer = async (page: Page): Promise<void> => {
@@ -141,7 +141,7 @@ test("a stale hash run id falls back without an error state and Current persists
   await openViewer(page, viewer.launchUrl);
 
   await reloadViewerWithHash(page, viewer.origin, "run=run-that-never-existed");
-  await expect(page.locator("#connection-status")).toHaveText("Attached · guarded approval");
+  await expect(page.locator("#connection-status")).toHaveText("Live");
   await expect(
     page.getByRole("button", { name: new RegExp(`Run ${scenario.interruptedRunId}, interrupted`) }),
   ).toHaveAttribute("aria-current", "true");

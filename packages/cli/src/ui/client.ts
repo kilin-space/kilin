@@ -25,6 +25,9 @@ const maximumBackoffMs = 30_000;
 const maximumApprovalNoteCharacters = 1_000;
 const maximumHistoryRuns = 50;
 const urgentDeadlineMs = 900_000;
+const minuteMs = 60_000;
+const hourMs = 3_600_000;
+const dayMs = 86_400_000;
 const liveTickIntervalMs = 1_000;
 const copyFeedbackMs = 1_500;
 
@@ -470,6 +473,25 @@ const formatDuration = (durationMs: number | undefined): string => {
   return formatElapsed(durationMs);
 };
 
+const formatRelativeTime = (timestamp: string, now: number): string => {
+  const startedMs = Date.parse(timestamp);
+  if (Number.isNaN(startedMs)) {
+    return timestamp;
+  }
+  const elapsedMs = now - startedMs;
+  if (elapsedMs < minuteMs) {
+    return "just now";
+  }
+  if (elapsedMs < hourMs) {
+    return `${String(Math.floor(elapsedMs / minuteMs))} min ago`;
+  }
+  if (elapsedMs < dayMs) {
+    return `${String(Math.floor(elapsedMs / hourMs))} hr ago`;
+  }
+  const days = Math.floor(elapsedMs / dayMs);
+  return `${String(days)} day${days === 1 ? "" : "s"} ago`;
+};
+
 interface DeadlineCopy {
   readonly text: string;
   readonly urgent: boolean;
@@ -499,6 +521,14 @@ const updateLiveElements = (): void => {
     }
     const startedMs = Date.parse(startedAt);
     setText(element, Number.isNaN(startedMs) ? "In progress" : formatElapsed(now - startedMs));
+  }
+  for (const element of Array.from(
+    document.querySelectorAll<HTMLElement>("[data-live-relative]"),
+  )) {
+    const timestamp = element.dataset.liveRelative;
+    if (timestamp !== undefined) {
+      setText(element, formatRelativeTime(timestamp, now));
+    }
   }
   for (const element of Array.from(
     document.querySelectorAll<HTMLElement>("[data-live-deadline]"),
@@ -563,6 +593,13 @@ const renderStatusChip = (element: HTMLElement, status: string, label: string): 
   element.replaceChildren(statusGlyphElement(status), document.createTextNode(label));
 };
 
+const definitionLabel = (state: CurrentWorkflowResponse["state"] | ""): string => {
+  if (state === "") {
+    return "Loading";
+  }
+  return state === "valid" ? "Definition valid" : "Definition invalid";
+};
+
 const relationLabel = (run: RunSummaryDto): string => {
   if (run.recoveryMode === "resume") {
     return "resumed";
@@ -609,7 +646,7 @@ const postSession = async (
 const apiGet = async <ResponseType>(route: string, signal?: AbortSignal): Promise<ResponseType> => {
   const csrfToken = state.session?.csrfToken;
   if (csrfToken === undefined) {
-    throw new Error("The viewer session is not ready. Restart Kilin UI and try again.");
+    throw new Error("The viewer is not ready. Restart Kilin UI and try again.");
   }
   const request: RequestInit = {
     method: "GET",
@@ -626,7 +663,7 @@ const apiGet = async <ResponseType>(route: string, signal?: AbortSignal): Promis
 const apiPost = async <ResponseType>(route: string, body: unknown): Promise<ResponseType> => {
   const csrfToken = state.session?.csrfToken;
   if (csrfToken === undefined) {
-    throw new Error("The viewer session is not ready. Restart Kilin UI and try again.");
+    throw new Error("The viewer is not ready. Restart Kilin UI and try again.");
   }
   const response = await fetch(route, {
     method: "POST",
@@ -848,10 +885,13 @@ const renderHistory = (): void => {
     appendHistoryDuration(statusRow, run);
     const startedRow = document.createElement("span");
     startedRow.className = "history-meta";
-    setText(startedRow, `${formatTimestamp(run.startedAt)} · ${relationLabel(run)}`);
+    const started = document.createElement("span");
+    started.dataset.liveRelative = run.startedAt;
+    started.title = formatTimestamp(run.startedAt);
+    startedRow.append(started, document.createTextNode(` · ${relationLabel(run)}`));
     const runId = document.createElement("span");
     runId.className = "history-run-id";
-    setText(runId, run.runId);
+    setText(runId, shortId(run.runId));
     copy.append(workflow, statusRow, startedRow, runId);
     button.append(statusGlyphElement(presentedStatus), copy);
     item.append(button, copyRunIdButton(run.runId));
@@ -1226,7 +1266,7 @@ const renderRunInspector = (): void => {
     if (state.currentWorkflow?.state === "valid") {
       const list = createPropertyList();
       appendProperty(list, "Workflow", state.currentWorkflow.workflow.workflowId);
-      appendProperty(list, "Revision", shortId(state.currentWorkflow.contentHash));
+      appendProperty(list, "Revision (content hash)", shortId(state.currentWorkflow.contentHash));
       appendProperty(list, "Nodes", String(state.currentWorkflow.workflow.nodes.length));
       elements.runInspector.append(list);
     } else {
@@ -1253,7 +1293,7 @@ const renderRunInspector = (): void => {
   appendProperty(list, "Status", `${statusGlyph(runStatus)} ${statusLabel(runStatus)}`);
   appendProperty(list, "Started", formatTimestamp(detail.run.startedAt));
   appendDurationProperty(list, detail.run.durationMs, detail.run.startedAt, detail.run.finishedAt);
-  appendProperty(list, "Revision", shortId(detail.revision.contentHash));
+  appendProperty(list, "Revision (content hash)", shortId(detail.revision.contentHash));
   appendProperty(list, "Directory", detail.run.cwd);
   if (detail.run.rerunOfRunId !== undefined) {
     appendProperty(list, "Rerun of", detail.run.rerunOfRunId);
@@ -1271,6 +1311,9 @@ const renderRunInspector = (): void => {
   appendProperty(list, "Attempts", String(detail.attempts.length));
   appendProperty(list, "Provisioned", String(detail.workspaces.length));
   elements.runInspector.append(title, list);
+  if (detail.run.status === "running") {
+    elements.runInspector.append(cancelCommand(detail.run.runId));
+  }
   if (detail.attempts.length > 0) {
     const attempts = document.createElement("details");
     const summary = document.createElement("summary");
@@ -1419,7 +1462,7 @@ const renderNodeInspector = (): void => {
 const renderLineage = (): void => {
   elements.lineageList.replaceChildren();
   const lineage = state.viewMode === "run" ? state.runDetail?.lineage : undefined;
-  elements.lineageSection.hidden = lineage === undefined || lineage.runs.length === 0;
+  elements.lineageSection.hidden = lineage === undefined || lineage.runs.length <= 1;
   if (lineage === undefined) {
     return;
   }
@@ -2488,6 +2531,16 @@ const copyCommandRow = (command: string): HTMLElement => {
   return row;
 };
 
+const cancelCommand = (runId: string): HTMLElement => {
+  const commands = document.createElement("section");
+  commands.className = "run-commands";
+  commands.setAttribute("aria-label", "Run cancellation command");
+  const guidance = document.createElement("p");
+  setText(guidance, "Fallback: cancel this run from your terminal:");
+  commands.append(guidance, copyCommandRow(`kilin runs cancel ${runId}`));
+  return commands;
+};
+
 const fallbackCommands = (runId: string, nodeId: string): HTMLElement => {
   const commands = document.createElement("section");
   commands.className = "approval-commands";
@@ -3035,11 +3088,7 @@ const renderPresentation = (): void => {
     const definitionState = state.currentWorkflow?.state ?? "";
     setText(elements.graphContext, "Current workflow");
     setText(elements.graphHeading, graph?.name ?? "Workflow diagnostics");
-    renderStatusChip(
-      elements.graphStatus,
-      definitionState,
-      definitionState === "" ? "Loading" : definitionState,
-    );
+    renderStatusChip(elements.graphStatus, definitionState, definitionLabel(definitionState));
   } else {
     setText(elements.graphContext, "Stored revision");
     setText(elements.graphHeading, graph?.name ?? "Run workflow");
@@ -3327,7 +3376,7 @@ const selectRun = async (runId: string, initial?: InitialRunSelection): Promise<
     if (runDetailRequestGeneration === requestGeneration && state.selectedRunId === runId) {
       state.runDetail = detail;
       state.pollFailures = 0;
-      setText(elements.connectionStatus, "Attached · guarded approval");
+      setText(elements.connectionStatus, "Live");
       const restore = initial?.restore;
       if (restore?.view !== undefined) {
         state.evidenceView = restore.view;
@@ -3461,7 +3510,7 @@ const pollViewer = async (): Promise<void> => {
       state.runDetail = detail;
     }
     state.pollFailures = 0;
-    setText(elements.connectionStatus, "Attached · guarded approval");
+    setText(elements.connectionStatus, "Live");
     elements.appShell.setAttribute("aria-busy", "false");
     renderPresentation();
     maybeRefreshEvidence();

@@ -4,6 +4,17 @@ All notable changes to `@kilin-space/cli` are documented here.
 
 ## Unreleased
 
+- State Viewer status in plain words: the steady connection reads `Live` instead of naming the
+  attachment and approval guard, and the definition chip reads `Definition valid` or
+  `Definition invalid` instead of a bare lowercase state (#17).
+- Show how long ago each stored run started — `3 min ago`, `2 days ago` — in run history, with the
+  exact timestamp on hover and in the row's accessible name. A finished run keeps its fixed
+  duration and never ages (#18).
+- Remove noise from run details: the lineage section stays hidden for a run with no ancestry, run
+  history rows show a short run id while the copy button still yields the whole id, and the
+  truncated content hash is labelled `Revision (content hash)` (#20).
+- Offer a copyable `kilin runs cancel <run-id>` command in the Viewer run inspector while a run is
+  live. It is presentation only and disappears once the run reaches a terminal state (#24).
 - Recover from a failed Viewer evidence read without reselecting the node: the error state now
   carries a Retry control that re-requests the stream. A Refresh control in the top bar runs a
   poll cycle at once, restarts the backoff, and re-requests a failed evidence read (#19).

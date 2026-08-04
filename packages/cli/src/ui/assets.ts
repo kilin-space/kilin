@@ -851,6 +851,34 @@ h3 {
   white-space: nowrap;
 }
 
+.run-commands {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--subdued);
+  font-size: 11px;
+}
+
+.run-commands code {
+  display: block;
+  padding: 7px;
+  overflow-x: auto;
+  color: var(--dim-ink);
+  background: var(--code-surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+.run-commands .copy-button {
+  color: var(--dim-ink);
+  border-color: var(--border);
+}
+
 .lineage-list {
   display: grid;
   gap: 4px;
