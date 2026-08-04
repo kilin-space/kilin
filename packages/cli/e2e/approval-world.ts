@@ -1,6 +1,7 @@
 import type { Page, Route } from "@playwright/test";
 
 import type {
+  AgentWorkflowNodeDto,
   ApprovalDecisionResponse,
   BoundedOutputResponse,
   CurrentWorkflowResponse,
@@ -52,6 +53,42 @@ export const gateCurrentWorkflow = (): CurrentWorkflowResponse => ({
   state: "valid",
   contentHash: "gate-content",
   workflow: gateWorkflowGraph(),
+  diagnostics: [],
+});
+
+const fanOutBranches = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"] as const;
+
+/** A graph whose seven nodes occupy six lanes, so it is taller than the collapsed graph strip. */
+export const fanOutCurrentWorkflow = (): CurrentWorkflowResponse => ({
+  outputVersion: 1,
+  state: "valid",
+  contentHash: "fan-out-content",
+  workflow: {
+    workflowId: "fan-out-viewer",
+    name: "Fan-out review",
+    nodes: [
+      {
+        id: "collect",
+        ordinal: 0,
+        kind: "agent",
+        runtime: "codex",
+        access: "read_only",
+        outputType: "text",
+        dependencies: [],
+      },
+      ...fanOutBranches.map((branch, index): AgentWorkflowNodeDto => ({
+        id: branch,
+        ordinal: index + 1,
+        kind: "agent",
+        runtime: "codex",
+        access: "read_only",
+        outputType: "text",
+        dependencies: ["collect"],
+      })),
+    ],
+    edges: fanOutBranches.map((branch) => ({ from: "collect", to: branch })),
+    executionOrder: ["collect", ...fanOutBranches],
+  },
   diagnostics: [],
 });
 
@@ -129,7 +166,7 @@ export const waitingGateNodes = (
   verifyPending,
 ];
 
-export const decidedGateNodes = (executionId: string): readonly NodeRunDto[] => [
+export const decidedGateNodes = (executionId: string, note?: string): readonly NodeRunDto[] => [
   analyzeSucceeded,
   {
     kind: "approval",
@@ -141,7 +178,12 @@ export const decidedGateNodes = (executionId: string): readonly NodeRunDto[] => 
     requestedAt: "2026-07-26T01:00:01.000Z",
     finishedAt: "2026-07-26T01:00:02.000Z",
     durationMs: 1_000,
-    decision: { decision: "approve", actor: "human", decidedAt: "2026-07-26T01:00:02.000Z" },
+    decision: {
+      decision: "approve",
+      actor: "human",
+      decidedAt: "2026-07-26T01:00:02.000Z",
+      ...(note === undefined ? {} : { note }),
+    },
     availableOutputs: [],
   },
   verifyPending,
@@ -472,11 +514,17 @@ export const loopRunListResponse = (waiting: boolean): ScopedRunListResponse => 
 export const syntheticApprovalDecision = (
   runId: string,
   executionId: string,
+  note?: string,
 ): ApprovalDecisionResponse => ({
   outputVersion: 1,
   runId,
   nodeId: executionId,
-  decision: { decision: "approve", actor: "human", decidedAt: "2026-07-26T01:00:05.000Z" },
+  decision: {
+    decision: "approve",
+    actor: "human",
+    decidedAt: "2026-07-26T01:00:05.000Z",
+    ...(note === undefined ? {} : { note }),
+  },
 });
 
 export const syntheticOutputResponse = (

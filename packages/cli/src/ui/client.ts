@@ -64,6 +64,7 @@ interface ViewerState {
   selectedExecutionId: string | undefined;
   selectedOutputStream: OutputStream;
   evidenceView: EvidenceView;
+  graphExpanded: boolean;
   followTail: boolean;
   output: OutputSelection | undefined;
   outputError: string | undefined;
@@ -86,6 +87,7 @@ const state: ViewerState = {
   selectedExecutionId: undefined,
   selectedOutputStream: "result",
   evidenceView: "rendered",
+  graphExpanded: false,
   followTail: true,
   output: undefined,
   outputError: undefined,
@@ -135,8 +137,10 @@ const elements = {
   fatalErrorMessage: requiredElement("#fatal-error-message", HTMLElement),
   graph: requiredElement("#workflow-graph", SVGSVGElement),
   graphContext: requiredElement("#graph-context", HTMLElement),
+  graphExpandToggle: requiredElement("#graph-expand-toggle", HTMLButtonElement),
   graphHeading: requiredElement("#graph-heading", HTMLElement),
   graphStatus: requiredElement("#graph-status", HTMLElement),
+  graphStrip: requiredElement("#graph-strip", HTMLElement),
   historyCount: requiredElement("#history-count", HTMLElement),
   historyEmpty: requiredElement("#history-empty", HTMLElement),
   historyList: requiredElement("#history-list", HTMLOListElement),
@@ -192,7 +196,12 @@ type ViewerFocusTarget =
   | { readonly type: "output"; readonly stream: OutputStream }
   | { readonly type: "evidence-view"; readonly view: EvidenceView }
   | { readonly type: "evidence-retry" }
-  | { readonly type: "decision-note" }
+  | {
+      readonly type: "decision-note";
+      readonly selectionStart: number;
+      readonly selectionEnd: number;
+      readonly selectionDirection: HTMLTextAreaElement["selectionDirection"];
+    }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
   | { readonly type: "command-copy"; readonly command: string }
   | { readonly type: "decision-needed"; readonly runId: string; readonly graphNodeId: string };
@@ -272,8 +281,13 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   if (activeElement?.classList.contains("evidence-retry") === true) {
     return { type: "evidence-retry" };
   }
-  if (activeElement instanceof HTMLElement && activeElement.id === "decision-note") {
-    return { type: "decision-note" };
+  if (activeElement instanceof HTMLTextAreaElement && activeElement.id === "decision-note") {
+    return {
+      type: "decision-note",
+      selectionStart: activeElement.selectionStart,
+      selectionEnd: activeElement.selectionEnd,
+      selectionDirection: activeElement.selectionDirection,
+    };
   }
   if (activeElement instanceof HTMLElement && activeElement.id === "decision-approve") {
     return { type: "decision-action", decision: "approved" };
@@ -391,10 +405,10 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     return;
   }
   if (target.type === "decision-note") {
-    const note = elements.decisionDock.querySelector<HTMLInputElement>("#decision-note");
+    const note = elements.decisionDock.querySelector<HTMLTextAreaElement>("#decision-note");
     if (note !== null) {
       note.focus();
-      note.setSelectionRange(note.value.length, note.value.length);
+      note.setSelectionRange(target.selectionStart, target.selectionEnd, target.selectionDirection);
     }
     return;
   }
@@ -1249,6 +1263,14 @@ const renderGraph = (): void => {
     groups.push(group);
     elements.graph.append(group);
   }
+};
+
+const renderGraphExpansion = (): void => {
+  elements.graphStrip.classList.toggle("expanded", state.graphExpanded);
+  elements.graphExpandToggle.setAttribute("aria-pressed", String(state.graphExpanded));
+  const graphOverflowsStrip = elements.graphStrip.scrollHeight > elements.graphStrip.clientHeight;
+  const keepsFocus = document.activeElement === elements.graphExpandToggle;
+  elements.graphExpandToggle.hidden = !state.graphExpanded && !keepsFocus && !graphOverflowsStrip;
 };
 
 const renderRunInspector = (): void => {
@@ -2560,10 +2582,10 @@ const decisionControls = (): HTMLElement => {
   label.className = "decision-note-label";
   label.htmlFor = "decision-note";
   setText(label, "Note (optional)");
-  const note = document.createElement("input");
-  note.type = "text";
+  const note = document.createElement("textarea");
   note.id = "decision-note";
   note.className = "decision-note";
+  note.rows = 4;
   note.maxLength = maximumApprovalNoteCharacters;
   note.value = state.decisionNoteDraft;
   note.addEventListener("input", () => {
@@ -2604,11 +2626,15 @@ const decisionRecordElement = (
   chip.className = `decision-chip ${label}`;
   setText(chip, label);
   const meta = document.createElement("span");
-  setText(
-    meta,
-    `· ${decision.actor} · ${formatTimestamp(decision.decidedAt)}${decision.note === undefined ? "" : ` · ${decision.note}`}`,
-  );
+  setText(meta, `· ${decision.actor} · ${formatTimestamp(decision.decidedAt)}`);
   record.append(chip, meta);
+  if (decision.note !== undefined) {
+    const note = document.createElement("span");
+    note.className = "decision-record-note";
+    note.tabIndex = 0;
+    setText(note, decision.note);
+    record.append(note);
+  }
   return record;
 };
 
@@ -3110,6 +3136,7 @@ const renderPresentation = (): void => {
   renderDecisionNeededBanner();
   announceApprovalGateTransitions();
   updateLiveElements();
+  renderGraphExpansion();
   restoreViewerFocus(focusTarget);
 };
 
@@ -3583,6 +3610,10 @@ elements.decisionNeededBanner.addEventListener("click", () => {
     return;
   }
   elements.decisionDock.querySelector<HTMLButtonElement>("button")?.focus();
+});
+elements.graphExpandToggle.addEventListener("click", () => {
+  state.graphExpanded = !state.graphExpanded;
+  renderGraphExpansion();
 });
 elements.evidenceViewRendered.addEventListener("click", () => {
   setEvidenceView("rendered");

@@ -62,12 +62,16 @@ rendered or raw view persist in the URL hash, so a reload restores your place.
 
 The top bar carries a Refresh control that requests the current state at once and restarts the
 poll backoff. When a captured stream fails to load, the output panel offers a Retry control that
-requests that stream again, and Refresh requests it again too.
+requests that stream again, and Refresh requests it again too. When the graph is taller than the
+strip that holds it, an Expand control appears beside the workflow status and raises the height
+cap, so a workflow with many parallel branches needs less scrolling; the choice survives polling
+until you collapse it again.
 
 When a run stops at an approval, the Viewer shows guarded Approve and Reject buttons alongside the
-equivalent CLI commands. That decision is its only state mutation: it cannot edit workflows, start
-provider runs, or schedule work. Pass `--no-open` to print the launch URL instead of opening a
-browser, and treat that URL as a credential.
+equivalent CLI commands. The optional note is a multi-line field, so Enter starts a new line and
+only Approve or Reject submits. That decision is its only state mutation: it cannot edit
+workflows, start provider runs, or schedule work. Pass `--no-open` to print the launch URL instead
+of opening a browser, and treat that URL as a credential.
 
 Without a browser, the same history is available as text:
 

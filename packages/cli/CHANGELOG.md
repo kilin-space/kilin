@@ -4,6 +4,14 @@ All notable changes to `@kilin-space/cli` are documented here.
 
 ## Unreleased
 
+- Write an approval note across several lines: the Viewer decision dock now offers a four-row text
+  area where Enter starts a new line, and Approve and Reject remain the only submit path. The
+  1000-character limit is unchanged, a background refresh no longer moves the caret to the end of
+  the note, and the recorded decision keeps the note's line breaks (#21).
+- Expand the Viewer graph strip when a workflow has more parallel branches than the short default
+  viewport can show. An Expand control beside the workflow status raises the graph height cap to
+  roughly 70% of the viewport height, works from the keyboard, and keeps its state across polls. It
+  appears only while the graph is taller than the strip (#23).
 - State Viewer status in plain words: the steady connection reads `Live` instead of naming the
   attachment and approval guard, and the definition chip reads `Definition valid` or
   `Definition invalid` instead of a bare lowercase state (#17).
