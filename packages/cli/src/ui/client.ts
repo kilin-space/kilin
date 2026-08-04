@@ -1355,7 +1355,13 @@ const graphCardSummary = (
   if (status === undefined) {
     return { meta: nodeKindCopy(node), aria: `loop, up to ${bound} iterations` };
   }
-  const shown = String(iteration === undefined ? 0 : iterationOrdinal(iteration.iteration));
+  if (iteration === undefined) {
+    return {
+      meta: `${nodeKindCopy(node)} · ${statusCardCopy(status)}`,
+      aria: `loop, up to ${bound} iterations, ${formatStatus(status)}`,
+    };
+  }
+  const shown = String(iterationOrdinal(iteration.iteration));
   return {
     meta: `loop · ${shown}/${bound} · ${statusCardCopy(status)}`,
     aria: `loop, iteration ${shown} of ${bound}, ${formatStatus(status)}`,

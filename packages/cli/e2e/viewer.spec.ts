@@ -23,6 +23,7 @@ import {
   loopCurrentWorkflow,
   loopRunDetail,
   loopRunListResponse,
+  loopWorkflowGraph,
   ordinaryRunningSummary,
   readApprovalAnnouncements,
   readApprovalEventLog,
@@ -666,6 +667,114 @@ test("a graph that is one loop opens expanded and keeps its unstarted body out o
       ),
     )
     .toBe("outside");
+});
+
+test("a running loop keeps its bound until an iteration starts rather than claiming iteration 0", async ({
+  page,
+  viewer,
+}) => {
+  const pendingBody: LoopIterationDto["executions"] = [
+    {
+      kind: "agent",
+      executionId: "opaque-occurrence-pending-draft",
+      nodeId: "draft",
+      loopNodeId: "refine",
+      iteration: 0,
+      ordinal: 1,
+      runtime: "codex",
+      outputType: "text",
+      status: "pending",
+      availableOutputs: [],
+    },
+    {
+      kind: "approval",
+      executionId: "opaque-occurrence-pending-gate",
+      nodeId: "gate",
+      loopNodeId: "refine",
+      iteration: 0,
+      ordinal: 2,
+      question: "Approve the revised result?",
+      status: "pending",
+      availableOutputs: [],
+    },
+    {
+      kind: "agent",
+      executionId: "opaque-occurrence-pending-judge",
+      nodeId: "judge",
+      loopNodeId: "refine",
+      iteration: 0,
+      ordinal: 3,
+      runtime: "codex",
+      outputType: "choice",
+      status: "pending",
+      availableOutputs: [],
+    },
+  ];
+  const summary: RunSummaryDto = {
+    runId: "loop-run",
+    workflowId: "loop-viewer",
+    workflowScope: "project",
+    revisionId: "loop-revision",
+    cwd: "workspace",
+    status: "running",
+    startedAt: "2026-07-26T01:00:00.000Z",
+  };
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: loopCurrentWorkflow,
+    runList: () => ({
+      outputVersion: 1,
+      workflowId: "loop-viewer",
+      workflowScope: "project",
+      runs: [summary],
+    }),
+    runDetail: (runId) =>
+      runId === "loop-run"
+        ? {
+            outputVersion: 1,
+            workflowId: "loop-viewer",
+            workflowScope: "project",
+            run: summary,
+            revision: {
+              revisionId: "loop-revision",
+              workflowScope: "project",
+              contentHash: "loop-content",
+              createdAt: "2026-07-26T00:59:00.000Z",
+              workflow: loopWorkflowGraph(),
+            },
+            nodes: [
+              {
+                kind: "loop",
+                executionId: "refine",
+                nodeId: "refine",
+                ordinal: 0,
+                status: "running",
+                startedAt: "2026-07-26T01:00:00.000Z",
+                availableOutputs: [],
+              },
+              ...pendingBody,
+            ],
+            loopIterations: [
+              {
+                loopNodeId: "refine",
+                iteration: 0,
+                status: "pending",
+                executions: pendingBody,
+              },
+            ],
+            attempts: [],
+            workspaces: [],
+            lineage: { runs: [summary], selectedRunIndex: 0 },
+          }
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+  await page.getByRole("button", { name: /Run loop-run, running/u }).click();
+
+  const loopCard = page.locator('.dag-node[data-node-id="refine"]');
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
+    "loop · up to 2 · ◐ Running",
+  );
+  await expect(loopCard).toHaveAttribute("aria-label", /loop, up to 2 iterations, running/u);
 });
 
 test("mobile viewer preserves layout and touch targets", async ({

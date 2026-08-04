@@ -68,7 +68,8 @@ cap, so a workflow with many parallel branches needs less scrolling; the choice 
 until you collapse it again.
 
 A loop node keeps the word `loop` on its card and adds its iteration progress, `loop · 2/3`, once
-a run exists. Selecting it expands the card into a container that draws the body pipeline at the
+an iteration starts; until then it keeps its bound, `loop · up to 3`. Selecting it expands the card
+into a container that draws the body pipeline at the
 latest started iteration — the body nodes with their statuses, the revise feedback edge, and the
 pass exit — and selecting a body node opens that execution's evidence. Selecting an execution from
 an earlier iteration draws that iteration instead. A workflow whose only node is a loop opens
