@@ -1146,6 +1146,12 @@ interface LoopIterationView {
   readonly executions: ReadonlyMap<string, NodeRunDto>;
 }
 
+/**
+ * The canvas counts iterations from one; `LoopIterationDto.iteration` and the provenance surfaces
+ * that quote it — the Loop iterations panel and the node inspector — stay zero-based.
+ */
+const iterationOrdinal = (iteration: number): number => iteration + 1;
+
 const iterationHasStarted = (iteration: LoopIterationDto): boolean =>
   iteration.executions.some(({ status }) => status !== "pending" && status !== "skipped");
 
@@ -1333,10 +1339,10 @@ const loopCardSummary = (
   if (status === undefined) {
     return { meta: nodeKindCopy(loop), aria: `loop, up to ${bound} iterations` };
   }
-  const started = String(iteration === undefined ? 0 : iteration.iteration + 1);
+  const shown = String(iteration === undefined ? 0 : iterationOrdinal(iteration.iteration));
   return {
-    meta: `loop · ${started}/${bound} · ${statusCardCopy(status)}`,
-    aria: `loop, ${started} of ${bound} iterations started, ${formatStatus(status)}`,
+    meta: `loop · ${shown}/${bound} · ${statusCardCopy(status)}`,
+    aria: `loop, iteration ${shown} of ${bound}, ${formatStatus(status)}`,
   };
 };
 
@@ -1480,7 +1486,7 @@ const appendLoopBody = (
       );
       group.setAttribute(
         "aria-label",
-        `${bodyNode.id}, loop ${loop.id} body step ${String(bodyNode.ordinal + 1)}, iteration ${String(iteration.iteration)}, ${formatStatus(execution.status)}`,
+        `${bodyNode.id}, loop ${loop.id} body step ${String(bodyNode.ordinal + 1)}, iteration ${String(iterationOrdinal(iteration.iteration))}, ${formatStatus(execution.status)}`,
       );
     }
     const selection = createSvgElement("rect");

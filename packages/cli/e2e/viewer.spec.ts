@@ -543,21 +543,21 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   await page.getByRole("button", { name: /Run loop-run, running/u }).click();
   await expect(page.locator("#execution-list button")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: /^draft, loop refine body step 1, iteration 1, succeeded$/u }),
+    page.getByRole("button", { name: /^draft, loop refine body step 1, iteration 2, succeeded$/u }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", {
-      name: /^gate, loop refine body step 2, iteration 1, waiting for approval$/u,
+      name: /^gate, loop refine body step 2, iteration 2, waiting for approval$/u,
     }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /^judge, loop refine body step 3, iteration 1, pending$/u }),
+    page.getByRole("button", { name: /^judge, loop refine body step 3, iteration 2, pending$/u }),
   ).toBeVisible();
   await loopCard.click({ position: { x: 60, y: 20 } });
   await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
     "loop · 2/3 · ◐ Running",
   );
-  await expect(loopCard).toHaveAttribute("aria-label", /loop, 2 of 3 iterations started, running/u);
+  await expect(loopCard).toHaveAttribute("aria-label", /loop, iteration 2 of 3, running/u);
   await expect(page.locator("#evidence-placeholder")).toBeVisible();
   await expect(page.locator("#evidence-placeholder")).toHaveText(
     "A loop node does not capture evidence. Select a body execution under Loop iterations.",
