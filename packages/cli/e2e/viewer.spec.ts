@@ -1616,11 +1616,11 @@ test("the run inspector offers a cancel fallback only while the run is live", as
   const copyKeepsFocus = (): Promise<boolean> =>
     copy.evaluate((element) => element === document.activeElement);
   expect(await copyKeepsFocus()).toBe(true);
-  for (let cycle = 0; cycle < 2; cycle += 1) {
-    await page.waitForResponse(
-      (response) => new URL(response.url()).pathname === `/api/runs/${running.runId}`,
-    );
+  const focusedCopy = await copy.elementHandle();
+  if (focusedCopy === null) {
+    throw new Error("The cancel command copy control was not rendered.");
   }
+  await page.waitForFunction((element) => !element.isConnected, focusedCopy);
   expect(await copyKeepsFocus()).toBe(true);
 
   await page.setViewportSize({ width: 390, height: 844 });
