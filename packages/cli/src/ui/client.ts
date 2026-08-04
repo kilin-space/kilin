@@ -6,7 +6,6 @@ import type {
   ApprovalWorkflowNodeDto,
   BoundedOutputResponse,
   CurrentWorkflowResponse,
-  LoopBodyWorkflowNodeDto,
   LoopIterationDto,
   LoopWorkflowNodeDto,
   NodeRunDto,
@@ -75,7 +74,6 @@ interface ViewerState {
   decisionNoteDraft: string;
   decisionSubmitting: boolean;
   decisionError: string | undefined;
-  graphFocusKey: string | undefined;
   pollFailures: number;
 }
 
@@ -98,7 +96,6 @@ const state: ViewerState = {
   decisionNoteDraft: "",
   decisionSubmitting: false,
   decisionError: undefined,
-  graphFocusKey: undefined,
   pollFailures: 0,
 };
 
@@ -234,16 +231,31 @@ const focusedAttribute = (
   return element.getAttribute(attribute) ?? undefined;
 };
 
+/** Identifies a graph card: a top-level node id, or `loopNodeId/bodyNodeId` for a loop body card. */
+const composeCardKey = (loopNodeId: string, bodyNodeId: string): string =>
+  `${loopNodeId}/${bodyNodeId}`;
+
+const containerCardKey = (cardKey: string): string => cardKey.split("/")[0] ?? cardKey;
+
 const graphCardKey = (card: Element): string => {
   const bodyNodeId = card.getAttribute("data-body-node-id");
   if (bodyNodeId === null) {
     return card.getAttribute("data-node-id") ?? "";
   }
-  return `${card.getAttribute("data-loop-node-id") ?? ""}/${bodyNodeId}`;
+  return composeCardKey(card.getAttribute("data-loop-node-id") ?? "", bodyNodeId);
 };
 
 const graphCards = (): SVGGElement[] =>
   Array.from(elements.graph.querySelectorAll<SVGGElement>(".dag-node"));
+
+const graphCardIndex = (cards: readonly SVGGElement[], cardKey: string | undefined): number =>
+  cards.findIndex((card) => graphCardKey(card) === cardKey);
+
+const setRovingTabIndex = (cards: readonly SVGGElement[], focusedIndex: number): void => {
+  for (const [index, card] of cards.entries()) {
+    card.setAttribute("tabindex", index === focusedIndex ? "0" : "-1");
+  }
+};
 
 const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   const activeElement = document.activeElement;
@@ -359,10 +371,9 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
   }
   if (target.type === "graph") {
     const cards = graphCards();
-    const containerKey = target.cardKey.split("/")[0] ?? target.cardKey;
-    const index = cards.findIndex((card) => graphCardKey(card) === target.cardKey);
+    const index = graphCardIndex(cards, target.cardKey);
     const fallbackIndex =
-      index >= 0 ? index : cards.findIndex((card) => graphCardKey(card) === containerKey);
+      index >= 0 ? index : graphCardIndex(cards, containerCardKey(target.cardKey));
     if (fallbackIndex >= 0) {
       updateGraphRovingFocus(cards, fallbackIndex);
     }
@@ -811,7 +822,6 @@ const ensureNodeSelection = (): void => {
   if (graph === undefined || graph.nodes.length === 0) {
     state.selectedNodeId = undefined;
     state.selectedExecutionId = undefined;
-    state.graphFocusKey = undefined;
     return;
   }
   const orderedNodes = graph.executionOrder
@@ -821,7 +831,6 @@ const ensureNodeSelection = (): void => {
     state.selectedNodeId = orderedNodes[0]?.id;
     state.selectedExecutionId = state.selectedNodeId;
   }
-  state.graphFocusKey = selectedGraphCardKey();
 };
 
 const historyCountCopy = (runs: readonly RunSummaryDto[] | undefined): string => {
@@ -973,24 +982,23 @@ const containerPadRight = 48;
 const containerHeaderHeight = 58;
 const containerFeedbackLane = 34;
 const containerPadBottom = 12;
+const surfaceInset = 8;
+const surfaceRise = 10;
 
 interface CardSize {
   readonly width: number;
   readonly height: number;
 }
 
-interface RankedLayout {
+interface RankedLayout extends CardSize {
   readonly positions: ReadonlyMap<string, GraphPosition>;
-  readonly width: number;
-  readonly height: number;
 }
 
-interface GraphCardLayout {
+interface GraphCardLayout extends CardSize {
   readonly position: GraphPosition;
-  readonly width: number;
-  readonly height: number;
+  /** Where an outgoing edge leaves the card, relative to its top edge. */
+  readonly exitY: number;
   readonly body?: RankedLayout;
-  readonly exitY?: number;
 }
 
 interface LayoutNode {
@@ -1044,8 +1052,8 @@ const rankedLayout = (
     const size = sizeOf(node);
     positions.set(node.id, { x: origin.x + column, y: origin.y + lane });
     laneOffsets.set(rank, lane + size.height + gaps.lane);
-    width = Math.max(width, column + size.width);
-    height = Math.max(height, lane + size.height);
+    width = Math.max(width, origin.x + column + size.width);
+    height = Math.max(height, origin.y + lane + size.height);
   }
   return { positions, width, height };
 };
@@ -1059,15 +1067,15 @@ const orderedGraphNodes = (graph: WorkflowGraphDto): readonly WorkflowNodeDto[] 
 
 const loopBodyLayout = (loop: LoopWorkflowNodeDto): RankedLayout =>
   rankedLayout(
-    Array.from(loop.body.nodes).sort((left, right) => left.ordinal - right.ordinal),
+    loop.body.nodes,
     () => ({ width: bodyCardWidth, height: bodyCardHeight }),
     { rank: bodyRankGap, lane: bodyLaneGap },
     { x: containerPadLeft, y: containerHeaderHeight },
   );
 
 const containerSize = (body: RankedLayout): CardSize => ({
-  width: containerPadLeft + body.width + containerPadRight,
-  height: containerHeaderHeight + body.height + containerFeedbackLane + containerPadBottom,
+  width: body.width + containerPadRight,
+  height: body.height + containerFeedbackLane + containerPadBottom,
 });
 
 const graphLayout = (
@@ -1079,17 +1087,14 @@ const graphLayout = (
   readonly height: number;
 } => {
   const nodes = orderedGraphNodes(graph);
-  const bodies = new Map<string, RankedLayout>(
-    nodes
-      .filter(
-        (node): node is LoopWorkflowNodeDto => node.kind === "loop" && node.id === expandedLoopId,
-      )
-      .map((loop) => [loop.id, loopBodyLayout(loop)] as const),
+  const expandedLoop = nodes.find(
+    (node): node is LoopWorkflowNodeDto => node.kind === "loop" && node.id === expandedLoopId,
   );
-  const sizeOf = (node: LayoutNode): CardSize => {
-    const body = bodies.get(node.id);
-    return body === undefined ? { width: cardWidth, height: cardHeight } : containerSize(body);
-  };
+  const expandedBody = expandedLoop === undefined ? undefined : loopBodyLayout(expandedLoop);
+  const sizeOf = (node: LayoutNode): CardSize =>
+    node.id === expandedLoopId && expandedBody !== undefined
+      ? containerSize(expandedBody)
+      : { width: cardWidth, height: cardHeight };
   const ranked = rankedLayout(
     nodes,
     sizeOf,
@@ -1102,19 +1107,20 @@ const graphLayout = (
     if (position === undefined) {
       continue;
     }
-    const body = bodies.get(node.id);
+    const size = sizeOf(node);
+    const body = node.id === expandedLoopId ? expandedBody : undefined;
     const decision = node.kind === "loop" ? body?.positions.get(node.decision.nodeId) : undefined;
     cards.set(node.id, {
       position,
-      ...sizeOf(node),
+      ...size,
+      exitY: decision === undefined ? size.height / 2 : decision.y + bodyCardHeight / 2,
       ...(body === undefined ? {} : { body }),
-      ...(decision === undefined ? {} : { exitY: decision.y + bodyCardHeight / 2 }),
     });
   }
   return {
     cards,
-    width: Math.max(320, surfacePadding + ranked.width + surfacePadding),
-    height: surfacePadding + ranked.height + surfacePadding,
+    width: Math.max(320, ranked.width + surfacePadding),
+    height: ranked.height + surfacePadding,
   };
 };
 
@@ -1128,7 +1134,7 @@ const createSvgElement = <TagName extends keyof SVGElementTagNameMap>(
   name: TagName,
 ): SVGElementTagNameMap[TagName] => document.createElementNS(svgNamespace, name);
 
-const nodeKindCopy = (node: WorkflowNodeDto | LoopBodyWorkflowNodeDto): string => {
+const nodeKindCopy = (node: WorkflowNodeDto): string => {
   if (node.kind === "agent") {
     return `${node.runtime} · ${node.access.replace("_", " ")}`;
   }
@@ -1138,7 +1144,7 @@ const nodeKindCopy = (node: WorkflowNodeDto | LoopBodyWorkflowNodeDto): string =
   return `loop · up to ${String(node.maxIterations)}`;
 };
 
-const dependencyCopy = (node: WorkflowNodeDto | LoopBodyWorkflowNodeDto): string =>
+const dependencyCopy = (node: WorkflowNodeDto): string =>
   node.dependencies.length === 0 ? "starts first" : `after ${node.dependencies.join(", ")}`;
 
 interface LoopIterationView {
@@ -1158,18 +1164,18 @@ const iterationHasStarted = (iteration: LoopIterationDto): boolean =>
 
 const currentLoopIteration = (loopNodeId: string): LoopIterationView | undefined => {
   const iterations = state.viewMode === "run" ? (state.runDetail?.loopIterations ?? []) : [];
-  const scoped = iterations.filter((iteration) => iteration.loopNodeId === loopNodeId);
+  const started = iterations.filter(
+    (iteration) => iteration.loopNodeId === loopNodeId && iterationHasStarted(iteration),
+  );
   const shown =
-    scoped.find((iteration) =>
+    started.find((iteration) =>
       iteration.executions.some(({ executionId }) => executionId === state.selectedExecutionId),
     ) ??
-    scoped
-      .filter(iterationHasStarted)
-      .reduce<LoopIterationDto | undefined>(
-        (highest, iteration) =>
-          highest === undefined || iteration.iteration > highest.iteration ? iteration : highest,
-        undefined,
-      );
+    started.reduce<LoopIterationDto | undefined>(
+      (highest, iteration) =>
+        highest === undefined || iteration.iteration > highest.iteration ? iteration : highest,
+      undefined,
+    );
   if (shown === undefined) {
     return undefined;
   }
@@ -1195,7 +1201,6 @@ const renderExecutionList = (graph: WorkflowGraphDto | undefined): void => {
     if (node.kind === "loop") {
       const iteration = currentLoopIteration(node.id);
       const bodyList = document.createElement("ol");
-      bodyList.className = "execution-loop-body";
       for (const bodyNode of node.body.nodes) {
         const bodyItem = document.createElement("li");
         const bodyStatus = iteration?.executions.get(bodyNode.id)?.status;
@@ -1308,16 +1313,21 @@ const cubicEdgePath = (startX: number, startY: number, endX: number, endY: numbe
   return `M ${String(startX)} ${String(startY)} C ${String(midpoint)} ${String(startY)}, ${String(midpoint)} ${String(endY)}, ${String(endX)} ${String(endY)}`;
 };
 
+/**
+ * A back-edge that dips through the feedback lane. Both control points sit on `controlY`, so the
+ * curve stays within its control hull however far apart the two cards are vertically.
+ */
 const feedbackEdgePath = (
   startX: number,
   startY: number,
   endX: number,
   endY: number,
-  depth: number,
-): string => {
-  const control = (8 * depth - startY - endY) / 6;
-  return `M ${String(startX)} ${String(startY)} C ${String(startX)} ${String(control)}, ${String(endX)} ${String(control)}, ${String(endX)} ${String(endY)}`;
-};
+  controlY: number,
+): string =>
+  `M ${String(startX)} ${String(startY)} C ${String(startX)} ${String(controlY)}, ${String(endX)} ${String(controlY)}, ${String(endX)} ${String(endY)}`;
+
+const feedbackEdgeApexY = (startY: number, endY: number, controlY: number): number =>
+  (startY + endY) / 8 + 0.75 * controlY;
 
 const expandedLoopNodeId = (graph: WorkflowGraphDto): string | undefined => {
   const selected = graph.nodes.find((node) => node.id === state.selectedNodeId);
@@ -1331,14 +1341,19 @@ interface GraphCardSummary {
   readonly aria: string;
 }
 
-const loopCardSummary = (
-  loop: LoopWorkflowNodeDto,
+const graphCardSummary = (
+  node: WorkflowNodeDto,
   status: string | undefined,
   iteration: LoopIterationView | undefined,
 ): GraphCardSummary => {
-  const bound = String(loop.maxIterations);
+  if (node.kind !== "loop") {
+    return status === undefined
+      ? { meta: nodeKindCopy(node), aria: nodeKindCopy(node) }
+      : { meta: statusCardCopy(status), aria: formatStatus(status) };
+  }
+  const bound = String(node.maxIterations);
   if (status === undefined) {
-    return { meta: nodeKindCopy(loop), aria: `loop, up to ${bound} iterations` };
+    return { meta: nodeKindCopy(node), aria: `loop, up to ${bound} iterations` };
   }
   const shown = String(iteration === undefined ? 0 : iterationOrdinal(iteration.iteration));
   return {
@@ -1354,10 +1369,7 @@ const activateGraphCard = (
 ): void => {
   card.addEventListener("click", activate);
   card.addEventListener("focus", () => {
-    state.graphFocusKey = graphCardKey(card);
-    for (const candidate of cards) {
-      candidate.setAttribute("tabindex", candidate === card ? "0" : "-1");
-    }
+    setRovingTabIndex(cards, cards.indexOf(card));
   });
   card.addEventListener("keydown", (event: KeyboardEvent) => {
     const position = cards.indexOf(card);
@@ -1386,16 +1398,22 @@ const appendLoopBody = (
   container: SVGGElement,
   loop: LoopWorkflowNodeDto,
   card: GraphCardLayout,
-  body: RankedLayout,
   iteration: LoopIterationView | undefined,
   cards: SVGGElement[],
 ): void => {
+  const body = card.body;
+  if (body === undefined) {
+    return;
+  }
   const surface = createSvgElement("rect");
   surface.classList.add("dag-loop-surface");
-  surface.setAttribute("x", "8");
-  surface.setAttribute("y", String(containerHeaderHeight - 10));
-  surface.setAttribute("width", String(card.width - 16));
-  surface.setAttribute("height", String(card.height - containerHeaderHeight - 2));
+  surface.setAttribute("x", String(surfaceInset));
+  surface.setAttribute("y", String(containerHeaderHeight - surfaceRise));
+  surface.setAttribute("width", String(card.width - surfaceInset * 2));
+  surface.setAttribute(
+    "height",
+    String(card.height - containerHeaderHeight + surfaceRise - surfaceInset),
+  );
   surface.setAttribute("rx", "8");
   container.append(surface);
 
@@ -1429,15 +1447,15 @@ const appendLoopBody = (
     const endX = feedbackTo.x + bodyCardWidth / 2 - spread;
     const startY = feedbackFrom.y + bodyCardHeight;
     const endY = feedbackTo.y + bodyCardHeight;
-    const depth = containerHeaderHeight + body.height + 22;
+    const controlY = body.height + containerFeedbackLane;
     const path = createSvgElement("path");
     path.classList.add("dag-edge", "dag-loop-feedback");
-    path.setAttribute("d", feedbackEdgePath(startX, startY, endX, endY, depth));
+    path.setAttribute("d", feedbackEdgePath(startX, startY, endX, endY, controlY));
     path.setAttribute("marker-end", "url(#dag-arrow)");
     const label = createSvgElement("text");
     label.classList.add("dag-loop-edge-label");
     label.setAttribute("x", String((startX + endX) / 2));
-    label.setAttribute("y", String(depth + 10));
+    label.setAttribute("y", String(feedbackEdgeApexY(startY, endY, controlY) + 10));
     setText(label, `${loop.decision.reviseChoice} · ${loop.feedback.input}`);
     container.append(path, label);
   }
@@ -1531,12 +1549,8 @@ const updateGraphRovingFocus = (cards: readonly SVGGElement[], nextIndex: number
     return;
   }
   const normalizedIndex = Math.min(Math.max(nextIndex, 0), cards.length - 1);
-  const focused = cards[normalizedIndex];
-  state.graphFocusKey = focused === undefined ? undefined : graphCardKey(focused);
-  for (const [index, card] of cards.entries()) {
-    card.setAttribute("tabindex", index === normalizedIndex ? "0" : "-1");
-  }
-  focused?.focus();
+  setRovingTabIndex(cards, normalizedIndex);
+  cards[normalizedIndex]?.focus();
 };
 
 const renderGraph = (): void => {
@@ -1611,7 +1625,7 @@ const renderGraph = (): void => {
       "d",
       cubicEdgePath(
         from.position.x + from.width,
-        from.position.y + (from.exitY ?? from.height / 2),
+        from.position.y + from.exitY,
         to.position.x,
         to.position.y + to.height / 2,
       ),
@@ -1647,13 +1661,7 @@ const renderGraph = (): void => {
       "aria-selected",
       String(node.id === state.selectedNodeId && node.id !== selectedBodyLoopId),
     );
-    const summary =
-      node.kind === "loop"
-        ? loopCardSummary(node, status, iteration)
-        : {
-            meta: status === undefined ? nodeKindCopy(node) : statusCardCopy(status),
-            aria: status === undefined ? nodeKindCopy(node) : formatStatus(status),
-          };
+    const summary = graphCardSummary(node, status, iteration);
     group.setAttribute(
       "aria-label",
       `${node.id}, step ${String(node.ordinal + 1)}, ${summary.aria}`,
@@ -1699,16 +1707,12 @@ const renderGraph = (): void => {
     });
     cards.push(group);
     elements.graph.append(group);
-    if (node.kind === "loop" && card.body !== undefined) {
-      appendLoopBody(group, node, card, card.body, iteration, cards);
+    if (node.kind === "loop") {
+      appendLoopBody(group, node, card, iteration, cards);
     }
   }
 
-  const focusedIndex = cards.findIndex((card) => graphCardKey(card) === state.graphFocusKey);
-  const rovingIndex = focusedIndex === -1 ? 0 : focusedIndex;
-  for (const [index, card] of cards.entries()) {
-    card.setAttribute("tabindex", index === rovingIndex ? "0" : "-1");
-  }
+  setRovingTabIndex(cards, Math.max(0, graphCardIndex(cards, selectedGraphCardKey())));
 };
 
 const renderGraphExpansion = (): void => {
@@ -1753,7 +1757,7 @@ const renderRunInspector = (): void => {
   setText(title, detail.run.runId);
   const list = createPropertyList();
   const runStatus = presentedRunStatus(detail.run);
-  appendProperty(list, "Status", `${statusGlyph(runStatus)} ${statusLabel(runStatus)}`);
+  appendProperty(list, "Status", statusCardCopy(runStatus));
   appendProperty(list, "Started", formatTimestamp(detail.run.startedAt));
   appendDurationProperty(list, detail.run.durationMs, detail.run.startedAt, detail.run.finishedAt);
   appendProperty(list, "Revision (content hash)", shortId(detail.revision.contentHash));
@@ -1874,7 +1878,7 @@ const renderNodeInspector = (): void => {
 
   const nodeRun = selectedNodeRun();
   if (nodeRun !== undefined) {
-    appendProperty(list, "Status", `${statusGlyph(nodeRun.status)} ${statusLabel(nodeRun.status)}`);
+    appendProperty(list, "Status", statusCardCopy(nodeRun.status));
     if (nodeRun.kind === "agent") {
       appendDurationProperty(list, nodeRun.durationMs, nodeRun.startedAt, nodeRun.finishedAt);
       appendProperty(
@@ -3626,7 +3630,7 @@ const applyNodeSelection = (
   const availableOutputs = resetExecutionSelection(preferredStream);
   if (restoreGraphFocus) {
     const cards = graphCards();
-    const index = cards.findIndex((card) => graphCardKey(card) === state.graphFocusKey);
+    const index = graphCardIndex(cards, selectedGraphCardKey());
     if (index >= 0) {
       updateGraphRovingFocus(cards, index);
     }

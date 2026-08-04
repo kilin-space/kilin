@@ -604,6 +604,17 @@ test("a loop collapses to one card, expands on selection, and exposes scoped ite
   ).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#node-inspector")).toContainText("opaque-occurrence-alpha");
   await expect(page.locator("#node-inspector")).toContainText("Iteration0");
+
+  await page.getByRole("button", { name: /^draft, loop refine, iteration 3,/u }).click();
+  await expect(page.locator('[data-node-id="refine"] .dag-node-meta')).toHaveText(
+    "loop · 2/3 · ◐ Running",
+  );
+  await expect(
+    page.getByRole("button", {
+      name: /^gate, loop refine body step 2, iteration 2, waiting for approval$/u,
+    }),
+  ).toBeVisible();
+
   const gateButton = page.getByRole("button", { name: /^gate, loop refine, iteration 2,/u });
   await gateButton.click();
   await expect(page.locator("#decision-dock")).toBeVisible();
@@ -1246,10 +1257,10 @@ test("the banner targets the outer loop node and occurrence of a waiting loop ga
   await banner.click();
 
   const outerNode = page.locator('.dag-node[data-node-id="refine"]');
-  await expect(outerNode).toBeVisible();
   await expect(
     page.locator('.dag-body-node[data-loop-node-id="refine"][data-body-node-id="gate"]'),
   ).toHaveAttribute("aria-selected", "true");
+  await expect(outerNode).toHaveAttribute("aria-selected", "false");
   const dock = page.locator("#decision-dock");
   await expect(dock).toBeVisible();
   await expect(dock.locator(".dock-question")).toHaveText("Approve the revised result?");
