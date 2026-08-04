@@ -428,6 +428,15 @@ const hostBootedAt = (): number => Date.now() - uptime() * 1_000;
  * leader created and the tree still parented under it are both claimed, mirroring what an
  * in-process termination retains — a descendant can leave the group by calling `setsid`, and a
  * descendant of a still-live leader can have its own group.
+ *
+ * The group is claimed even when the leader is gone, which is the case this exists for: an orphan
+ * that outlived its leader is reparented away, so the parent-pid walk finds nothing and the group
+ * is the only remaining evidence. The residual risk is that the recorded pid is recycled, its new
+ * holder leads a group, that holder exits, and its children survive carrying the same group id — at
+ * which point unrelated processes would be signalled. Reaching it needs the pid space to wrap
+ * within one boot, so the boot check above bounds it, and no post-mortem reading distinguishes such
+ * a group from ours. Requiring a live leader instead would trade this for never reaping the orphan
+ * the feature exists to reap.
  */
 const recordedSurvivors = (
   record: RecordedProcess,
@@ -688,11 +697,17 @@ export const runProcess = async (
   // snapshot, which can arrive after the leader has already gone.
   let leaderIdentity = child.pid === undefined ? undefined : processIdentity(child.pid);
   if (leaderIdentity !== undefined) {
-    options.onProcessStarted?.({
-      pid: leaderIdentity.pid,
-      processGroupId: leaderIdentity.processGroupId,
-      startIdentifier: leaderIdentity.startIdentifier,
-    });
+    try {
+      options.onProcessStarted?.({
+        pid: leaderIdentity.pid,
+        processGroupId: leaderIdentity.processGroupId,
+        startIdentifier: leaderIdentity.startIdentifier,
+      });
+    } catch {
+      // Recording the identity only helps a later command reap this tree. A failed state write
+      // here would otherwise reject before the capture pipelines and the escalation timer exist,
+      // abandoning the process group that was just spawned and leaking both capture handles.
+    }
   }
 
   let terminationStatus: TerminationStatus | undefined;

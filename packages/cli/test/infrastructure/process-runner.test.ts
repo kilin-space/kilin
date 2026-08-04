@@ -420,6 +420,74 @@ describe("process execution", () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
+  it("reports the spawned process group leader before the process produces output", async () => {
+    const directory = await createTemporaryDirectory();
+    const paths = nodeOutputPaths(directory, "run", "identity", 0);
+    await prepareNodeOutput(paths);
+    const reported: { pid: number; processGroupId: number; startIdentifier: string }[] = [];
+
+    const outcome = await runProcess(
+      invocation(
+        directory,
+        runtimeResultStagingPath(paths),
+        join(directory, "record.json"),
+        "success",
+      ),
+      paths,
+      {
+        timeoutMs: 1_000,
+        maxOutputBytes: 10_000,
+        terminationGraceMs: 30,
+        onProcessStarted: (identity) => reported.push(identity),
+      },
+    );
+
+    expect(outcome.status).toBe("succeeded");
+    expect(reported).toHaveLength(1);
+    const identity = reported[0];
+    if (identity === undefined) {
+      throw new Error("Expected one reported process identity");
+    }
+    expect(identity.pid).toBeGreaterThan(0);
+    // A detached spawn makes the child its own group leader, which is what lets a later command
+    // reach the whole tree from this one recorded value.
+    expect(identity.processGroupId).toBe(identity.pid);
+    expect(identity.startIdentifier.length).toBeGreaterThan(0);
+  });
+
+  it("runs to completion when recording the process identity fails", async () => {
+    const directory = await createTemporaryDirectory();
+    const paths = nodeOutputPaths(directory, "run", "identity-failure", 0);
+    await prepareNodeOutput(paths);
+    let observedPid: number | undefined;
+
+    const outcome = await runProcess(
+      invocation(
+        directory,
+        runtimeResultStagingPath(paths),
+        join(directory, "record.json"),
+        "success",
+      ),
+      paths,
+      {
+        timeoutMs: 1_000,
+        maxOutputBytes: 10_000,
+        terminationGraceMs: 30,
+        onProcessStarted: (identity) => {
+          observedPid = identity.pid;
+          throw new Error("state write failed");
+        },
+      },
+    );
+
+    // Losing the record costs a later reap, never the run: the group was already spawned and the
+    // capture handles were already open when the write failed.
+    expect(outcome.status).toBe("succeeded");
+    expect(observedPid).toBeGreaterThan(0);
+    await expect(readFile(paths.stdoutPath, "utf8")).resolves.toBe("stdout exact\n");
+    expect(processIsRunning(observedPid ?? 0)).toBe(false);
+  });
+
   it("settles cancellation after a TERM-resistant descendant outlives its group leader", async () => {
     const directory = await createTemporaryDirectory();
     const paths = nodeOutputPaths(directory, "run", "cancel", 0);

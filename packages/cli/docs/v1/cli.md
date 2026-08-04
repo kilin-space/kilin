@@ -189,7 +189,7 @@ a live attached owner. An acquirable lock means no owner exists, so the stale ru
 through the existing path and reported as not cancellable; reconciliation is never reported as a
 successful cancellation. Cancelling a live run still adds no PID file, lease, daemon, or direct
 inter-process signal: the owner observes a durable request rather than being signalled. Signalling a
-recorded process is reserved for [`resume`](#resume), where there is no owner left to ask.
+recorded process is reserved for [`resume`](#retry-and-resume), where there is no owner left to ask.
 
 ## `runs list`
 
