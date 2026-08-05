@@ -220,6 +220,9 @@
             "type": "string",
             "pattern": "^[a-z][a-z0-9_]{0,63}$"
           }
+        },
+        "schema": {
+          "anyOf": [{ "type": "object" }, { "type": "string" }]
         }
       },
       "allOf": [
@@ -238,7 +241,8 @@
               "path": {
                 "type": "string"
               },
-              "choices": false
+              "choices": false,
+              "schema": false
             }
           },
           "else": {
@@ -254,13 +258,31 @@
               "required": ["choices"],
               "properties": {
                 "path": false,
-                "choices": true
+                "choices": true,
+                "schema": false
               }
             },
             "else": {
-              "properties": {
-                "path": false,
-                "choices": false
+              "if": {
+                "required": ["type"],
+                "properties": {
+                  "type": {
+                    "const": "json"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "path": false,
+                  "choices": false
+                }
+              },
+              "else": {
+                "properties": {
+                  "path": false,
+                  "choices": false,
+                  "schema": false
+                }
               }
             }
           }

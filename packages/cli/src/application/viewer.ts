@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 import { compileWorkflow } from "../domain/compile-workflow.js";
 import { tryParseDecisionPacket } from "../domain/decision-packet.js";
@@ -34,6 +34,7 @@ import type { WorkflowIdentity } from "../domain/workflow-package.js";
 import { sameWorkflowIdentity } from "../domain/workflow-package.js";
 import { openAuthorizedRunFile } from "../infrastructure/authorized-run-file.js";
 import { nodeOutputPaths } from "../infrastructure/process-runner.js";
+import { resolveJsonOutputSchemas } from "../infrastructure/workflow-package.js";
 import { parseWorkflowBytes } from "../infrastructure/workflow-source.js";
 import type {
   BoundedOutputResponse,
@@ -606,6 +607,7 @@ export class ViewerApplication {
     }
     try {
       const definition = parseWorkflowBytes(bytes, "Workflow source");
+      await resolveJsonOutputSchemas(definition, dirname(this.#definitionFile));
       const plan = compileWorkflow(definition);
       if (plan.definition.workflow.id !== this.#scope.identity.workflowId) {
         return invalidWorkflow(

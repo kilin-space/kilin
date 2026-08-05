@@ -236,6 +236,46 @@ edges: []
     );
   });
 
+  it.each([
+    [
+      "an inline object",
+      "    output:\n      type: json\n      schema:\n        type: object\n        required: [findings]\n",
+      { type: "json", schema: { type: "object", required: ["findings"] } },
+    ],
+    [
+      "a package-relative path",
+      "    output:\n      type: json\n      schema: ./schemas/findings.json\n",
+      { type: "json", schema: "./schemas/findings.json" },
+    ],
+  ] as const)("accepts a json output schema as %s", (_name, output, expected) => {
+    const source = canonicalWorkflow.replace(
+      "    access: workspace_write\n    prompt:",
+      `    access: workspace_write\n${output}    prompt:`,
+    );
+
+    expect(parseWorkflowBytes(encoder.encode(source)).nodes[0]).toMatchObject({
+      output: expected,
+    });
+  });
+
+  it.each([
+    ["text", "      type: text\n"],
+    ["decision_packet", "      type: decision_packet\n"],
+    ["choice", "      type: choice\n      choices: [approve, revise]\n"],
+    ["artifact", "      type: artifact\n      path: outputs/report.md\n"],
+  ] as const)("rejects a schema on a %s output", (_name, declaration) => {
+    const source = canonicalWorkflow.replace(
+      "    access: workspace_write\n    prompt:",
+      `    access: workspace_write\n    output:\n${declaration}      schema:\n        type: object\n    prompt:`,
+    );
+
+    expectKilinError(
+      () => parseWorkflowBytes(encoder.encode(source)),
+      "WORKFLOW_SCHEMA_INVALID",
+      "nodes[0].output.schema",
+    );
+  });
+
   it("accepts a named input binding structurally", () => {
     const source = canonicalWorkflow.replace(
       "  - from: analyze\n    to: implement",

@@ -1,3 +1,5 @@
+import type { JsonObject } from "./canonical-json.js";
+
 export type WorkflowSchemaVersion = 1;
 
 export const runtimeIds = ["codex", "claude-code", "opencode"] as const;
@@ -35,6 +37,7 @@ export interface AgentOutputDeclarationInput {
   type: string;
   path?: string;
   choices?: readonly string[];
+  schema?: unknown;
 }
 
 export interface TextOutputDeclaration {
@@ -43,6 +46,7 @@ export interface TextOutputDeclaration {
 
 export interface JsonOutputDeclaration {
   type: "json";
+  schema?: JsonObject;
 }
 
 export interface DecisionPacketOutputDeclaration {

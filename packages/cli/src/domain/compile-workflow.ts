@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
-import { serializeCanonicalJson, type JsonObject } from "./canonical-json.js";
+import {
+  canonicalizeJsonValue,
+  serializeCanonicalJson,
+  type JsonObject,
+} from "./canonical-json.js";
 import { KilinError } from "./errors.js";
 import type {
   AgentNode,
@@ -68,7 +72,7 @@ const loopDecisionFields = new Set(["node", "passChoice", "reviseChoice"]);
 const loopFeedbackFields = new Set(["from", "to", "input"]);
 const loopResultFields = new Set(["node"]);
 const approvalNodeFields = new Set(["id", "kind", "question", "join"]);
-const outputFields = new Set(["type", "path", "choices"]);
+const outputFields = new Set(["type", "path", "choices", "schema"]);
 const maximumDeclaredParameters = 32;
 const maximumLoopBodyNodes = 128;
 const maximumLoopBodyEdges = 512;
@@ -375,6 +379,8 @@ const canonicalNode = (node: WorkflowNode): JsonObject => {
       result.output = { path: node.output.path, type: node.output.type };
     } else if (node.output.type === "choice") {
       result.output = { choices: [...node.output.choices], type: node.output.type };
+    } else if (node.output.type === "json" && node.output.schema !== undefined) {
+      result.output = { schema: node.output.schema, type: node.output.type };
     } else {
       result.output = { type: node.output.type };
     }
@@ -607,6 +613,27 @@ const validatedAgentTimeout = (
   return timeoutMs as number;
 };
 
+export const isNormalizedRelativePath = (value: unknown): value is string => {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const segments = value.split("/");
+  const byteLength = Buffer.byteLength(value, "utf8");
+  const hasControlCharacter = Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
+  return (
+    byteLength >= 1 &&
+    byteLength <= 1_024 &&
+    !value.startsWith("/") &&
+    !value.endsWith("/") &&
+    !value.includes("\\") &&
+    !hasControlCharacter &&
+    !segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
+  );
+};
+
 const validatedOutput = (
   output: AgentOutputDeclarationInput | undefined,
   nodeId: string,
@@ -626,6 +653,13 @@ const validatedOutput = (
       "WORKFLOW_GRAPH_INVALID",
       `Node "${nodeId}" uses unsupported output type "${output.type}". Use type "text", "json", "decision_packet", "artifact", or "choice".`,
       `nodes[${String(index)}].output.type`,
+    );
+  }
+  if (output.schema !== undefined && output.type !== "json") {
+    throw new KilinError(
+      "WORKFLOW_GRAPH_INVALID",
+      `Node "${nodeId}" declares a schema for ${output.type} output. Remove the schema.`,
+      `nodes[${String(index)}].output.schema`,
     );
   }
   if (output.type === "choice") {
@@ -681,28 +715,10 @@ const validatedOutput = (
   if (output.type === "artifact") {
     const errorPath = `nodes[${String(index)}].output.path`;
     const errorMessage = `Node "${nodeId}" has an invalid artifact output path. Use 1 through 1,024 UTF-8 bytes in normalized POSIX-relative form with no leading or trailing "/", non-empty segments, "/" separators, and no ".", "..", backslash, or control characters.`;
-    const artifactPath = output.path;
-    if (typeof artifactPath !== "string") {
+    if (!isNormalizedRelativePath(output.path)) {
       throw new KilinError("WORKFLOW_GRAPH_INVALID", errorMessage, errorPath);
     }
-    const segments = artifactPath.split("/");
-    const byteLength = Buffer.byteLength(artifactPath, "utf8");
-    const hasControlCharacter = Array.from(artifactPath).some((character) => {
-      const codePoint = character.codePointAt(0);
-      return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
-    });
-    if (
-      byteLength < 1 ||
-      byteLength > 1_024 ||
-      artifactPath.startsWith("/") ||
-      artifactPath.endsWith("/") ||
-      artifactPath.includes("\\") ||
-      hasControlCharacter ||
-      segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
-    ) {
-      throw new KilinError("WORKFLOW_GRAPH_INVALID", errorMessage, errorPath);
-    }
-    return { type: "artifact", path: artifactPath };
+    return { type: "artifact", path: output.path };
   }
   if (output.path !== undefined) {
     throw new KilinError(
@@ -710,6 +726,31 @@ const validatedOutput = (
       `Node "${nodeId}" declares a path for ${output.type} output. Remove the output path.`,
       `nodes[${String(index)}].output.path`,
     );
+  }
+  if (output.type === "json") {
+    if (output.schema === undefined) {
+      return { type: "json" };
+    }
+    const schemaPath = `nodes[${String(index)}].output.schema`;
+    if (!isRecord(output.schema)) {
+      throw new KilinError(
+        "WORKFLOW_GRAPH_INVALID",
+        `Node "${nodeId}" declares a json output schema that is not an object. Declare the schema as a JSON object.`,
+        schemaPath,
+      );
+    }
+    try {
+      return { type: "json", schema: canonicalizeJsonValue(output.schema) as JsonObject };
+    } catch (error: unknown) {
+      if (error instanceof TypeError) {
+        throw new KilinError(
+          "WORKFLOW_GRAPH_INVALID",
+          `Node "${nodeId}" declares a json output schema that is not canonical JSON. Use finite numbers and safe integers.`,
+          schemaPath,
+        );
+      }
+      throw error;
+    }
   }
   return { type: output.type };
 };

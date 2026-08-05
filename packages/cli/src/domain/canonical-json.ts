@@ -4,7 +4,7 @@ export interface JsonObject {
   [key: string]: JsonValue;
 }
 
-const canonicalizeJsonValue = (value: unknown): JsonValue => {
+export const canonicalizeJsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
     return value;
   }

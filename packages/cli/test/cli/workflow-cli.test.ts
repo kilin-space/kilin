@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { pathExists } from "../helpers/filesystem.js";
 import { isCommandFailure } from "../helpers/subprocess.js";
 import { writeTestWorkflowPackage } from "../helpers/workflow-package.js";
 
@@ -559,5 +560,131 @@ edges: []
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toMatchObject({ type: "error", code, path });
+  });
+
+  it("validates inline and file-referenced json output schemas", async () => {
+    const project = await createTemporaryDirectory();
+    const packageDirectory = await writePackage(
+      project,
+      "schema-review",
+      `schemaVersion: 1
+workflow:
+  id: schema-review
+  name: Schema review
+nodes:
+  - id: scan
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: Scan the change for findings.
+    output:
+      type: json
+      schema: schemas/findings.json
+  - id: summarize
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: Summarize the findings.
+    output:
+      type: json
+      schema:
+        type: object
+        required: [summary]
+        properties:
+          summary: { type: string }
+edges:
+  - from: scan
+    to: summarize
+`,
+    );
+    await mkdir(join(packageDirectory, "schemas"));
+    await writeFile(
+      join(packageDirectory, "schemas", "findings.json"),
+      JSON.stringify({
+        type: "object",
+        required: ["findings"],
+        properties: { findings: { type: "array" } },
+      }),
+    );
+
+    const validated = await runCli(["workflow", "validate", "schema-review", "--json"], project);
+
+    expect(validated).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(validated.stdout)).toMatchObject({
+      outputVersion: 1,
+      valid: true,
+      workflowId: "schema-review",
+      nodeCount: 2,
+      edgeCount: 1,
+      executionOrder: ["scan", "summarize"],
+    });
+  });
+
+  it("rejects malformed or unresolvable json output schemas without invoking a model", async () => {
+    const project = await createTemporaryDirectory();
+    const fakeBin = join(project, "fake-bin");
+    const invocationLog = join(project, "runtime-invocations.log");
+    await mkdir(fakeBin);
+    for (const runtime of ["codex", "claude", "opencode"]) {
+      await writeFile(join(fakeBin, runtime), `#!/bin/sh\necho invoked >> "${invocationLog}"\n`, {
+        mode: 0o755,
+      });
+    }
+    const schemaPackage = (name: string, schemaLines: string): string => `schemaVersion: 1
+workflow:
+  id: ${name}
+  name: ${name}
+nodes:
+  - id: main
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: Inspect the workspace.
+    output:
+      type: json
+${schemaLines}
+edges: []
+`;
+    const cases: [string, string, string, string][] = [
+      [
+        "schema-missing",
+        "      schema: schemas/missing.json\n",
+        "WORKFLOW_PACKAGE_INVALID",
+        "schemas/missing.json",
+      ],
+      [
+        "schema-malformed",
+        "      schema: schemas/findings.json\n",
+        "WORKFLOW_SCHEMA_INVALID",
+        "schemas/findings.json",
+      ],
+      [
+        "schema-inline-malformed",
+        "      schema:\n        type: object\n        bogusKeyword: true\n",
+        "WORKFLOW_SCHEMA_INVALID",
+        "inline",
+      ],
+    ];
+    for (const [name, schemaLines] of cases) {
+      const packageDirectory = await writePackage(project, name, schemaPackage(name, schemaLines));
+      if (name === "schema-malformed") {
+        await mkdir(join(packageDirectory, "schemas"));
+        await writeFile(
+          join(packageDirectory, "schemas", "findings.json"),
+          JSON.stringify({ type: "object", bogusKeyword: true }),
+        );
+      }
+    }
+
+    for (const [name, , code, named] of cases) {
+      const result = await runCli(["workflow", "validate", name, "--json"], project, {
+        PATH: fakeBin,
+      });
+      expect(result).toMatchObject({ exitCode: 2, stderr: "" });
+      const document = JSON.parse(result.stdout) as { code: string; message: string };
+      expect(document).toMatchObject({ outputVersion: 1, type: "error", code });
+      expect(document.message).toContain(named);
+    }
+    expect(await pathExists(invocationLog)).toBe(false);
   });
 });

@@ -11,6 +11,7 @@ import {
   parseWorkflowManifest,
   resolveWorkflowPackage,
 } from "../../src/infrastructure/workflow-package.js";
+import type { WorkflowPackage } from "../../src/domain/workflow-package.js";
 import { writeTestWorkflowPackage } from "../helpers/workflow-package.js";
 
 const temporaryDirectories: string[] = [];
@@ -409,5 +410,331 @@ Confirm the repository is clean before use.
     await expect(assertWorkflowScopeAllowsWorkingDirectory(userPackage, outside)).resolves.toBe(
       await realpath(outside),
     );
+  });
+});
+
+describe("json output schema resolution", () => {
+  const findingsSchema = JSON.stringify({
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    additionalProperties: false,
+    required: ["findings"],
+    properties: {
+      findings: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["severity", "file", "line", "summary"],
+          properties: {
+            severity: { type: "string" },
+            file: { type: "string" },
+            line: { type: "integer" },
+            summary: { type: "string" },
+          },
+        },
+      },
+    },
+  });
+
+  const schemaDefinition = (id: string, schemaLines: string): string => `schemaVersion: 1
+workflow:
+  id: ${id}
+  name: ${id}
+nodes:
+  - id: main
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: Inspect the current workspace.
+    output:
+      type: json
+${schemaLines}
+edges: []
+`;
+
+  const writeSchemaPackage = async (
+    project: string,
+    name: string,
+    definitionSource: string,
+  ): Promise<string> => {
+    const workflowPackage = await writeTestWorkflowPackage(
+      join(project, ".agents", "workflows"),
+      name,
+      `Use ${name} for repository work.`,
+      definitionSource,
+    );
+    return workflowPackage.directory;
+  };
+
+  const writeFindingsSchema = async (
+    packageDirectory: string,
+    content: string | Buffer = findingsSchema,
+  ): Promise<void> => {
+    await mkdir(join(packageDirectory, "schemas"), { recursive: true });
+    await writeFile(join(packageDirectory, "schemas", "findings.json"), content);
+  };
+
+  const resolvePackage = async (project: string, name: string): Promise<WorkflowPackage> =>
+    resolveWorkflowPackage(name, {
+      workingDirectory: project,
+      userWorkflowsDirectory: join(project, "user-workflows"),
+    });
+
+  it.each(["schemas/findings.json", "./schemas/findings.json"] as const)(
+    "embeds the file-referenced schema declared as %s",
+    async (declared) => {
+      const root = await createTemporaryDirectory();
+      const project = join(root, "project");
+      const packageDirectory = await writeSchemaPackage(
+        project,
+        "schema-file",
+        schemaDefinition("schema-file", `      schema: ${declared}\n`),
+      );
+      await writeFindingsSchema(packageDirectory);
+
+      const resolved = await resolvePackage(project, "schema-file");
+
+      expect(resolved.definition.nodes[0]).toMatchObject({
+        output: { type: "json", schema: JSON.parse(findingsSchema) as unknown },
+      });
+    },
+  );
+
+  it("resolves a schema referenced from a loop body node output", async () => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    const packageDirectory = await writeSchemaPackage(
+      project,
+      "loop-schema",
+      `schemaVersion: 1
+workflow:
+  id: loop-schema
+  name: loop-schema
+nodes:
+  - id: review-loop
+    kind: loop
+    maxIterations: 2
+    body:
+      nodes:
+        - id: draft
+          kind: agent
+          runtime: codex
+          access: read_only
+          prompt: Draft findings.
+          output:
+            type: json
+            schema: schemas/findings.json
+        - id: decide
+          kind: agent
+          runtime: codex
+          access: read_only
+          prompt: Decide whether the draft passes.
+          output:
+            type: choice
+            choices: [pass, revise]
+      edges:
+        - from: draft
+          to: decide
+    decision:
+      node: decide
+      passChoice: pass
+      reviseChoice: revise
+    feedback:
+      from: draft
+      to: draft
+      input: notes
+    result:
+      node: draft
+edges: []
+`,
+    );
+    await writeFindingsSchema(packageDirectory);
+
+    const resolved = await resolvePackage(project, "loop-schema");
+
+    expect(resolved.definition.nodes[0]).toMatchObject({
+      kind: "loop",
+      body: {
+        nodes: [
+          { id: "draft", output: { type: "json", schema: JSON.parse(findingsSchema) as unknown } },
+          { id: "decide" },
+        ],
+      },
+    });
+  });
+
+  it.each([
+    ["a missing file", "schemas/missing.json", "does not exist or is unreadable"],
+    ["an absolute path", "/etc/kilin-findings.json", "is invalid"],
+    ["a parent escape", "../findings.json", "is invalid"],
+    ["a repeated separator", "schemas//findings.json", "is invalid"],
+  ] as const)(
+    "rejects a schema path with %s naming the declared path",
+    async (_name, declared, message) => {
+      const root = await createTemporaryDirectory();
+      const project = join(root, "project");
+      await writeSchemaPackage(
+        project,
+        "schema-path",
+        schemaDefinition("schema-path", `      schema: "${declared}"\n`),
+      );
+
+      const resolution = resolvePackage(project, "schema-path");
+      await expect(resolution).rejects.toMatchObject({
+        code: "WORKFLOW_PACKAGE_INVALID",
+        message: expect.stringContaining(declared) as string,
+      });
+      await expect(resolution).rejects.toThrow(message);
+    },
+  );
+
+  it("rejects a schema file escaping through an intermediate symlinked directory", async () => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    const outside = join(root, "outside");
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "findings.json"), findingsSchema);
+    const packageDirectory = await writeSchemaPackage(
+      project,
+      "schema-escape",
+      schemaDefinition("schema-escape", "      schema: schemas/findings.json\n"),
+    );
+    await symlink(outside, join(packageDirectory, "schemas"));
+
+    const resolution = resolvePackage(project, "schema-escape");
+    await expect(resolution).rejects.toMatchObject({
+      code: "WORKFLOW_PACKAGE_INVALID",
+      message: expect.stringContaining("schemas/findings.json") as string,
+    });
+    await expect(resolution).rejects.toThrow("outside the workflow");
+  });
+
+  it("rejects a schema that is a symlink to a regular file inside the package", async () => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    const packageDirectory = await writeSchemaPackage(
+      project,
+      "schema-symlink",
+      schemaDefinition("schema-symlink", "      schema: schemas/findings.json\n"),
+    );
+    await mkdir(join(packageDirectory, "schemas"));
+    await writeFile(join(packageDirectory, "schemas", "target.json"), findingsSchema);
+    await symlink(
+      join(packageDirectory, "schemas", "target.json"),
+      join(packageDirectory, "schemas", "findings.json"),
+    );
+
+    const resolution = resolvePackage(project, "schema-symlink");
+    await expect(resolution).rejects.toMatchObject({
+      code: "WORKFLOW_PACKAGE_INVALID",
+      message: expect.stringContaining("schemas/findings.json") as string,
+    });
+    await expect(resolution).rejects.toThrow("not a symlink");
+  });
+
+  it("rejects a schema file over the 256 KiB byte limit", async () => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    const packageDirectory = await writeSchemaPackage(
+      project,
+      "schema-oversized",
+      schemaDefinition("schema-oversized", "      schema: schemas/findings.json\n"),
+    );
+    await writeFindingsSchema(packageDirectory);
+    await truncate(join(packageDirectory, "schemas", "findings.json"), 262_145);
+
+    const resolution = resolvePackage(project, "schema-oversized");
+    await expect(resolution).rejects.toMatchObject({
+      code: "WORKFLOW_PACKAGE_INVALID",
+      message: expect.stringContaining("schemas/findings.json") as string,
+    });
+    await expect(resolution).rejects.toThrow("byte limit");
+  });
+
+  it.each([
+    ["invalid JSON", "{ not json", "is not valid canonical JSON"],
+    ["non-object JSON", "[1, 2, 3]", "must contain a JSON object"],
+    [
+      "a non-canonical number",
+      '{ "type": "object", "properties": { "level": { "maximum": 1e400 } } }',
+      "is not valid canonical JSON",
+    ],
+  ] as const)("rejects a schema file with %s", async (_name, content, message) => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    const packageDirectory = await writeSchemaPackage(
+      project,
+      "schema-content",
+      schemaDefinition("schema-content", "      schema: schemas/findings.json\n"),
+    );
+    await writeFindingsSchema(packageDirectory, content);
+
+    const resolution = resolvePackage(project, "schema-content");
+    await expect(resolution).rejects.toMatchObject({
+      code: "WORKFLOW_PACKAGE_INVALID",
+      message: expect.stringContaining("schemas/findings.json") as string,
+    });
+    await expect(resolution).rejects.toThrow(message);
+  });
+
+  it.each([
+    ["an unknown keyword", '{ "type": "object", "bogusKeyword": true }', "schemas/findings.json"],
+    [
+      "an external $ref",
+      '{ "type": "object", "properties": { "a": { "$ref": "https://example.com/shared.json" } } }',
+      "schemas/findings.json",
+    ],
+  ] as const)("rejects a file-referenced schema with %s", async (_name, content, named) => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    const packageDirectory = await writeSchemaPackage(
+      project,
+      "schema-malformed",
+      schemaDefinition("schema-malformed", "      schema: schemas/findings.json\n"),
+    );
+    await writeFindingsSchema(packageDirectory, content);
+
+    await expect(resolvePackage(project, "schema-malformed")).rejects.toMatchObject({
+      code: "WORKFLOW_SCHEMA_INVALID",
+      message: expect.stringContaining(named) as string,
+    });
+  });
+
+  it("rejects a malformed inline schema naming the inline source", async () => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    await writeSchemaPackage(
+      project,
+      "schema-inline",
+      schemaDefinition(
+        "schema-inline",
+        "      schema:\n        type: object\n        bogusKeyword: true\n",
+      ),
+    );
+
+    await expect(resolvePackage(project, "schema-inline")).rejects.toMatchObject({
+      code: "WORKFLOW_SCHEMA_INVALID",
+      message: expect.stringContaining("inline") as string,
+    });
+  });
+
+  it("accepts a valid inline schema", async () => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    await writeSchemaPackage(
+      project,
+      "schema-inline",
+      schemaDefinition(
+        "schema-inline",
+        "      schema:\n        type: object\n        required: [findings]\n        properties:\n          findings: { type: array }\n",
+      ),
+    );
+
+    const resolved = await resolvePackage(project, "schema-inline");
+
+    expect(resolved.definition.nodes[0]).toMatchObject({
+      output: { type: "json", schema: { type: "object", required: ["findings"] } },
+    });
   });
 });

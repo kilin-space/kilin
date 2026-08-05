@@ -1,11 +1,14 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { parseDocument, visit } from "yaml";
 
+import { parseCanonicalJson, type JsonValue } from "../domain/canonical-json.js";
+import { isNormalizedRelativePath } from "../domain/compile-workflow.js";
 import { KilinError } from "../domain/errors.js";
+import type { WorkflowCompilationInput } from "../domain/workflow.js";
 import type {
   WorkflowCatalog,
   WorkflowCatalogDiagnostic,
@@ -16,11 +19,14 @@ import type {
   WorkflowScopeKind,
 } from "../domain/workflow-package.js";
 import { isWorkflowKebabId } from "../domain/workflow-package.js";
+import { assertValidJsonSchema } from "./json-schema.js";
 import { maximumWorkflowDefinitionBytes, parseWorkflowBytes } from "./workflow-source.js";
 
 export const workflowManifestFileName = "WORKFLOW.md";
 export const workflowDefinitionFileName = "WORKFLOW.yaml";
 export const projectWorkflowDirectory = join(".agents", "workflows");
+
+export const maximumOutputSchemaBytes = 262_144;
 
 const maximumManifestBytes = 65_536;
 const maximumPackagesPerScope = 2_000;
@@ -273,6 +279,7 @@ const readPackage = async (scope: WorkflowScope, directory: string): Promise<Wor
     await readRegularFile(definitionFile, "Workflow definition", maximumWorkflowDefinitionBytes),
     definitionFile,
   );
+  await resolveJsonOutputSchemas(definition, directory);
   if (definition.workflow.id !== manifest.name) {
     throw packageError(
       `${workflowDefinitionFileName} workflow.id "${definition.workflow.id}" must match package name "${manifest.name}".`,
@@ -288,6 +295,91 @@ const readPackage = async (scope: WorkflowScope, directory: string): Promise<Wor
     definition,
   };
 };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const resolveDeclaredSchema = async (
+  declared: string,
+  packageDirectory: string,
+): Promise<Record<string, unknown>> => {
+  const relativePath = declared.startsWith("./") ? declared.slice(2) : declared;
+  if (!isNormalizedRelativePath(relativePath)) {
+    throw packageError(
+      `The json output schema path "${declared}" is invalid. Use 1 through 1,024 UTF-8 bytes in normalized POSIX-relative form with no leading or trailing "/", non-empty segments, "/" separators, and no ".", "..", backslash, or control characters.`,
+    );
+  }
+  const resolvedFile = resolve(packageDirectory, relativePath);
+  let canonicalFile: string;
+  try {
+    canonicalFile = await realpath(resolvedFile);
+  } catch (error: unknown) {
+    if (isMissingPath(error)) {
+      throw packageError(`The json output schema "${declared}" does not exist or is unreadable.`);
+    }
+    throw error;
+  }
+  if (!isWithin(await realpath(packageDirectory), canonicalFile)) {
+    throw packageError(
+      `The json output schema "${declared}" resolves outside the workflow package. Declare a schema file within the package.`,
+    );
+  }
+  const bytes = await readRegularFile(
+    resolvedFile,
+    `Json output schema "${declared}"`,
+    maximumOutputSchemaBytes,
+  );
+  let parsed: JsonValue;
+  try {
+    parsed = parseCanonicalJson(decoder.decode(bytes));
+  } catch (error: unknown) {
+    if (error instanceof TypeError || error instanceof SyntaxError) {
+      throw packageError(
+        `The json output schema "${declared}" is not valid canonical JSON. ${error.message}`,
+      );
+    }
+    throw error;
+  }
+  if (!isRecord(parsed)) {
+    throw packageError(`The json output schema "${declared}" must contain a JSON object.`);
+  }
+  assertValidJsonSchema(parsed, `from "${declared}"`);
+  return parsed;
+};
+
+const resolveNodeOutputSchemas = async (
+  nodes: WorkflowCompilationInput["nodes"],
+  packageDirectory: string,
+): Promise<void> => {
+  for (const node of nodes) {
+    if (node.kind === "loop") {
+      if ("body" in node && isRecord(node.body) && Array.isArray(node.body.nodes)) {
+        await resolveNodeOutputSchemas(
+          node.body.nodes as WorkflowCompilationInput["nodes"],
+          packageDirectory,
+        );
+      }
+      continue;
+    }
+    if (node.kind !== "agent") {
+      continue;
+    }
+    const output = node.output;
+    if (output?.schema === undefined) {
+      continue;
+    }
+    if (typeof output.schema === "string") {
+      output.schema = await resolveDeclaredSchema(output.schema, packageDirectory);
+    } else if (isRecord(output.schema)) {
+      assertValidJsonSchema(output.schema, "declared inline");
+    }
+  }
+};
+
+export const resolveJsonOutputSchemas = async (
+  definition: WorkflowCompilationInput,
+  packageDirectory: string,
+): Promise<void> => resolveNodeOutputSchemas(definition.nodes, packageDirectory);
 
 const canonicalDirectory = async (
   directory: string,
