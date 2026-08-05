@@ -387,7 +387,7 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     const fallbackIndex =
       index >= 0 ? index : graphCardIndex(cards, containerCardKey(target.cardKey));
     if (fallbackIndex >= 0) {
-      updateGraphRovingFocus(cards, fallbackIndex);
+      updateGraphRovingFocus(cards, fallbackIndex, true);
     }
     return;
   }
@@ -471,7 +471,7 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
         (card) => card.getAttribute("data-node-id") === target.graphNodeId,
       );
       if (index >= 0) {
-        updateGraphRovingFocus(cards, index);
+        updateGraphRovingFocus(cards, index, true);
         return;
       }
     }
@@ -1017,6 +1017,14 @@ interface GraphCardLayout extends CardSize {
   readonly body?: RankedLayout;
 }
 
+interface GraphBox extends GraphPosition, CardSize {}
+
+interface GraphLayout {
+  readonly cards: ReadonlyMap<string, GraphCardLayout>;
+  readonly width: number;
+  readonly height: number;
+}
+
 interface LayoutNode {
   readonly id: string;
   readonly dependencies: readonly string[];
@@ -1094,14 +1102,7 @@ const containerSize = (body: RankedLayout): CardSize => ({
   height: body.height + containerFeedbackLane + containerPadBottom,
 });
 
-const graphLayout = (
-  graph: WorkflowGraphDto,
-  expandedLoopId: string | undefined,
-): {
-  readonly cards: ReadonlyMap<string, GraphCardLayout>;
-  readonly width: number;
-  readonly height: number;
-} => {
+const graphLayout = (graph: WorkflowGraphDto, expandedLoopId: string | undefined): GraphLayout => {
   const nodes = orderedGraphNodes(graph);
   const expandedLoop = nodes.find(
     (node): node is LoopWorkflowNodeDto => node.kind === "loop" && node.id === expandedLoopId,
@@ -1138,6 +1139,78 @@ const graphLayout = (
     width: Math.max(320, ranked.width + surfacePadding),
     height: ranked.height + surfacePadding,
   };
+};
+
+const graphRevealInset = 24;
+
+let latestGraphLayout: GraphLayout | undefined;
+
+const selectedCardBounds = (layout: GraphLayout, cardKey: string): GraphBox | undefined => {
+  const containerId = containerCardKey(cardKey);
+  const card = layout.cards.get(containerId);
+  if (card === undefined) {
+    return undefined;
+  }
+  const bodyNodeId = cardKey === containerId ? undefined : cardKey.slice(containerId.length + 1);
+  const bodyPosition = bodyNodeId === undefined ? undefined : card.body?.positions.get(bodyNodeId);
+  if (bodyPosition === undefined) {
+    return { ...card.position, width: card.width, height: card.height };
+  }
+  return {
+    x: card.position.x + bodyPosition.x,
+    y: card.position.y + bodyPosition.y,
+    width: bodyCardWidth,
+    height: bodyCardHeight,
+  };
+};
+
+/**
+ * The smallest scroll offset that leaves `[start, start + size]` within the viewport and at least
+ * `graphRevealInset` from the edge scrolled toward. A box wider than the viewport keeps whatever
+ * part of it the reader already has.
+ */
+const revealScrollOffset = (
+  start: number,
+  size: number,
+  offset: number,
+  viewport: number,
+  content: number,
+): number => {
+  const inset = Math.min(graphRevealInset, Math.max(0, (viewport - size) / 2));
+  const atNearEdge = start - inset;
+  const atFarEdge = start + size + inset - viewport;
+  const revealed = Math.min(
+    Math.max(offset, Math.min(atNearEdge, atFarEdge)),
+    Math.max(atNearEdge, atFarEdge),
+  );
+  return Math.min(Math.max(revealed, 0), Math.max(0, content - viewport));
+};
+
+const revealSelectedGraphCard = (): void => {
+  const layout = latestGraphLayout;
+  const cardKey = selectedGraphCardKey();
+  if (layout === undefined || cardKey === undefined) {
+    return;
+  }
+  const bounds = selectedCardBounds(layout, cardKey);
+  if (bounds === undefined) {
+    return;
+  }
+  const strip = elements.graphStrip;
+  strip.scrollLeft = revealScrollOffset(
+    bounds.x,
+    bounds.width,
+    strip.scrollLeft,
+    strip.clientWidth,
+    strip.scrollWidth,
+  );
+  strip.scrollTop = revealScrollOffset(
+    bounds.y,
+    bounds.height,
+    strip.scrollTop,
+    strip.clientHeight,
+    strip.scrollHeight,
+  );
 };
 
 const sizeGraphSurface = (width: number, height: number): void => {
@@ -1566,13 +1639,17 @@ const appendLoopBody = (
   }
 };
 
-const updateGraphRovingFocus = (cards: readonly SVGGElement[], nextIndex: number): void => {
+const updateGraphRovingFocus = (
+  cards: readonly SVGGElement[],
+  nextIndex: number,
+  preventScroll = false,
+): void => {
   if (cards.length === 0) {
     return;
   }
   const normalizedIndex = Math.min(Math.max(nextIndex, 0), cards.length - 1);
   setRovingTabIndex(cards, normalizedIndex);
-  cards[normalizedIndex]?.focus();
+  cards[normalizedIndex]?.focus({ preventScroll });
 };
 
 const renderGraph = (): void => {
@@ -1580,6 +1657,7 @@ const renderGraph = (): void => {
   elements.graph.replaceChildren();
   renderExecutionList(graph);
   if (graph === undefined) {
+    latestGraphLayout = undefined;
     const title = createSvgElement("title");
     title.id = "workflow-graph-title";
     setText(title, "Workflow graph unavailable");
@@ -1627,6 +1705,7 @@ const renderGraph = (): void => {
   }
 
   const layout = graphLayout(graph, expandedLoopNodeId(graph));
+  latestGraphLayout = layout;
   const nodeRuns = currentNodeRuns();
   sizeGraphSurface(layout.width, layout.height);
   elements.graph.append(title, description, definitions);
@@ -3749,9 +3828,10 @@ const applyNodeSelection = (
     const cards = graphCards();
     const index = graphCardIndex(cards, selectedGraphCardKey());
     if (index >= 0) {
-      updateGraphRovingFocus(cards, index);
+      updateGraphRovingFocus(cards, index, true);
     }
   }
+  revealSelectedGraphCard();
   if (availableOutputs.length > 0) {
     void selectOutput(state.selectedOutputStream, false);
   }

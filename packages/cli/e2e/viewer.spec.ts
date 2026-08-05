@@ -65,8 +65,38 @@ const documentHasNoHorizontalOverflow = async (page: Page): Promise<boolean> =>
 const graphStripHeight = async (page: Page): Promise<number> =>
   page.locator("#graph-strip").evaluate((element) => element.clientHeight);
 
+const graphStripWidth = async (page: Page): Promise<number> =>
+  page.locator("#graph-strip").evaluate((element) => element.clientWidth);
+
 const graphSurfaceHeight = async (page: Page): Promise<number> =>
   page.locator("#workflow-graph").evaluate((element) => element.getBoundingClientRect().height);
+
+const graphSurfaceWidth = async (page: Page): Promise<number> =>
+  page.locator("#workflow-graph").evaluate((element) => element.getBoundingClientRect().width);
+
+const graphStripScroll = async (page: Page): Promise<{ left: number; top: number }> =>
+  page
+    .locator("#graph-strip")
+    .evaluate((element) => ({ left: element.scrollLeft, top: element.scrollTop }));
+
+const cardWithinGraphStrip = async (page: Page, cardSelector: string): Promise<boolean> =>
+  page.evaluate((selector) => {
+    const strip = document.querySelector("#graph-strip");
+    const card = document.querySelector(selector);
+    if (strip === null || card === null) {
+      return false;
+    }
+    const stripBox = strip.getBoundingClientRect();
+    const cardBox = card.getBoundingClientRect();
+    const left = stripBox.left + strip.clientLeft;
+    const top = stripBox.top + strip.clientTop;
+    return (
+      cardBox.left >= left &&
+      cardBox.top >= top &&
+      cardBox.right <= left + strip.clientWidth &&
+      cardBox.bottom <= top + strip.clientHeight
+    );
+  }, cardSelector);
 
 const keepsDomFocus = (locator: Locator): Promise<boolean> =>
   locator.evaluate((element) => element === document.activeElement);
@@ -1990,6 +2020,100 @@ test("the graph strip expands from the keyboard and stays expanded across polls"
     .toBeLessThan(await graphStripHeight(page));
   await expect(toggle).toBeVisible();
   expect(await keepsDomFocus(toggle)).toBe(true);
+});
+
+test("selecting a loop execution from the inspector reveals its card in the graph strip", async ({
+  page,
+  viewer,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: loopCurrentWorkflow,
+    runList: () => loopRunListResponse(true),
+    runDetail: (runId) => (runId === "loop-run" ? loopRunDetail(true, deadlineAt) : undefined),
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  expect(await graphSurfaceWidth(page)).toBeGreaterThan(await graphStripWidth(page));
+  const judgeCard = '[data-body-node-id="judge"]';
+  expect(await cardWithinGraphStrip(page, judgeCard)).toBe(false);
+  const scrolledBefore = (await graphStripScroll(page)).left;
+
+  await page.locator(".loop-execution-button").filter({ hasText: "judge" }).last().click();
+
+  await expect(page.locator(judgeCard)).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => cardWithinGraphStrip(page, judgeCard)).toBe(true);
+  expect((await graphStripScroll(page)).left).toBeGreaterThan(scrolledBefore);
+  await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
+});
+
+test("the decision banner reveals the gate's card in a narrow graph strip", async ({
+  page,
+  viewer,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([waitingGateSummary("gate-run")]),
+    runDetail: (runId) =>
+      runId === "gate-run"
+        ? gateRunDetail(
+            waitingGateSummary("gate-run"),
+            waitingGateNodes("gate-execution", deadlineAt),
+          )
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  expect(await graphSurfaceWidth(page)).toBeGreaterThan(await graphStripWidth(page));
+  const gateCard = '[data-node-id="gate"]';
+  await page.locator("#graph-strip").evaluate((element) => {
+    element.scrollLeft = 0;
+  });
+  expect(await cardWithinGraphStrip(page, gateCard)).toBe(false);
+
+  await page.locator("#decision-needed-banner").click();
+
+  await expect.poll(() => cardWithinGraphStrip(page, gateCard)).toBe(true);
+  expect((await graphStripScroll(page)).left).toBeGreaterThan(0);
+  await expect(documentHasNoHorizontalOverflow(page)).resolves.toBe(true);
+});
+
+test("a poll keeps the graph strip where the reader scrolled it while a card holds focus", async ({
+  page,
+  viewer,
+}) => {
+  await page.setViewportSize({ width: 1_440, height: 900 });
+  let workflowRequests = 0;
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: () => {
+      workflowRequests += 1;
+      return fanOutCurrentWorkflow();
+    },
+    runList: () => runListResponse([]),
+    runDetail: () => undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const zetaCard = '[data-node-id="zeta"]';
+  await page.locator(zetaCard).click();
+  await expect.poll(() => cardWithinGraphStrip(page, zetaCard)).toBe(true);
+
+  await page.locator("#graph-strip").evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  expect(await cardWithinGraphStrip(page, zetaCard)).toBe(false);
+  expect(await keepsDomFocus(page.locator(zetaCard))).toBe(true);
+
+  const observedRequests = workflowRequests;
+  await expect
+    .poll(() => workflowRequests, { timeout: 10_000 })
+    .toBeGreaterThan(observedRequests + 1);
+
+  expect(await graphStripScroll(page)).toStrictEqual({ left: 0, top: 0 });
+  expect(await keepsDomFocus(page.locator(zetaCard))).toBe(true);
 });
 
 test("an approval note spans lines, stays bounded, and keeps the decision controls reachable", async ({
