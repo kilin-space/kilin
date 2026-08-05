@@ -18,20 +18,31 @@ const pointerSegments = (pointer: string): string[] =>
     .slice(1)
     .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
 
-const appendPathSegment = (path: string, segment: string): string => {
-  if (/^(?:0|[1-9]\d*)$/u.test(segment)) {
-    return `${path}[${segment}]`;
-  }
-  return path.length === 0 ? segment : `${path}.${segment}`;
-};
+const identifierSegmentPattern = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
+
+const appendMemberSegment = (path: string, segment: string): string =>
+  identifierSegmentPattern.test(segment)
+    ? path.length === 0
+      ? segment
+      : `${path}.${segment}`
+    : `${path}[${JSON.stringify(segment)}]`;
 
 const errorPath = (
   error: ErrorObject,
+  value: unknown,
   transformSegment: (segment: string) => string,
 ): string | undefined => {
-  let path = pointerSegments(error.instancePath)
-    .map(transformSegment)
-    .reduce(appendPathSegment, "");
+  let path = "";
+  let container: unknown = value;
+  for (const segment of pointerSegments(error.instancePath)) {
+    path = Array.isArray(container)
+      ? `${path}[${transformSegment(segment)}]`
+      : appendMemberSegment(path, transformSegment(segment));
+    container =
+      container !== null && typeof container === "object"
+        ? (container as Record<string, unknown>)[segment]
+        : undefined;
+  }
   const params: Record<string, unknown> = error.params;
   let property: unknown;
   if (error.keyword === "required") {
@@ -40,13 +51,13 @@ const errorPath = (
     property = params.additionalProperty;
   }
   if (typeof property === "string") {
-    path = appendPathSegment(path, transformSegment(property));
+    path = appendMemberSegment(path, transformSegment(property));
   }
   return path.length === 0 ? undefined : path;
 };
 
-export const schemaErrorPath = (error: ErrorObject): string | undefined =>
-  errorPath(error, (segment) => segment);
+export const schemaErrorPath = (error: ErrorObject, value: unknown): string | undefined =>
+  errorPath(error, value, (segment) => segment);
 
 const sanitizePathSegment = (segment: string): string =>
   Array.from(segment.replaceAll(/[\p{Cc}\p{Cf}]/gu, ""))
@@ -91,7 +102,7 @@ export const validateJsonValue = (
   if (error === undefined) {
     return { message: "The value does not satisfy the declared schema." };
   }
-  const path = errorPath(error, sanitizePathSegment);
+  const path = errorPath(error, value, sanitizePathSegment);
   return {
     ...(path === undefined ? {} : { path }),
     message: error.message ?? "The value does not satisfy the declared schema.",

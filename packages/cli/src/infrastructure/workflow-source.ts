@@ -149,7 +149,7 @@ export const parseWorkflowBytes = (
   const value: unknown = document.toJS({ maxAliasCount: 0 });
   if (!validateWorkflow(value)) {
     const schemaError = validateWorkflow.errors?.[0];
-    const path = schemaError === undefined ? undefined : schemaErrorPath(schemaError);
+    const path = schemaError === undefined ? undefined : schemaErrorPath(schemaError, value);
     const location = path === undefined ? "the workflow root" : `"${path}"`;
     const reason =
       schemaError?.message ?? "the definition does not match workflow schema version 1";
