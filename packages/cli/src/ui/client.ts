@@ -24,6 +24,7 @@ import type {
 
 const svgNamespace = "http://www.w3.org/2000/svg";
 const minimumPollIntervalMs = 1_000;
+const hiddenPollIntervalMs = 15_000;
 const maximumBackoffMs = 30_000;
 const maximumApprovalNoteCharacters = 1_000;
 const maximumHistoryRuns = 50;
@@ -156,6 +157,7 @@ const elements = {
   loopIterationsList: requiredElement("#loop-iterations-list", HTMLElement),
   loopIterationsSection: requiredElement("#loop-iterations-section", HTMLElement),
   nodeInspector: requiredElement("#node-inspector", HTMLElement),
+  notifyToggle: requiredElement("#notify-toggle", HTMLButtonElement),
   outputMeta: requiredElement("#output-meta", HTMLElement),
   outputPanel: requiredElement("#output-panel", HTMLElement),
   outputSection: requiredElement("#output-section", HTMLElement),
@@ -4048,6 +4050,65 @@ const applyInitialSelectionOnce = (): void => {
   void selectRun(targetRunId, { restore });
 };
 
+const notifiedApprovalRunIds = new Set<string>();
+
+const raiseApprovalNotification = (run: RunSummaryDto): void => {
+  try {
+    const notification = new Notification("Kilin — approval needed", {
+      body: `${run.workflowId} is waiting for a decision on run ${shortId(run.runId)}.`,
+      tag: run.runId,
+    });
+    notification.onclick = (): void => {
+      window.focus();
+      notification.close();
+      void selectRun(run.runId);
+    };
+  } catch {
+    // A notification the browser refuses must not interrupt the poll cycle.
+  }
+};
+
+const notifyNewApprovalGates = (runs: readonly RunSummaryDto[]): void => {
+  const listedRunIds = new Set<string>();
+  for (const run of runs) {
+    listedRunIds.add(run.runId);
+    if (run.waitingForApproval !== true) {
+      notifiedApprovalRunIds.delete(run.runId);
+      continue;
+    }
+    if (notifiedApprovalRunIds.has(run.runId)) {
+      continue;
+    }
+    notifiedApprovalRunIds.add(run.runId);
+    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+      raiseApprovalNotification(run);
+    }
+  }
+  for (const runId of notifiedApprovalRunIds) {
+    if (!listedRunIds.has(runId)) {
+      notifiedApprovalRunIds.delete(runId);
+    }
+  }
+};
+
+const notifyToggleLabels: Record<NotificationPermission, string> = {
+  default: "Notify me",
+  granted: "Notifications on",
+  denied: "Notifications blocked",
+};
+
+const renderNotifyToggle = (): void => {
+  if (!("Notification" in window)) {
+    elements.notifyToggle.hidden = true;
+    return;
+  }
+  const permission = Notification.permission;
+  elements.notifyToggle.hidden = false;
+  elements.notifyToggle.disabled = permission === "denied";
+  elements.notifyToggle.setAttribute("aria-pressed", String(permission === "granted"));
+  setText(elements.notifyToggle, notifyToggleLabels[permission]);
+};
+
 const clearPollTimer = (): void => {
   if (pollTimer !== undefined) {
     window.clearTimeout(pollTimer);
@@ -4057,10 +4118,12 @@ const clearPollTimer = (): void => {
 
 const schedulePoll = (): void => {
   clearPollTimer();
-  if (document.hidden || state.session === undefined) {
+  if (state.session === undefined) {
     return;
   }
-  const baseInterval = Math.max(minimumPollIntervalMs, state.session.pollIntervalMs);
+  const baseInterval = document.hidden
+    ? Math.max(hiddenPollIntervalMs, state.session.pollIntervalMs)
+    : Math.max(minimumPollIntervalMs, state.session.pollIntervalMs);
   const backoff = Math.min(baseInterval * 2 ** state.pollFailures, maximumBackoffMs);
   pollTimer = window.setTimeout(() => {
     void pollViewer();
@@ -4068,7 +4131,7 @@ const schedulePoll = (): void => {
 };
 
 const pollViewer = async (): Promise<void> => {
-  if (pollInProgress || document.hidden || state.session === undefined) {
+  if (pollInProgress || state.session === undefined) {
     schedulePoll();
     return;
   }
@@ -4105,6 +4168,7 @@ const pollViewer = async (): Promise<void> => {
     state.pollFailures = 0;
     setText(elements.connectionStatus, "Live");
     elements.appShell.setAttribute("aria-busy", "false");
+    notifyNewApprovalGates(runList.runs);
     renderPresentation();
     maybeRefreshEvidence();
     applyInitialSelectionOnce();
@@ -4166,8 +4230,13 @@ const setEvidenceView = (view: EvidenceView): void => {
 
 window.setInterval(updateLiveElements, liveTickIntervalMs);
 
+renderNotifyToggle();
+
 elements.currentWorkflowButton.addEventListener("click", selectCurrentWorkflow);
 elements.refreshButton.addEventListener("click", refreshNow);
+elements.notifyToggle.addEventListener("click", () => {
+  void Notification.requestPermission().then(renderNotifyToggle);
+});
 elements.decisionNeededBanner.addEventListener("click", () => {
   const waitingNode = waitingApprovalNodeRun();
   if (waitingNode === undefined) {
@@ -4198,8 +4267,7 @@ elements.outputPanel.addEventListener("scroll", () => {
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
-    clearPollTimer();
-    pollController?.abort();
+    schedulePoll();
     return;
   }
   void pollViewer();
