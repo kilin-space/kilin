@@ -206,7 +206,6 @@ const clickNewestNotification = async (page: Page): Promise<void> => {
   });
 };
 
-/** Drives the platform contract the hidden-tab poll cadence is defined against. */
 const setDocumentHidden = async (page: Page, hidden: boolean): Promise<void> => {
   await page.evaluate((isHidden: boolean) => {
     Object.defineProperty(document, "hidden", { configurable: true, get: () => isHidden });
