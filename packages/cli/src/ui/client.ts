@@ -461,7 +461,12 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     return;
   }
   if (target.type === "run-cancel") {
-    elements.runInspector.querySelector<HTMLButtonElement>("#cancel-run")?.focus();
+    const cancel = elements.runInspector.querySelector<HTMLButtonElement>("#cancel-run");
+    if (cancel === null || cancel.disabled) {
+      elements.runInspector.focus();
+      return;
+    }
+    cancel.focus();
     return;
   }
   if (target.type === "decision-needed") {

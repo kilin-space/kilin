@@ -2460,7 +2460,10 @@ test("a hidden tab's reduced poll leaves the selected stream alone until the tab
   await setDocumentHidden(page, true);
   const listWhenHidden = listRequests;
   const streamWhenHidden = streamRequests;
-  await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(listWhenHidden);
+  // The counter rises when a poll is issued, not when the client has handled it. Waiting for a
+  // second hidden poll proves the first one ran to the point where it would have refreshed the
+  // stream, because the client only schedules the next poll once the previous one has finished.
+  await expect.poll(() => listRequests, { timeout: 40_000 }).toBeGreaterThan(listWhenHidden + 1);
   expect(streamRequests).toBe(streamWhenHidden);
 
   // Resuming proves the silence came from hiding the tab, not from a stream that stopped tailing.
@@ -2472,23 +2475,27 @@ test("a browser without the Notifications API hides the control and keeps the vi
   page,
   viewer,
 }) => {
+  test.slow();
   const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  const secondRunId = "run-no-notifications-later";
   await page.addInitScript(() => {
     Reflect.deleteProperty(window, "Notification");
   });
   let listRequests = 0;
+  let secondRunWaiting = false;
   await installWorldRoutes(page, viewer.origin, {
     currentWorkflow: gateCurrentWorkflow,
     runList: () => {
       listRequests += 1;
-      return runListResponse([waitingGateSummary("run-no-notifications")]);
+      return runListResponse(
+        secondRunWaiting
+          ? [waitingGateSummary("run-no-notifications"), waitingGateSummary(secondRunId)]
+          : [waitingGateSummary("run-no-notifications")],
+      );
     },
     runDetail: (runId) =>
-      runId === "run-no-notifications"
-        ? gateRunDetail(
-            waitingGateSummary("run-no-notifications"),
-            waitingGateNodes("gate-execution-1", deadlineAt),
-          )
+      runId === "run-no-notifications" || runId === secondRunId
+        ? gateRunDetail(waitingGateSummary(runId), waitingGateNodes("gate-execution-1", deadlineAt))
         : undefined,
   });
   await openViewer(page, viewer.launchUrl);
@@ -2497,6 +2504,16 @@ test("a browser without the Notifications API hides the control and keeps the vi
   await expect(page.locator("#refresh-button")).toBeVisible();
   const observedRequests = listRequests;
   await expect.poll(() => listRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests + 1);
+  await expect(page.locator("#connection-status")).toHaveText("Live");
+
+  // A visible tab never reaches the notification feature check, so only a hidden poll proves the
+  // missing API is tolerated there. Reading the permission of an absent API throws inside the poll,
+  // which would skip the render below and strand the cycle in backoff.
+  await setDocumentHidden(page, true);
+  secondRunWaiting = true;
+  await expect(page.locator(`.history-button[data-run-id="${secondRunId}"]`)).toBeVisible({
+    timeout: 20_000,
+  });
   await expect(page.locator("#connection-status")).toHaveText("Live");
 });
 
@@ -2906,4 +2923,45 @@ test("the cancel control keeps focus when the run inspector rebuilds", async ({ 
   }
   await page.waitForFunction((element) => !element.isConnected, focusedCancel);
   expect(await keepsDomFocus(cancel)).toBe(true);
+});
+
+test("activating the cancel control keeps focus in the run inspector", async ({ page, viewer }) => {
+  let cancelRequested = false;
+  const summary = (): RunSummaryDto =>
+    cancelRequested
+      ? cancelRequestedSummary("run-cancel-focus")
+      : ordinaryRunningSummary("run-cancel-focus");
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([summary()]),
+    runDetail: (runId) =>
+      runId === "run-cancel-focus" ? gateRunDetail(summary(), runningNodes()) : undefined,
+  });
+  const heldCancel = deferred<Route>();
+  await page.route(`${viewer.origin}/api/runs/run-cancel-focus/cancel`, (route) => {
+    cancelRequested = true;
+    heldCancel.resolve(route);
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const inspector = page.locator("#run-inspector");
+  const cancel = page.locator("#cancel-run");
+  await cancel.focus();
+  await page.keyboard.press("Enter");
+
+  // The request is still in flight, so the control is on screen but disabled and cannot hold focus.
+  await expect(cancel).toBeDisabled();
+  expect(await keepsDomFocus(inspector)).toBe(true);
+
+  const response: RunCancellationResponse = {
+    outputVersion: 1,
+    runId: "run-cancel-focus",
+    cancelRequestedAt: "2026-07-26T01:00:30.000Z",
+  };
+  await fulfillJson(await heldCancel.promise, response);
+  await expect(cancel).toHaveCount(0);
+  await expect(
+    inspector.getByRole("term").filter({ hasText: "Cancellation requested" }),
+  ).toBeVisible();
+  expect(await keepsDomFocus(inspector)).toBe(true);
 });

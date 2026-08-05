@@ -91,7 +91,7 @@ export const viewerHtml = `<!doctype html>
             <p class="eyebrow">Selection</p>
             <h2 id="inspector-heading">Inspector</h2>
           </div>
-          <div id="run-inspector" class="inspector-section"></div>
+          <div id="run-inspector" class="inspector-section" tabindex="-1"></div>
           <div id="node-inspector" class="inspector-section"></div>
           <section id="loop-iterations-section" class="inspector-section" aria-labelledby="loop-iterations-heading" hidden>
             <h3 id="loop-iterations-heading">Loop iterations</h3>
