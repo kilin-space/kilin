@@ -159,6 +159,14 @@ parameter override, so a repeated run cannot silently change its inputs.
 
 **Consequence:** The cancel route reuses the decision route's guard chain unchanged: numeric-loopback peer, exact Host and Origin, session cookie plus `X-Kilin-CSRF`, a decoded path segment, and exact workflow-identity-plus-canonical-cwd scoping whose failure is the same 404 a nonexistent run returns. It accepts an empty object, carries no actor and no note, and returns the latched `cancelRequestedAt`. A run that is no longer cancellable is refused with `RUN_NOT_CANCELLABLE` and HTTP 409 rather than a server error. Every other boundary in D-013 holds: the viewer starts no run, edits no workflow, schedules nothing, executes no Proposed Action, and adds no daemon mode, WebSocket, public API, raw filesystem path parameter, or runtime adapter.
 
+### D-017 — JSON outputs may declare a schema, embedded at compile time
+
+**Decision:** A `json` output may declare `schema` as an inline JSON object or as a package-relative path to a JSON file. A file-referenced schema is resolved and embedded into the definition when the package is read, before compilation, so the normalized definition and the revision content hash cover the schema object rather than the path. Schemas are JSON Schema 2020-12 and are compiled with the already-pinned Ajv under strict options; a schema must be a JSON object, and the 2020-12 boolean schema form is not supported.
+
+**Reason:** Embedding at compile time keeps run revisions immutable and self-contained: `rerun` recompiles the stored definition and never re-reads the package, so a schema that remained a path reference could change or disappear beneath a stored revision. Strict compilation fails closed on unknown keywords, unknown `format` values, strict type, tuple, and `required` violations, and external or unresolvable `$ref` references instead of silently ignoring parts of an authored contract, and it needs no new dependency.
+
+**Consequence:** Editing a referenced schema file produces a new revision. A malformed schema fails package loading with `WORKFLOW_SCHEMA_INVALID` and an unresolvable schema file with `WORKFLOW_PACKAGE_INVALID`, both before any provider is invoked, and a schema-violating document fails its producer with `NODE_OUTPUT_INVALID` under the existing retry policy. Schemas are inert data: nothing remote is ever fetched, and boolean schemas remain rejected.
+
 ## Delivery evidence
 
 The canonical [release gate](../../../../RELEASING.md#release-gate) owns deterministic

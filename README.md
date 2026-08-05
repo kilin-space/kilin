@@ -163,7 +163,8 @@ kilin ui change-review --cwd "$PWD"
 ```
 
 The repository's `parallel-change-review` example shows independent checks running before the
-summary and approval gate:
+summary and approval gate; each check's `json` output declares a schema, so Kilin validates the
+returned document against the declared shape:
 
 ![Kilin Viewer showing parallel review tasks running before a summary and approval gate](apps/docs/public/screenshots/viewer-parallel-review.png)
 

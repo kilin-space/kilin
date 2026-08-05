@@ -20,6 +20,8 @@ Names are lowercase ASCII letters, digits, and single hyphens, from 1 through 64
 
 File names and case are exact. Kilin does not recognize `.yml`, lowercase aliases, loose YAML files, or additional compatibility layouts.
 
+A `json` output may also reference a schema file inside the package. The declared path is relative to the package directory: an optional single leading `./`, then 1 through 1,024 UTF-8 bytes in normalized POSIX-relative form with no leading or trailing `/`, non-empty segments separated by `/`, and no `.`, `..`, backslash, or control characters. The file must be a regular file, not a symbolic link; its resolved location must stay inside the package; and it is limited to 262,144 bytes (256 KiB). Schema files are read and validated when the package is loaded, and any violation of these file constraints fails with `WORKFLOW_PACKAGE_INVALID` naming the declared path.
+
 ## Discovery manifest
 
 `WORKFLOW.md` is UTF-8 Markdown with YAML frontmatter:

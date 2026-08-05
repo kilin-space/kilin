@@ -54,6 +54,12 @@ Agent 節點宣告固定執行環境、存取模式、prompt，以及可選的�
 附著式執行，直到符合條件的第二個行程或本機 Viewer 記錄決策；其截止時間使用獨立的
 run 核准逾時。
 
+`json` 輸出可以宣告 `schema`：內嵌的 JSON Schema 2020-12 物件，或指向 package 內 JSON
+檔案的 package 相對路徑，例如 `schema: ./schemas/findings.json`。Kilin 在讀取 package 時編譯
+schema，因此 `workflow validate` 會在不呼叫 provider 的情況下拒絕無效的 schema 或無法解析的
+檔案。回傳的 JSON 文件不滿足 schema 時，產出節點會以 `NODE_OUTPUT_INVALID` 失敗並指出失敗
+路徑；現有重試策略不變。
+
 邊表示相依關係。當目標 Agent 必須使用來源輸出時，需要具名 input binding。
 
 ## 存取模式與並行
