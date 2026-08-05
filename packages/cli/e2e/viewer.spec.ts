@@ -125,9 +125,11 @@ const stubNotifications = async (
     (stub: { readonly permission: string; readonly requestOutcome: string | null }) => {
       const holder = window as unknown as {
         __raisedNotifications: RaisedNotification[];
+        __notificationInstances: { onclick: (() => void) | null }[];
         __permissionRequests: number;
       };
       holder.__raisedNotifications = [];
+      holder.__notificationInstances = [];
       holder.__permissionRequests = 0;
       class StubNotification {
         static permission = stub.permission;
@@ -145,6 +147,7 @@ const stubNotifications = async (
             body: options?.body ?? "",
             tag: options?.tag,
           });
+          holder.__notificationInstances.push(this);
         }
         close(): void {
           this.onclick = null;
@@ -181,6 +184,27 @@ const raisedNotifications = async (page: Page): Promise<readonly RaisedNotificat
     const holder = window as unknown as { __raisedNotifications?: RaisedNotification[] };
     return holder.__raisedNotifications ?? [];
   });
+
+/**
+ * Invokes the handler the viewer attached to the newest raised notification, as the desktop shell
+ * does when the reader clicks it. The retained instances stay in the page because their `onclick`
+ * cannot cross the `page.evaluate` boundary.
+ */
+const clickNewestNotification = async (page: Page): Promise<void> => {
+  await page.evaluate(() => {
+    const holder = window as unknown as {
+      __notificationInstances?: { onclick: (() => void) | null }[];
+    };
+    const notification = holder.__notificationInstances?.at(-1);
+    if (notification === undefined) {
+      throw new Error("No notification was raised, so none could be clicked.");
+    }
+    if (notification.onclick === null) {
+      throw new Error("The raised notification carries no click handler.");
+    }
+    notification.onclick();
+  });
+};
 
 /** Drives the platform contract the hidden-tab poll cadence is defined against. */
 const setDocumentHidden = async (page: Page, hidden: boolean): Promise<void> => {
@@ -2493,6 +2517,16 @@ test("a gate arriving while the tab is hidden notifies once and is decidable on 
   await expect(banner).toBeVisible();
   await banner.click();
   await expect(page.locator("#decision-approve")).toBeVisible();
+
+  // Leaving the run first is what makes the notification click observable: the reader is somewhere
+  // else when the desktop shell delivers it.
+  const inspectorTitle = page.locator("#run-inspector .inspector-title");
+  await page.locator("#current-workflow-button").click();
+  await expect(inspectorTitle).toHaveText("Current definition");
+
+  await clickNewestNotification(page);
+  await expect(inspectorTitle).toHaveText("run-hidden-gate");
+  await expect(page.locator("#decision-approve")).toBeVisible();
 });
 
 test("a gate raises no notification while the tab is visible or while permission is withheld", async ({
@@ -2548,7 +2582,7 @@ test("a gate raises no notification while the tab is visible or while permission
   expect(await raisedNotifications(page)).toHaveLength(0);
 });
 
-test("cancelling a run from the inspector latches before the next poll and survives it", async ({
+test("cancelling a run from the inspector latches before the next poll and holds once the server agrees", async ({
   page,
   viewer,
 }) => {
@@ -2590,10 +2624,73 @@ test("cancelling a run from the inspector latches before the next poll and survi
 
   await expect(cancel).toHaveCount(0);
   await expect(requested).toBeVisible();
+  await expect(page.locator("#cancel-announcement")).toHaveText("Cancellation requested.");
   expect(listRequests).toBe(pollsAtClick);
   expect(cancelBody).toBe("{}");
 
   await expect.poll(() => listRequests, { timeout: 10_000 }).toBeGreaterThan(pollsAtClick + 1);
+  await expect(cancel).toHaveCount(0);
+  await expect(requested).toBeVisible();
+});
+
+// The client discards a losing poll two ways: it aborts one that is still in flight, and it
+// rechecks the abort flag once the responses have settled. Only the abort is covered here. Reaching
+// the recheck needs the body reads to have completed while the continuation that assigns state has
+// not yet run, an ordering no browser-driven test can force, so a test claiming it would pass only
+// by luck.
+test("a poll still in flight when a cancellation lands is discarded instead of overwriting it", async ({
+  page,
+  viewer,
+}) => {
+  let listRequests = 0;
+  const heldPollRoute = deferred<Route>();
+  const runningList = (): ScopedRunListResponse =>
+    runListResponse([ordinaryRunningSummary("run-cancel-race")]);
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: runningList,
+    runDetail: (runId) =>
+      runId === "run-cancel-race"
+        ? gateRunDetail(ordinaryRunningSummary("run-cancel-race"), runningNodes())
+        : undefined,
+  });
+  // Only the opening poll is answered. The next one is held across the click and released with the
+  // snapshot it was issued against, and no later poll is answered at all, so nothing but the
+  // client's own state can keep the cancellation on screen.
+  await page.route(`${viewer.origin}/api/runs`, async (route) => {
+    listRequests += 1;
+    if (listRequests === 1) {
+      await fulfillJson(route, runningList());
+      return;
+    }
+    if (listRequests === 2) {
+      heldPollRoute.resolve(route);
+    }
+  });
+  await page.route(`${viewer.origin}/api/runs/run-cancel-race/cancel`, async (route) => {
+    const response: RunCancellationResponse = {
+      outputVersion: 1,
+      runId: "run-cancel-race",
+      cancelRequestedAt: "2026-07-26T01:00:30.000Z",
+    };
+    await fulfillJson(route, response);
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const inspector = page.locator("#run-inspector");
+  const cancel = page.locator("#cancel-run");
+  const requested = inspector.getByRole("term").filter({ hasText: "Cancellation requested" });
+  await expect(cancel).toBeVisible();
+
+  const heldPoll = await heldPollRoute.promise;
+  await cancel.click();
+  await expect(cancel).toHaveCount(0);
+  await expect(requested).toBeVisible();
+
+  await fulfillJson(heldPoll, runningList());
+  // The poll that follows proves the released one finished being handled, whether it was discarded
+  // or applied; it is never answered, so it cannot heal a lost cancellation.
+  await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(2);
   await expect(cancel).toHaveCount(0);
   await expect(requested).toBeVisible();
 });
@@ -2638,6 +2735,7 @@ test("a refused cancellation keeps the server's reason after the run leaves runn
 
   const status = page.locator("#cancel-status");
   await expect(status).toHaveText(refusal);
+  await expect(page.locator("#cancel-announcement")).toHaveText(refusal);
 
   await expect.poll(() => listRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests + 1);
   await expect(cancel).toHaveCount(0);
