@@ -235,8 +235,12 @@ Kilin does not claim exactly-once execution. A crash after spawn may leave works
 `run`, `trigger`, and `rerun` perform that reconciliation and replacement creation without releasing
 and reacquiring the descriptor. Reconciling history commands check each distinct active cwd before
 querying and ignore only live `WORKSPACE_BUSY` groups. Viewer GET projections are pure reads. The
-two viewer mutation paths perform only the existing guarded stale-owner check before the decision
-write or the cancellation latch; they add no generic reconciliation surface.
+two viewer mutation paths reuse that same owner probe: a busy lock means a live owner is attached,
+so the path records the decision or latches the cancellation; acquiring the lock means none is, so
+the path reconciles that canonical cwd's stale runs and then refuses — `RUN_NOT_CANCELLABLE` for a
+cancellation, and `APPROVAL_NOT_WAITING` for a decision, because the reconciled run holds no
+waiting gate. That reconciliation is the existing scoped one; the paths add no generic
+reconciliation surface.
 
 Rerun repeatability is deliberately narrow: the normalized workflow, dependency plan, authored
 node timeouts, persisted run options, revision identity, and canonical cwd are preserved.
@@ -256,7 +260,8 @@ read-only Viewer connection validates the current baseline and reports the state
 one has run. Viewer
 projections use a distinct read-only, `query_only` connection and validate the same baseline before
 querying. Each mutation route opens the ordinary guarded state path only long enough to record one
-eligible Human Decision or latch one cancellation request. Transactions are short and never remain
+eligible Human Decision, latch one cancellation request, or reconcile that canonical cwd's stale
+runs before refusing an unowned one. Transactions are short and never remain
 open while a provider runs.
 Private POSIX modes are `0700` for state directories and `0600` for database sidecars, locks, and
 output files, subject to stricter host policy.
