@@ -61,6 +61,7 @@ import type {
   GitWorktreeQualification,
   ProvisionedGitWorktree,
 } from "../infrastructure/git-workspace.js";
+import { validateJsonValue } from "../infrastructure/json-schema.js";
 import {
   cleanupRuntimeResult,
   loopResultPath,
@@ -138,6 +139,8 @@ const choiceOutputInstructions =
 const jsonOutputInstructions =
   "Return exactly one JSON document as the final message, without Markdown fences, explanation, or trailing text.";
 
+const jsonSchemaOutputInstructions = `${jsonOutputInstructions} The document must satisfy the declared schema.`;
+
 const resolvedAgentPrompt = (
   node: AgentNode,
   resolvedInputs?: string,
@@ -150,12 +153,18 @@ const resolvedAgentPrompt = (
         ? serializeCanonicalJson({ path: node.output.path, type: node.output.type })
         : node.output.type === "choice"
           ? serializeCanonicalJson({ choices: node.output.choices, type: node.output.type })
-          : serializeCanonicalJson({ type: node.output.type });
+          : node.output.type === "json" && node.output.schema !== undefined
+            ? serializeCanonicalJson({ schema: node.output.schema, type: node.output.type })
+            : serializeCanonicalJson({ type: node.output.type });
     const outputInstructions =
       node.output.type === "choice"
         ? `\n${choiceOutputInstructions}`
         : node.output.type === "json"
-          ? `\n${jsonOutputInstructions}`
+          ? `\n${
+              node.output.schema === undefined
+                ? jsonOutputInstructions
+                : jsonSchemaOutputInstructions
+            }`
           : node.output.type === "decision_packet"
             ? `\n\n${decisionPacketOutputInstructions}`
             : "";
@@ -427,14 +436,27 @@ const validateDeclaredOutput = async (
   if (node.output?.type !== "json") {
     return;
   }
+  let value: JsonValue;
   try {
-    parseCanonicalJson(finalMessage);
+    value = parseCanonicalJson(finalMessage);
   } catch {
     throw new KilinError(
       "NODE_OUTPUT_INVALID",
       `Node "${node.id}" did not return one valid JSON value with finite numbers and safe integers. Return compliant JSON without Markdown fences, explanation, or trailing text, then retry the run.`,
     );
   }
+  if (node.output.schema === undefined) {
+    return;
+  }
+  const failure = validateJsonValue(node.output.schema, value);
+  if (failure === undefined) {
+    return;
+  }
+  const location = failure.path === undefined ? "the document root" : `"${failure.path}"`;
+  throw new KilinError(
+    "NODE_OUTPUT_INVALID",
+    `Node "${node.id}" returned JSON that does not satisfy its declared schema at ${location}: ${failure.message}. Correct the output to match the declared schema, then retry the run.`,
+  );
 };
 
 interface ProbedRuntime {

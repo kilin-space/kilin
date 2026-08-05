@@ -40,7 +40,7 @@ import type { ExecutionEnvironment } from "../../src/application/runs.js";
 import { createRunDetailDocument, createRunListDocument } from "../../src/cli/render.js";
 import { compileWorkflow } from "../../src/domain/compile-workflow.js";
 import { parameterSnapshotBytes } from "../../src/domain/run-parameters.js";
-import { serializeCanonicalJson } from "../../src/domain/canonical-json.js";
+import { serializeCanonicalJson, type JsonObject } from "../../src/domain/canonical-json.js";
 import { KilinError } from "../../src/domain/errors.js";
 import type { RunCancellationRequest, RunDetail, RunOptions } from "../../src/domain/run-state.js";
 import type { WorkflowDefinitionV1 } from "../../src/domain/workflow.js";
@@ -87,6 +87,46 @@ const declaredOutputPrompt = (prompt: string, type: "text" | "json"): string =>
     `{"type":"${type}"}`,
     ...(type === "json" ? [jsonOutputInstructions] : []),
   ].join("\n");
+
+const jsonSchemaOutputInstructions = `${jsonOutputInstructions} The document must satisfy the declared schema.`;
+
+const jsonSchemaOutputPrompt = (prompt: string, schema: JsonObject): string =>
+  [
+    prompt,
+    "",
+    "KILIN_DECLARED_OUTPUT_V1",
+    "Satisfy this Kilin output contract in addition to the authored task.",
+    serializeCanonicalJson({ schema, type: "json" }),
+    jsonSchemaOutputInstructions,
+  ].join("\n");
+
+const findingsSchema: JsonObject = {
+  type: "object",
+  properties: {
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          severity: { type: "string" },
+          file: { type: "string" },
+          line: { type: "integer" },
+          summary: { type: "string" },
+        },
+        required: ["severity", "file", "line", "summary"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["findings"],
+  additionalProperties: false,
+};
+
+const findingsMissingSeverity =
+  '{"findings":[{"file":"src/a.ts","line":4,"summary":"no severity"}]}';
+
+const findingsSchemaFailureMessage =
+  'Node "scan" returned JSON that does not satisfy its declared schema at "findings[0].severity": must have required property \'severity\'. Correct the output to match the declared schema, then retry the run.';
 
 const retryFeedbackPrompt = (
   prompt: string,
@@ -1956,6 +1996,275 @@ describe("workflow run lifecycle", () => {
 
     expect(detail.run.status).toBe("succeeded");
     expect(detail.nodes[0]).toMatchObject({ status: "succeeded", attempt: 2 });
+    expect(
+      (await readJsonLines<{ prompt: string }>(context.executionLog)).map(({ prompt }) => prompt),
+    ).toEqual([initialPrompt, feedbackPrompt]);
+  });
+
+  it("accepts a json output that satisfies its declared schema", async () => {
+    const scanPrompt = jsonSchemaOutputPrompt("scan for findings", findingsSchema);
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "schema-valid", name: "Schema valid" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "scan for findings",
+          output: { type: "json", schema: findingsSchema },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({
+        [scanPrompt]: '{"findings":[{"severity":"low","file":"src/a.ts","line":4,"summary":"ok"}]}',
+      }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run.status).toBe("succeeded");
+    expect(detail.nodes).toMatchObject([{ nodeId: "scan", status: "succeeded" }]);
+    expect(
+      (await readJsonLines<{ prompt: string }>(context.executionLog)).map(({ prompt }) => prompt),
+    ).toEqual([scanPrompt]);
+  });
+
+  it("fails the producer when the json output violates its declared schema", async () => {
+    const scanPrompt = jsonSchemaOutputPrompt("scan for findings", findingsSchema);
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "schema-invalid", name: "Schema invalid" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "scan for findings",
+          output: { type: "json", schema: findingsSchema },
+          retry: {
+            maxAttempts: 1,
+            initialBackoffMs: 0,
+            maxBackoffMs: 0,
+            safeToRepeat: true,
+          },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({ [scanPrompt]: findingsMissingSeverity }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run).toMatchObject({
+      status: "failed",
+      failure: { code: "NODE_OUTPUT_INVALID" },
+    });
+    expect(detail.run.failure?.message).toBe(findingsSchemaFailureMessage);
+    expect(detail.nodes).toMatchObject([
+      { nodeId: "scan", status: "failed", failure: { code: "NODE_OUTPUT_INVALID" } },
+    ]);
+    expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(1);
+  });
+
+  it("renders a root-level schema mismatch as the document root", async () => {
+    const rootSchema: JsonObject = { type: "object" };
+    const scanPrompt = jsonSchemaOutputPrompt("scan for findings", rootSchema);
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "schema-root-mismatch", name: "Schema root mismatch" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "scan for findings",
+          output: { type: "json", schema: rootSchema },
+          retry: {
+            maxAttempts: 1,
+            initialBackoffMs: 0,
+            maxBackoffMs: 0,
+            safeToRepeat: true,
+          },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({ [scanPrompt]: "[1,2,3]" }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run).toMatchObject({
+      status: "failed",
+      failure: { code: "NODE_OUTPUT_INVALID" },
+    });
+    expect(detail.run.failure?.message).toBe(
+      'Node "scan" returned JSON that does not satisfy its declared schema at the document root: must be object. Correct the output to match the declared schema, then retry the run.',
+    );
+  });
+
+  it("sanitizes open-object instance keys and withholds provider values", async () => {
+    const openSchema: JsonObject = { type: "object", additionalProperties: { type: "integer" } };
+    const hostileKey = `evilkey${"k".repeat(100)}`;
+    const scanPrompt = jsonSchemaOutputPrompt("scan for findings", openSchema);
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "schema-hostile-instance-key", name: "Schema hostile instance key" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "scan for findings",
+          output: { type: "json", schema: openSchema },
+          retry: {
+            maxAttempts: 1,
+            initialBackoffMs: 0,
+            maxBackoffMs: 0,
+            safeToRepeat: true,
+          },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({
+        [scanPrompt]: JSON.stringify({ [hostileKey]: "SCHEMA_LEAK_MARKER" }),
+      }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    const sanitizedKey = `evilkey${"k".repeat(57)}`;
+    const message = detail.run.failure?.message ?? "";
+    expect(message).toBe(
+      `Node "scan" returned JSON that does not satisfy its declared schema at "${sanitizedKey}": must be integer. Correct the output to match the declared schema, then retry the run.`,
+    );
+    expect(message).not.toContain("SCHEMA_LEAK_MARKER");
+  });
+
+  it("sanitizes additional-property keys from closed schemas", async () => {
+    const closedSchema: JsonObject = {
+      type: "object",
+      properties: { known: { type: "string" } },
+      additionalProperties: false,
+    };
+    const scanPrompt = jsonSchemaOutputPrompt("scan for findings", closedSchema);
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "schema-hostile-extra-key", name: "Schema hostile extra key" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "scan for findings",
+          output: { type: "json", schema: closedSchema },
+          retry: {
+            maxAttempts: 1,
+            initialBackoffMs: 0,
+            maxBackoffMs: 0,
+            safeToRepeat: true,
+          },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({
+        [scanPrompt]: JSON.stringify({ known: "ok", "bad\nkey": "SCHEMA_LEAK_MARKER" }),
+      }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    const message = detail.run.failure?.message ?? "";
+    expect(message).toBe(
+      'Node "scan" returned JSON that does not satisfy its declared schema at "badkey": must NOT have additional properties. Correct the output to match the declared schema, then retry the run.',
+    );
+    expect(message).not.toContain("SCHEMA_LEAK_MARKER");
+  });
+
+  it("feeds a schema validation failure into the default declared-output retry", async () => {
+    const initialPrompt = jsonSchemaOutputPrompt("scan for findings", findingsSchema);
+    const feedbackPrompt = retryFeedbackPrompt(
+      initialPrompt,
+      "NODE_OUTPUT_INVALID",
+      findingsSchemaFailureMessage,
+    );
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "schema-output-retry", name: "Schema output retry" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "scan for findings",
+          output: { type: "json", schema: findingsSchema },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({
+        [initialPrompt]: findingsMissingSeverity,
+        [feedbackPrompt]: '{"findings":[]}',
+      }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run.status).toBe("succeeded");
+    expect(detail.nodes).toMatchObject([{ nodeId: "scan", status: "succeeded", attempt: 2 }]);
     expect(
       (await readJsonLines<{ prompt: string }>(context.executionLog)).map(({ prompt }) => prompt),
     ).toEqual([initialPrompt, feedbackPrompt]);
@@ -4767,6 +5076,66 @@ describe("rerun and history", () => {
       ({ prompt }) => prompt,
     );
     expect(prompts).toEqual(["stored prompt", "stored prompt", "stored prompt"]);
+  });
+
+  it("reruns a file-referenced schema from the stored revision after the schema file is deleted", async () => {
+    const scanPrompt = jsonSchemaOutputPrompt("scan for findings", findingsSchema);
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "schema-rerun", name: "Schema rerun" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "scan for findings",
+          output: { type: "json", schema: findingsSchema },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({ [scanPrompt]: '{"findings":[]}' }),
+    });
+    const schemaFile = join(dirname(context.workflowFile), "schemas", "findings.json");
+    await mkdir(dirname(schemaFile), { recursive: true });
+    await writeFile(schemaFile, JSON.stringify(findingsSchema));
+    await writeFile(
+      context.workflowFile,
+      JSON.stringify({
+        ...definition,
+        nodes: [
+          {
+            id: "scan",
+            kind: "agent",
+            runtime: "codex",
+            access: "read_only",
+            prompt: "scan for findings",
+            output: { type: "json", schema: "./schemas/findings.json" },
+          },
+        ],
+      }),
+    );
+
+    const original = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+    await unlink(schemaFile);
+
+    const rerun = await rerunWorkflow(original.run.id, {}, context.environment);
+
+    expect(original.run.status).toBe("succeeded");
+    expect(rerun.run.status).toBe("succeeded");
+    expect(rerun.revision.id).toBe(original.revision.id);
+    expect(rerun.revision.contentHash).toBe(original.revision.contentHash);
+    expect(
+      (await readJsonLines<{ prompt: string }>(context.executionLog)).map(({ prompt }) => prompt),
+    ).toEqual([scanPrompt, scanPrompt]);
   });
 
   it("creates no replacement when the stored cwd is missing or rerun preflight fails", async () => {
