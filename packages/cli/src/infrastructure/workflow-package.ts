@@ -26,7 +26,7 @@ export const workflowManifestFileName = "WORKFLOW.md";
 export const workflowDefinitionFileName = "WORKFLOW.yaml";
 export const projectWorkflowDirectory = join(".agents", "workflows");
 
-export const maximumOutputSchemaBytes = 262_144;
+const maximumOutputSchemaBytes = 262_144;
 
 const maximumManifestBytes = 65_536;
 const maximumPackagesPerScope = 2_000;
