@@ -217,6 +217,14 @@ const setDocumentHidden = async (page: Page, hidden: boolean): Promise<void> => 
   }, hidden);
 };
 
+/** `runningNodes` whose running agent already has a stream, so the client live-tails it. */
+const tailingNodes = (): readonly NodeRunDto[] =>
+  runningNodes().map((node): NodeRunDto =>
+    node.kind === "agent" && node.status === "running"
+      ? { ...node, availableOutputs: ["stdout"] }
+      : node,
+  );
+
 const waitForRunListResponse = async (page: Page, origin: string): Promise<void> => {
   await page.waitForResponse(
     (response) => response.url() === `${origin}/api/runs` && response.request().method() === "GET",
@@ -2416,6 +2424,80 @@ test("a hidden tab polls at the reduced interval and resumes the session cadence
   const beforeShow = listRequests;
   await setDocumentHidden(page, false);
   await expect.poll(() => listRequests, { timeout: 4_000 }).toBeGreaterThan(beforeShow + 1);
+});
+
+test("a hidden tab's reduced poll leaves the selected stream alone until the tab returns", async ({
+  page,
+  viewer,
+}) => {
+  test.slow();
+  const runId = "run-hidden-tail";
+  const streamPath = `/api/runs/${runId}/nodes/0/output/stdout`;
+  let listRequests = 0;
+  let streamRequests = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === streamPath) {
+      streamRequests += 1;
+    }
+  });
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse([ordinaryRunningSummary(runId)]);
+    },
+    runDetail: (requested) =>
+      requested === runId
+        ? gateRunDetail(ordinaryRunningSummary(runId), tailingNodes())
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  await expect(page.locator("#output-meta")).toContainText("live tail");
+  const whileVisible = streamRequests;
+  await expect.poll(() => streamRequests, { timeout: 10_000 }).toBeGreaterThan(whileVisible);
+
+  await setDocumentHidden(page, true);
+  const listWhenHidden = listRequests;
+  const streamWhenHidden = streamRequests;
+  await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(listWhenHidden);
+  expect(streamRequests).toBe(streamWhenHidden);
+
+  // Resuming proves the silence came from hiding the tab, not from a stream that stopped tailing.
+  await setDocumentHidden(page, false);
+  await expect.poll(() => streamRequests, { timeout: 10_000 }).toBeGreaterThan(streamWhenHidden);
+});
+
+test("a browser without the Notifications API hides the control and keeps the viewer live", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, "Notification");
+  });
+  let listRequests = 0;
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse([waitingGateSummary("run-no-notifications")]);
+    },
+    runDetail: (runId) =>
+      runId === "run-no-notifications"
+        ? gateRunDetail(
+            waitingGateSummary("run-no-notifications"),
+            waitingGateNodes("gate-execution-1", deadlineAt),
+          )
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  await expect(page.locator("#notify-toggle")).toBeHidden();
+  await expect(page.locator("#refresh-button")).toBeVisible();
+  const observedRequests = listRequests;
+  await expect.poll(() => listRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests + 1);
+  await expect(page.locator("#connection-status")).toHaveText("Live");
 });
 
 test("the notification control states its permission, requests it on click, and locks when blocked", async ({
