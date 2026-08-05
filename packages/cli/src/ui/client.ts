@@ -130,6 +130,7 @@ const elements = {
   approvalStatus: requiredElement("#approval-status", HTMLElement),
   appShell: requiredElement("#app-shell", HTMLElement),
   appTitle: requiredElement("#app-title", HTMLElement),
+  cancelAnnouncement: requiredElement("#cancel-announcement", HTMLElement),
   connectionStatus: requiredElement("#connection-status", HTMLElement),
   currentWorkflowButton: requiredElement("#current-workflow-button", HTMLButtonElement),
   diagnostics: requiredElement("#diagnostics", HTMLElement),
@@ -387,7 +388,7 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     const fallbackIndex =
       index >= 0 ? index : graphCardIndex(cards, containerCardKey(target.cardKey));
     if (fallbackIndex >= 0) {
-      updateGraphRovingFocus(cards, fallbackIndex, true);
+      updateGraphRovingFocus(cards, fallbackIndex, index >= 0);
     }
     return;
   }
@@ -471,7 +472,7 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
         (card) => card.getAttribute("data-node-id") === target.graphNodeId,
       );
       if (index >= 0) {
-        updateGraphRovingFocus(cards, index, true);
+        updateGraphRovingFocus(cards, index);
         return;
       }
     }
@@ -1826,6 +1827,10 @@ const renderGraphExpansion = (): void => {
 
 const renderRunInspector = (): void => {
   elements.runInspector.replaceChildren();
+  const cancelMessage = cancelStatusMessage();
+  if (elements.cancelAnnouncement.textContent !== cancelMessage) {
+    setText(elements.cancelAnnouncement, cancelMessage);
+  }
   const title = document.createElement("p");
   title.className = "inspector-title";
   if (state.viewMode === "current") {
@@ -3113,6 +3118,7 @@ const cancelCommand = (runId: string): HTMLElement => {
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.id = "cancel-run";
+  cancel.className = "cancel-run-button";
   cancel.disabled = state.cancelSubmitting;
   setText(cancel, "Cancel run");
   cancel.addEventListener("click", () => {
@@ -3124,18 +3130,14 @@ const cancelCommand = (runId: string): HTMLElement => {
   return commands;
 };
 
+const cancelStatusMessage = (): string =>
+  state.cancelError ?? (state.cancelSubmitting ? "Requesting cancellation…" : "");
+
 const cancelStatus = (): HTMLElement => {
   const status = document.createElement("p");
   status.id = "cancel-status";
-  status.setAttribute("role", "status");
-  status.setAttribute("aria-live", "polite");
-  if (state.cancelError === undefined) {
-    status.className = "empty-copy";
-    setText(status, "Requesting cancellation…");
-    return status;
-  }
-  status.className = "failure-copy";
-  setText(status, state.cancelError);
+  status.className = state.cancelError === undefined ? "empty-copy" : "failure-copy";
+  setText(status, cancelStatusMessage());
   return status;
 };
 

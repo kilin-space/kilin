@@ -26,7 +26,7 @@ host cron -> trigger request --------------> run / rerun use case
                                               ├── SQLite metadata
                                               |      |
                                               |      v
-                                              |   viewer query + guarded approval decision
+                                              |   viewer query + guarded decision or cancel
                                               |      |
                                               |      v
                                               |   attached 127.0.0.1 browser view
@@ -77,12 +77,13 @@ paths once a process is about to start.
 
 ## Application operations
 
-The execution path and guarded approval transition are exposed through transport-neutral operations:
+The execution path and the two guarded run-scoped transitions are exposed through transport-neutral operations:
 
 - `runWorkflow(workflowName, cwd, executionOptions, control, environment, parameters)`
 - `runTriggeredWorkflow(hostTriggerRequest, control, environment)`
 - `rerunWorkflow(runId, control, environment, maxParallel)`
 - `recordApprovalDecision(runId, nodeId, decision, actor, note)`
+- `requestRunCancellation(runId)`
 
 History and validation remain application queries or bounded reconciliation commands:
 
@@ -93,8 +94,9 @@ History and validation remain application queries or bounded reconciliation comm
 `control` carries an `AbortSignal` and an in-process `onEvent(RunEvent)` sink. Event delivery cannot
 change durable orchestration state. The CLI maps interruption to the signal and renders events. The
 Viewer never calls `runWorkflow`, `runTriggeredWorkflow`, `rerunWorkflow`, or a runtime adapter. Its
-GET projections use a read-only SQLite connection. Its single approval POST reuses
-`recordApprovalDecision`, including the same narrow stale-owner check as the CLI decision commands.
+GET projections use a read-only SQLite connection. Its two mutation POSTs reuse
+`recordApprovalDecision` and `requestRunCancellation`, including the same narrow stale-owner check
+as the CLI decision and cancel commands.
 
 ## Run lifecycle and lock order
 
@@ -233,8 +235,8 @@ Kilin does not claim exactly-once execution. A crash after spawn may leave works
 `run`, `trigger`, and `rerun` perform that reconciliation and replacement creation without releasing
 and reacquiring the descriptor. Reconciling history commands check each distinct active cwd before
 querying and ignore only live `WORKSPACE_BUSY` groups. Viewer GET projections are pure reads. The
-single approval decision path performs only the existing guarded stale-owner check and decision
-write; it adds no generic reconciliation surface.
+two viewer mutation paths perform only the existing guarded stale-owner check before the decision
+write or the cancellation latch; they add no generic reconciliation surface.
 
 Rerun repeatability is deliberately narrow: the normalized workflow, dependency plan, authored
 node timeouts, persisted run options, revision identity, and canonical cwd are preserved.
@@ -253,8 +255,9 @@ tampered shape fails closed without mutation. Only a mutating command upgrades a
 read-only Viewer connection validates the current baseline and reports the state as unreadable until
 one has run. Viewer
 projections use a distinct read-only, `query_only` connection and validate the same baseline before
-querying. The approval route opens the ordinary guarded state path only long enough to record one
-eligible Human Decision. Transactions are short and never remain open while a provider runs.
+querying. Each mutation route opens the ordinary guarded state path only long enough to record one
+eligible Human Decision or latch one cancellation request. Transactions are short and never remain
+open while a provider runs.
 Private POSIX modes are `0700` for state directories and `0600` for database sidecars, locks, and
 output files, subject to stricter host policy.
 

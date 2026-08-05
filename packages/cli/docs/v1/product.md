@@ -57,7 +57,7 @@ The complete V1 journey is:
 - Run and node metadata in local SQLite; bounded private stdout, stderr, and final-result files.
 - Human CLI output, stable JSON documents, and JSON Lines lifecycle events.
 - Canonical `.agents` workflow-generation and explicit history-discovery skills with minimal `.claude` shims.
-- An attached numeric-loopback viewer with one-use fragment bootstrap, cookie and CSRF authentication, exact Host/Origin checks, local assets, CSP, polling, exact workflow/cwd scope, authorized 64 KiB output tails, and one guarded waiting-approval decision route.
+- An attached numeric-loopback viewer with one-use fragment bootstrap, cookie and CSRF authentication, exact Host/Origin checks, local assets, CSP, polling, exact workflow/cwd scope, authorized 64 KiB output tails, and a closed set of two guarded run-scoped mutation routes, the approval decision and the run cancellation.
 
 ## Non-goals
 
@@ -76,7 +76,7 @@ The following are outside V1:
 - teams, remote workers, cloud storage, hosted execution, plugin loading, exporter buses, or node registries; and
 - Windows execution before equivalent workspace-lock semantics are available.
 
-The attached `ui` listener and bounded agent-side discovery procedure are explicit exceptions to broader browser-UI and transcript-system deferrals. The Viewer may record only a scoped waiting-approval decision; otherwise neither surface mutates recorded state or invokes a runtime.
+The attached `ui` listener and bounded agent-side discovery procedure are explicit exceptions to broader browser-UI and transcript-system deferrals. The Viewer may only record a scoped waiting-approval decision or request cancellation of a scoped run; otherwise neither surface mutates recorded state or invokes a runtime.
 
 ## Release criteria
 

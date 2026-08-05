@@ -26,6 +26,7 @@ export const viewerHtml = `<!doctype html>
         </div>
         <p id="selection-announcement" class="sr-only" role="status" aria-live="polite"></p>
         <p id="approval-status" class="sr-only" role="status" aria-live="polite"></p>
+        <p id="cancel-announcement" class="sr-only" role="status" aria-live="polite"></p>
       </header>
 
       <div class="viewer-layout">
@@ -1305,6 +1306,20 @@ h3 {
 .approval-commands .copy-button {
   color: #7c1f56;
   border-color: #e6b7d3;
+}
+
+.cancel-run-button {
+  justify-self: start;
+  padding: 0 14px;
+  color: var(--dim-ink);
+  background: white;
+  border: 1px solid var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cancel-run-button:disabled {
+  opacity: 0.6;
 }
 
 .decision-packet {
