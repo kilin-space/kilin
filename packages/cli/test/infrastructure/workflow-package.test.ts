@@ -437,6 +437,11 @@ describe("json output schema resolution", () => {
     },
   });
 
+  const identifiedFindingsSchema = JSON.stringify({
+    $id: "https://example.com/findings.schema.json",
+    ...(JSON.parse(findingsSchema) as Record<string, unknown>),
+  });
+
   const schemaDefinition = (id: string, schemaLines: string): string => `schemaVersion: 1
 workflow:
   id: ${id}
@@ -500,6 +505,49 @@ edges: []
       });
     },
   );
+
+  it("embeds an $id-bearing schema file referenced by two nodes", async () => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    const packageDirectory = await writeSchemaPackage(
+      project,
+      "schema-shared-id",
+      `schemaVersion: 1
+workflow:
+  id: schema-shared-id
+  name: schema-shared-id
+nodes:
+  - id: scan
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: Scan for findings.
+    output:
+      type: json
+      schema: schemas/findings.json
+  - id: audit
+    kind: agent
+    runtime: codex
+    access: read_only
+    prompt: Audit the findings.
+    output:
+      type: json
+      schema: schemas/findings.json
+edges:
+  - from: scan
+    to: audit
+`,
+    );
+    await writeFindingsSchema(packageDirectory, identifiedFindingsSchema);
+
+    const resolved = await resolvePackage(project, "schema-shared-id");
+
+    const embeddedSchema = JSON.parse(identifiedFindingsSchema) as unknown;
+    expect(resolved.definition.nodes).toMatchObject([
+      { id: "scan", output: { type: "json", schema: embeddedSchema } },
+      { id: "audit", output: { type: "json", schema: embeddedSchema } },
+    ]);
+  });
 
   it("resolves a schema referenced from a loop body node output", async () => {
     const root = await createTemporaryDirectory();

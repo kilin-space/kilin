@@ -2039,6 +2039,45 @@ describe("workflow run lifecycle", () => {
     ).toEqual([scanPrompt]);
   });
 
+  it("accepts a json output schema carrying a top-level $id", async () => {
+    const identifiedSchema: JsonObject = {
+      $id: "https://example.com/findings.schema.json",
+      ...findingsSchema,
+    };
+    const scanPrompt = jsonSchemaOutputPrompt("scan for findings", identifiedSchema);
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "schema-identified", name: "Schema identified" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "scan for findings",
+          output: { type: "json", schema: identifiedSchema },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({
+        [scanPrompt]: '{"findings":[{"severity":"low","file":"src/a.ts","line":4,"summary":"ok"}]}',
+      }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run).toMatchObject({ status: "succeeded" });
+    expect(detail.nodes).toMatchObject([{ nodeId: "scan", status: "succeeded" }]);
+  });
+
   it("fails the producer when the json output violates its declared schema", async () => {
     const scanPrompt = jsonSchemaOutputPrompt("scan for findings", findingsSchema);
     const definition: WorkflowDefinitionV1 = {
@@ -2132,7 +2171,7 @@ describe("workflow run lifecycle", () => {
 
   it("sanitizes open-object instance keys and withholds provider values", async () => {
     const openSchema: JsonObject = { type: "object", additionalProperties: { type: "integer" } };
-    const hostileKey = `evilkey${"k".repeat(100)}`;
+    const hostileKey = `evil\u200Bkey${"k".repeat(100)}`;
     const scanPrompt = jsonSchemaOutputPrompt("scan for findings", openSchema);
     const definition: WorkflowDefinitionV1 = {
       schemaVersion: 1,

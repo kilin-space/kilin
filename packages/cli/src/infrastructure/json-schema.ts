@@ -1,4 +1,4 @@
-import type { ErrorObject } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
 import Ajv2020Module from "ajv/dist/2020.js";
 
 import type { JsonObject, JsonValue } from "../domain/canonical-json.js";
@@ -6,10 +6,11 @@ import { KilinError } from "../domain/errors.js";
 
 const maximumPathSegmentLength = 64;
 
-const ajv = new Ajv2020Module.default({
-  allErrors: false,
-  strict: true,
-});
+const createAjv = (): InstanceType<typeof Ajv2020Module.default> =>
+  new Ajv2020Module.default({
+    allErrors: false,
+    strict: true,
+  });
 
 const pointerSegments = (pointer: string): string[] =>
   pointer
@@ -48,7 +49,7 @@ export const schemaErrorPath = (error: ErrorObject): string | undefined =>
   errorPath(error, (segment) => segment);
 
 const sanitizePathSegment = (segment: string): string =>
-  Array.from(segment.replaceAll(/\p{Cc}/gu, ""))
+  Array.from(segment.replaceAll(/[\p{Cc}\p{Cf}]/gu, ""))
     .slice(0, maximumPathSegmentLength)
     .join("");
 
@@ -62,7 +63,7 @@ export const assertValidJsonSchema = (
   source: string,
 ): void => {
   try {
-    ajv.compile(schema);
+    createAjv().compile(schema);
   } catch (error: unknown) {
     throw new KilinError(
       "WORKFLOW_SCHEMA_INVALID",
@@ -77,7 +78,12 @@ export const validateJsonValue = (
   schema: JsonObject,
   value: JsonValue,
 ): JsonValidationFailure | undefined => {
-  const validate = ajv.compile(schema);
+  let validate: ValidateFunction;
+  try {
+    validate = createAjv().compile(schema);
+  } catch {
+    return { message: "The declared schema could not be compiled." };
+  }
   if (validate(value)) {
     return undefined;
   }

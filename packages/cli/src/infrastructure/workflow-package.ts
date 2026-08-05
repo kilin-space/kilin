@@ -309,26 +309,39 @@ const resolveDeclaredSchema = async (
       `The json output schema path "${declared}" is invalid. Use 1 through 1,024 UTF-8 bytes in normalized POSIX-relative form with no leading or trailing "/", non-empty segments, "/" separators, and no ".", "..", backslash, or control characters.`,
     );
   }
-  const resolvedFile = resolve(packageDirectory, relativePath);
-  let canonicalFile: string;
+  let bytes: Uint8Array;
   try {
-    canonicalFile = await realpath(resolvedFile);
-  } catch (error: unknown) {
-    if (isMissingPath(error)) {
-      throw packageError(`The json output schema "${declared}" does not exist or is unreadable.`);
+    const resolvedFile = resolve(packageDirectory, relativePath);
+    let canonicalFile: string;
+    try {
+      canonicalFile = await realpath(resolvedFile);
+    } catch (error: unknown) {
+      if (isMissingPath(error)) {
+        throw packageError(`The json output schema "${declared}" does not exist or is unreadable.`);
+      }
+      throw error;
     }
-    throw error;
-  }
-  if (!isWithin(await realpath(packageDirectory), canonicalFile)) {
+    if (!isWithin(await realpath(packageDirectory), canonicalFile)) {
+      throw packageError(
+        `The json output schema "${declared}" resolves outside the workflow package. Declare a schema file within the package.`,
+      );
+    }
+    await assertRegularFile(resolvedFile, `Json output schema "${declared}"`);
+    bytes = await readRegularFile(
+      canonicalFile,
+      `Json output schema "${declared}"`,
+      maximumOutputSchemaBytes,
+    );
+  } catch (error: unknown) {
+    if (error instanceof KilinError) {
+      throw error;
+    }
     throw packageError(
-      `The json output schema "${declared}" resolves outside the workflow package. Declare a schema file within the package.`,
+      `The json output schema "${declared}" could not be read: ${
+        error instanceof Error ? error.message : String(error)
+      }. Make the file readable and try again.`,
     );
   }
-  const bytes = await readRegularFile(
-    resolvedFile,
-    `Json output schema "${declared}"`,
-    maximumOutputSchemaBytes,
-  );
   let parsed: JsonValue;
   try {
     parsed = parseCanonicalJson(decoder.decode(bytes));
