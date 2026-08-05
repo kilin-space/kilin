@@ -133,17 +133,18 @@ test("viewer authentication and routes enforce the local guarded boundary", asyn
   expect(wrongHost.status).toBe(403);
   expect(wrongHost.body).toContain("REQUEST_FORBIDDEN");
 
-  for (const [method, path] of [
-    ["POST", "/api/runs"],
-    ["PUT", "/api/workflow"],
-    ["DELETE", `/api/runs/${scenario.successfulRunId}`],
+  for (const [method, path, expectedAllow] of [
+    ["POST", "/api/runs", "GET"],
+    ["PUT", "/api/workflow", "GET"],
+    ["DELETE", `/api/runs/${scenario.successfulRunId}`, "GET"],
+    ["GET", `/api/runs/${scenario.successfulRunId}/cancel`, "POST"],
   ] as const) {
     const mutation = await requestViewer(viewer.origin, path, {
       method,
       headers: authenticatedHeaders,
     });
     expect(mutation.status).toBe(405);
-    expect(mutation.headers.allow).toBe("GET");
+    expect(mutation.headers.allow).toBe(expectedAllow);
   }
 
   const runList = await requestViewer(viewer.origin, "/api/runs", {
@@ -168,12 +169,29 @@ test("viewer authentication and routes enforce the local guarded boundary", asyn
   expect(scopedDetail.body).not.toContain(scenario.root);
   expect(scopedDetail.body).not.toContain(scenario.stateDirectory);
 
+  const emptyObjectBody = "{}";
+  const cancelRequest = {
+    method: "POST",
+    headers: {
+      ...authenticatedHeaders,
+      "Content-Type": "application/json",
+      "Content-Length": String(Buffer.byteLength(emptyObjectBody)),
+    },
+    body: emptyObjectBody,
+  };
   for (const runId of [scenario.otherWorkflowRunId, scenario.otherWorkingDirectoryRunId]) {
     const outOfScope = await requestViewer(viewer.origin, `/api/runs/${runId}`, {
       headers: authenticatedHeaders,
     });
     expect(outOfScope.status).toBe(404);
     expect(outOfScope.body).toContain("RUN_NOT_FOUND");
+    const outOfScopeCancel = await requestViewer(
+      viewer.origin,
+      `/api/runs/${runId}/cancel`,
+      cancelRequest,
+    );
+    expect(outOfScopeCancel.status).toBe(404);
+    expect(outOfScopeCancel.body).toContain("RUN_NOT_FOUND");
   }
   for (const path of [
     "/api/runs/not-a-run",
@@ -186,6 +204,13 @@ test("viewer authentication and routes enforce the local guarded boundary", asyn
     const rejected = await requestViewer(viewer.origin, path, { headers: authenticatedHeaders });
     expect(rejected.status).toBe(404);
   }
+  const unknownRunCancel = await requestViewer(
+    viewer.origin,
+    "/api/runs/not-a-run/cancel",
+    cancelRequest,
+  );
+  expect(unknownRunCancel.status).toBe(404);
+  expect(unknownRunCancel.body).toContain("RUN_NOT_FOUND");
 
   const bounded = await requestViewer(
     viewer.origin,

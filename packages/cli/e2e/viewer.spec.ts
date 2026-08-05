@@ -5,6 +5,7 @@ import type {
   CurrentWorkflowResponse,
   LoopIterationDto,
   NodeRunDto,
+  RunCancellationResponse,
   RunSummaryDto,
   ScopedRunDetailResponse,
   ScopedRunListResponse,
@@ -100,6 +101,82 @@ const cardWithinGraphStrip = async (page: Page, cardSelector: string): Promise<b
 
 const keepsDomFocus = (locator: Locator): Promise<boolean> =>
   locator.evaluate((element) => element === document.activeElement);
+
+interface RaisedNotification {
+  readonly title: string;
+  readonly body: string;
+  readonly tag: string | undefined;
+}
+
+type StubbedPermission = "default" | "granted" | "denied";
+
+/**
+ * Replaces the Notification constructor with one that records its constructions and reports a
+ * permission the test controls. `context.grantPermissions` drives only the native permission, so it
+ * cannot express the `default` and `denied` suppression cases.
+ */
+const stubNotifications = async (page: Page, permission: StubbedPermission): Promise<void> => {
+  await page.addInitScript((granted: string) => {
+    const holder = window as unknown as { __raisedNotifications: RaisedNotification[] };
+    holder.__raisedNotifications = [];
+    class StubNotification {
+      static permission = granted;
+      static requestPermission(): Promise<string> {
+        return Promise.resolve(StubNotification.permission);
+      }
+      public onclick: (() => void) | null = null;
+      constructor(title: string, options?: { readonly body?: string; readonly tag?: string }) {
+        holder.__raisedNotifications.push({
+          title,
+          body: options?.body ?? "",
+          tag: options?.tag,
+        });
+      }
+      close(): void {
+        this.onclick = null;
+      }
+    }
+    Object.defineProperty(window, "Notification", {
+      configurable: true,
+      writable: true,
+      value: StubNotification,
+    });
+  }, permission);
+};
+
+const setNotificationPermission = async (
+  page: Page,
+  permission: StubbedPermission,
+): Promise<void> => {
+  await page.evaluate((granted: string) => {
+    (window as unknown as { Notification: { permission: string } }).Notification.permission =
+      granted;
+  }, permission);
+};
+
+const raisedNotifications = async (page: Page): Promise<readonly RaisedNotification[]> =>
+  page.evaluate(() => {
+    const holder = window as unknown as { __raisedNotifications?: RaisedNotification[] };
+    return holder.__raisedNotifications ?? [];
+  });
+
+/** Drives the platform contract the hidden-tab poll cadence is defined against. */
+const setDocumentHidden = async (page: Page, hidden: boolean): Promise<void> => {
+  await page.evaluate((isHidden: boolean) => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => isHidden });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: (): DocumentVisibilityState => (isHidden ? "hidden" : "visible"),
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, hidden);
+};
+
+const waitForRunListResponse = async (page: Page, origin: string): Promise<void> => {
+  await page.waitForResponse(
+    (response) => response.url() === `${origin}/api/runs` && response.request().method() === "GET",
+  );
+};
 
 interface Deferred<Value> {
   readonly promise: Promise<Value>;
@@ -2261,4 +2338,302 @@ test("the approval note keeps focus and the caret when the decision dock rebuild
 
   expect(await selection()).toEqual(before);
   await expect(note).toHaveValue("first line\nsecond line");
+});
+
+test("a hidden tab polls at the reduced interval and resumes the session cadence when shown", async ({
+  page,
+  viewer,
+}) => {
+  test.slow();
+  let listRequests = 0;
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse([ordinaryRunningSummary("run-hidden")]);
+    },
+    runDetail: (runId) =>
+      runId === "run-hidden"
+        ? gateRunDetail(ordinaryRunningSummary("run-hidden"), runningNodes())
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  await waitForRunListResponse(page, viewer.origin);
+  await setDocumentHidden(page, true);
+  const afterHide = listRequests;
+  // Three session intervals pass with no request, so the hidden cadence is not the visible one.
+  await page.waitForTimeout(6_000);
+  expect(listRequests).toBe(afterHide);
+
+  await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(afterHide);
+
+  const beforeShow = listRequests;
+  await setDocumentHidden(page, false);
+  await expect.poll(() => listRequests, { timeout: 4_000 }).toBeGreaterThan(beforeShow + 1);
+});
+
+test("a gate arriving while the tab is hidden notifies once and is decidable on return", async ({
+  page,
+  viewer,
+}) => {
+  test.slow();
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let waiting = false;
+  let listRequests = 0;
+  const summary = (): RunSummaryDto =>
+    waiting ? waitingGateSummary("run-hidden-gate") : ordinaryRunningSummary("run-hidden-gate");
+  await stubNotifications(page, "granted");
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse([summary()]);
+    },
+    runDetail: (runId) =>
+      runId === "run-hidden-gate"
+        ? gateRunDetail(
+            summary(),
+            waiting ? waitingGateNodes("gate-execution-1", deadlineAt) : runningNodes(),
+          )
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+  expect(await raisedNotifications(page)).toHaveLength(0);
+
+  await setDocumentHidden(page, true);
+  waiting = true;
+  await expect.poll(() => raisedNotifications(page), { timeout: 20_000 }).toHaveLength(1);
+  const [raised] = await raisedNotifications(page);
+  expect(raised?.title).toBe("Kilin — approval needed");
+  expect(raised?.tag).toBe("run-hidden-gate");
+
+  const afterNotification = listRequests;
+  await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(afterNotification);
+  expect(await raisedNotifications(page)).toHaveLength(1);
+
+  await setDocumentHidden(page, false);
+  const banner = page.locator("#decision-needed-banner");
+  await expect(banner).toBeVisible();
+  await banner.click();
+  await expect(page.locator("#decision-approve")).toBeVisible();
+});
+
+test("a gate raises no notification while the tab is visible or while permission is withheld", async ({
+  page,
+  viewer,
+}) => {
+  test.slow();
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  const waitingRunIds = new Set<string>();
+  let listRequests = 0;
+  const summary = (runId: string): RunSummaryDto =>
+    waitingRunIds.has(runId) ? waitingGateSummary(runId) : ordinaryRunningSummary(runId);
+  const runIds = ["run-visible", "run-permission-default", "run-permission-denied"] as const;
+  await stubNotifications(page, "granted");
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse(runIds.map(summary));
+    },
+    runDetail: (runId) =>
+      runIds.some((candidate) => candidate === runId)
+        ? gateRunDetail(
+            summary(runId),
+            waitingRunIds.has(runId)
+              ? waitingGateNodes("gate-execution-1", deadlineAt)
+              : runningNodes(),
+          )
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const waitingRow = (runId: string): Locator =>
+    page.getByRole("button", { name: new RegExp(`^Run ${runId}, waiting for approval,`, "u") });
+
+  waitingRunIds.add("run-visible");
+  await expect(waitingRow("run-visible")).toHaveCount(1, { timeout: 20_000 });
+  expect(await raisedNotifications(page)).toHaveLength(0);
+
+  await setNotificationPermission(page, "default");
+  await setDocumentHidden(page, true);
+  waitingRunIds.add("run-permission-default");
+  const beforeDefault = listRequests;
+  await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(beforeDefault);
+  await expect(waitingRow("run-permission-default")).toHaveCount(1, { timeout: 20_000 });
+  expect(await raisedNotifications(page)).toHaveLength(0);
+
+  await setNotificationPermission(page, "denied");
+  waitingRunIds.add("run-permission-denied");
+  const beforeDenied = listRequests;
+  await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(beforeDenied);
+  await expect(waitingRow("run-permission-denied")).toHaveCount(1, { timeout: 20_000 });
+  expect(await raisedNotifications(page)).toHaveLength(0);
+});
+
+test("cancelling a run from the inspector latches before the next poll and survives it", async ({
+  page,
+  viewer,
+}) => {
+  let cancelRequested = false;
+  let listRequests = 0;
+  const summary = (): RunSummaryDto =>
+    cancelRequested ? cancelRequestedSummary("run-cancel") : ordinaryRunningSummary("run-cancel");
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse([summary()]);
+    },
+    runDetail: (runId) =>
+      runId === "run-cancel" ? gateRunDetail(summary(), runningNodes()) : undefined,
+  });
+  let cancelBody: string | null = null;
+  await page.route(`${viewer.origin}/api/runs/run-cancel/cancel`, async (route) => {
+    cancelBody = route.request().postData();
+    cancelRequested = true;
+    const response: RunCancellationResponse = {
+      outputVersion: 1,
+      runId: "run-cancel",
+      cancelRequestedAt: "2026-07-26T01:00:30.000Z",
+    };
+    await fulfillJson(route, response);
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const inspector = page.locator("#run-inspector");
+  const cancel = page.locator("#cancel-run");
+  const requested = inspector.getByRole("term").filter({ hasText: "Cancellation requested" });
+  await expect(cancel).toBeVisible();
+  await expect(requested).toHaveCount(0);
+
+  await waitForRunListResponse(page, viewer.origin);
+  const pollsAtClick = listRequests;
+  await cancel.click();
+
+  await expect(cancel).toHaveCount(0);
+  await expect(requested).toBeVisible();
+  expect(listRequests).toBe(pollsAtClick);
+  expect(cancelBody).toBe("{}");
+
+  await expect.poll(() => listRequests, { timeout: 10_000 }).toBeGreaterThan(pollsAtClick + 1);
+  await expect(cancel).toHaveCount(0);
+  await expect(requested).toBeVisible();
+});
+
+test("a refused cancellation keeps the server's reason after the run leaves running", async ({
+  page,
+  viewer,
+}) => {
+  let finished = false;
+  let listRequests = 0;
+  const summary = (): RunSummaryDto =>
+    finished ? succeededSummary("run-late") : ordinaryRunningSummary("run-late");
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse([summary()]);
+    },
+    runDetail: (runId) =>
+      runId === "run-late"
+        ? gateRunDetail(summary(), finished ? succeededNodes() : runningNodes())
+        : undefined,
+  });
+  const refusal = "Run run-late is not running, so it cannot be cancelled.";
+  await page.route(`${viewer.origin}/api/runs/run-late/cancel`, async (route) => {
+    finished = true;
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        outputVersion: 1,
+        error: { code: "RUN_NOT_CANCELLABLE", message: refusal },
+      }),
+    });
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const cancel = page.locator("#cancel-run");
+  await expect(cancel).toBeVisible();
+  const observedRequests = listRequests;
+  await cancel.click();
+
+  const status = page.locator("#cancel-status");
+  await expect(status).toHaveText(refusal);
+
+  await expect.poll(() => listRequests, { timeout: 10_000 }).toBeGreaterThan(observedRequests + 1);
+  await expect(cancel).toHaveCount(0);
+  await expect(status).toHaveText(refusal);
+});
+
+test("cancelling a gated run clears its approval controls without waiting for a poll", async ({
+  page,
+  viewer,
+}) => {
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let cancelRequested = false;
+  let listRequests = 0;
+  const summary = (): RunSummaryDto =>
+    cancelRequested
+      ? cancelRequestedSummary("run-gate-cancel")
+      : waitingGateSummary("run-gate-cancel");
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse([summary()]);
+    },
+    runDetail: (runId) =>
+      runId === "run-gate-cancel"
+        ? gateRunDetail(summary(), waitingGateNodes("gate-execution-1", deadlineAt))
+        : undefined,
+  });
+  await page.route(`${viewer.origin}/api/runs/run-gate-cancel/cancel`, async (route) => {
+    cancelRequested = true;
+    const response: RunCancellationResponse = {
+      outputVersion: 1,
+      runId: "run-gate-cancel",
+      cancelRequestedAt: "2026-07-26T01:00:30.000Z",
+    };
+    await fulfillJson(route, response);
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const banner = page.locator("#decision-needed-banner");
+  await expect(banner).toBeVisible();
+  await expect(page.locator("#decision-approve")).toBeVisible();
+  await expect(page.locator("#decision-reject")).toBeVisible();
+
+  await waitForRunListResponse(page, viewer.origin);
+  const pollsAtClick = listRequests;
+  await page.locator("#cancel-run").click();
+
+  await expect(banner).toBeHidden();
+  await expect(page.locator("#decision-approve")).toHaveCount(0);
+  await expect(page.locator("#decision-reject")).toHaveCount(0);
+  expect(listRequests).toBe(pollsAtClick);
+});
+
+test("the cancel control keeps focus when the run inspector rebuilds", async ({ page, viewer }) => {
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([ordinaryRunningSummary("run-focus")]),
+    runDetail: (runId) =>
+      runId === "run-focus"
+        ? gateRunDetail(ordinaryRunningSummary("run-focus"), runningNodes())
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const cancel = page.locator("#cancel-run");
+  await cancel.focus();
+  expect(await keepsDomFocus(cancel)).toBe(true);
+  const focusedCancel = await cancel.elementHandle();
+  if (focusedCancel === null) {
+    throw new Error("The run cancellation control was not rendered.");
+  }
+  await page.waitForFunction((element) => !element.isConnected, focusedCancel);
+  expect(await keepsDomFocus(cancel)).toBe(true);
 });
