@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import type { Database as SqliteDatabase } from "better-sqlite3";
 
-import { recordApprovalDecision } from "../application/runs.js";
+import { recordApprovalDecision, requestRunCancellation } from "../application/runs.js";
 import { ViewerApplication } from "../application/viewer.js";
 import type { ViewerRunListRecord } from "../application/viewer.js";
 import { KilinError } from "../domain/errors.js";
@@ -40,6 +40,7 @@ import type {
   ApprovalDecisionRequest,
   ApprovalDecisionResponse,
   OutputStream,
+  RunCancellationResponse,
   SessionBootstrapResponse,
   ViewerApiErrorResponse,
 } from "../ui/contracts.js";
@@ -404,12 +405,12 @@ const readJsonBody = async (request: IncomingMessage): Promise<unknown> => {
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const requireEmptyBody = (value: unknown): void => {
+const requireEmptyBody = (value: unknown, requestName: string): void => {
   if (!isPlainRecord(value) || Object.keys(value).length !== 0) {
     throw new HttpError(
       400,
       "REQUEST_INVALID",
-      "The session resume request must contain an empty object.",
+      `The ${requestName} request must contain an empty object.`,
     );
   }
 };
@@ -647,7 +648,7 @@ export const startViewerServer = async (
       if (request.method !== "POST") {
         throw methodNotAllowed("POST");
       }
-      requireEmptyBody(await readJsonBody(request));
+      requireEmptyBody(await readJsonBody(request), "session resume");
       if (!hasSessionCookie(request)) {
         throw new HttpError(
           401,
@@ -748,6 +749,34 @@ export const startViewerServer = async (
       return;
     }
 
+    const cancelMatch = /^\/api\/runs\/([^/]+)\/cancel$/u.exec(path);
+    if (cancelMatch !== null) {
+      if (request.method !== "POST") {
+        throw methodNotAllowed("POST");
+      }
+      requireApiSession(request);
+      const runSegment = cancelMatch[1];
+      if (runSegment === undefined) {
+        throw notFound();
+      }
+      const runId = decodePathSegment(runSegment);
+      requireEmptyBody(await readJsonBody(request), "run cancellation");
+      scopedDetail(runId);
+      const cancellation = await requestRunCancellation(runId, {
+        dataDirectory: options.dataDirectory,
+        userWorkflowsDirectory: join(homedir(), ".agents", "workflows"),
+        runtimeExecutables: defaultRuntimeExecutables,
+        environment: {},
+      });
+      const cancellationResponse: RunCancellationResponse = {
+        outputVersion,
+        runId: cancellation.runId,
+        cancelRequestedAt: cancellation.cancelRequestedAt,
+      };
+      sendJson(response, 200, cancellationResponse);
+      return;
+    }
+
     const runMatch = /^\/api\/runs\/([^/]+)$/u.exec(path);
     if (runMatch !== null) {
       if (request.method !== "GET") {
@@ -777,7 +806,11 @@ export const startViewerServer = async (
       }
       if (error instanceof KilinError) {
         const status =
-          error.code === "RUN_NOT_FOUND" ? 404 : error.code === "APPROVAL_NOT_WAITING" ? 409 : 500;
+          error.code === "RUN_NOT_FOUND"
+            ? 404
+            : error.code === "APPROVAL_NOT_WAITING" || error.code === "RUN_NOT_CANCELLABLE"
+              ? 409
+              : 500;
         sendError(response, new HttpError(status, error.code, error.message));
         return;
       }
