@@ -78,6 +78,7 @@ interface ViewerState {
   decisionSubmitting: boolean;
   decisionError: string | undefined;
   cancelSubmitting: boolean;
+  cancelRequested: boolean;
   cancelError: string | undefined;
   pollFailures: number;
 }
@@ -102,6 +103,7 @@ const state: ViewerState = {
   decisionSubmitting: false,
   decisionError: undefined,
   cancelSubmitting: false,
+  cancelRequested: false,
   cancelError: undefined,
   pollFailures: 0,
 };
@@ -3130,8 +3132,15 @@ const cancelCommand = (runId: string): HTMLElement => {
   return commands;
 };
 
-const cancelStatusMessage = (): string =>
-  state.cancelError ?? (state.cancelSubmitting ? "Requesting cancellation…" : "");
+const cancelStatusMessage = (): string => {
+  if (state.cancelError !== undefined) {
+    return state.cancelError;
+  }
+  if (state.cancelSubmitting) {
+    return "Requesting cancellation…";
+  }
+  return state.cancelRequested ? "Cancellation requested." : "";
+};
 
 const cancelStatus = (): HTMLElement => {
   const status = document.createElement("p");
@@ -3304,6 +3313,7 @@ const submitCancellation = async (runId: string): Promise<void> => {
     const response = await apiPost<RunCancellationResponse>(routes.cancel(runId), {});
     if (state.selectedRunId === runId) {
       state.cancelSubmitting = false;
+      state.cancelRequested = true;
     }
     applyRequestedCancellation(response);
   } catch (error: unknown) {
@@ -3356,6 +3366,7 @@ const renderDecisionDock = (): void => {
   elements.evidencePlaceholder.hidden = true;
   const { node, nodeRun } = context;
   const cancelRequestedAt = state.runDetail?.run.cancelRequestedAt;
+  const cancellationPending = state.cancelSubmitting || cancelRequestedAt !== undefined;
   const upstream = dockUpstreamAgents(node, nodeRun);
   for (const dependencyRun of upstream) {
     ensureDockEvidence(runId, dependencyRun.ordinal);
@@ -3380,6 +3391,7 @@ const renderDecisionDock = (): void => {
     nodeRun.decision?.decidedAt ?? "",
     nodeRun.deadlineAt ?? "",
     cancelRequestedAt ?? "",
+    state.cancelSubmitting,
     state.decisionSubmitting,
     state.decisionError ?? "",
     evidenceStates,
@@ -3429,7 +3441,7 @@ const renderDecisionDock = (): void => {
   if (
     nodeRun.decision === undefined &&
     nodeRun.status === "waiting_for_approval" &&
-    cancelRequestedAt === undefined
+    !cancellationPending
   ) {
     body.append(fallbackCommands(runId, nodeRun.executionId));
   }
@@ -3438,7 +3450,7 @@ const renderDecisionDock = (): void => {
   footer.className = "decision-footer";
   if (nodeRun.decision !== undefined) {
     footer.append(decisionRecordElement(nodeRun.decision));
-  } else if (nodeRun.status === "waiting_for_approval" && cancelRequestedAt === undefined) {
+  } else if (nodeRun.status === "waiting_for_approval" && !cancellationPending) {
     footer.append(decisionControls());
   } else {
     const copy = document.createElement("p");
@@ -4042,6 +4054,7 @@ const selectRun = async (runId: string, initial?: InitialRunSelection): Promise<
   state.decisionSubmitting = false;
   state.cancelError = undefined;
   state.cancelSubmitting = false;
+  state.cancelRequested = false;
   dockEvidenceCache.clear();
   approvalGateSnapshot = undefined;
   renderPresentation();
@@ -4101,6 +4114,7 @@ const selectCurrentWorkflow = (): void => {
   state.decisionSubmitting = false;
   state.cancelError = undefined;
   state.cancelSubmitting = false;
+  state.cancelRequested = false;
   dockEvidenceCache.clear();
   approvalGateSnapshot = undefined;
   renderPresentation();
@@ -4218,7 +4232,8 @@ const pollViewer = async (): Promise<void> => {
     return;
   }
   pollInProgress = true;
-  pollController = new AbortController();
+  const controller = new AbortController();
+  pollController = controller;
   const selectedRunId = state.viewMode === "run" ? state.selectedRunId : undefined;
   const detailRequestGeneration =
     selectedRunId === undefined ? undefined : runDetailRequestGeneration + 1;
@@ -4226,17 +4241,20 @@ const pollViewer = async (): Promise<void> => {
     runDetailRequestGeneration = detailRequestGeneration;
   }
   try {
-    const workflowPromise = apiGet<CurrentWorkflowResponse>(routes.workflow, pollController.signal);
-    const runsPromise = apiGet<ScopedRunListResponse>(routes.runs, pollController.signal);
+    const workflowPromise = apiGet<CurrentWorkflowResponse>(routes.workflow, controller.signal);
+    const runsPromise = apiGet<ScopedRunListResponse>(routes.runs, controller.signal);
     const detailPromise =
       selectedRunId === undefined
         ? Promise.resolve<ScopedRunDetailResponse | undefined>(undefined)
-        : apiGet<ScopedRunDetailResponse>(routes.run(selectedRunId), pollController.signal);
+        : apiGet<ScopedRunDetailResponse>(routes.run(selectedRunId), controller.signal);
     const [workflow, runList, detail] = await Promise.all([
       workflowPromise,
       runsPromise,
       detailPromise,
     ]);
+    if (controller.signal.aborted) {
+      return;
+    }
     state.currentWorkflow = workflow;
     state.runList = runList;
     if (
