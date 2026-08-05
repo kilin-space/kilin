@@ -598,6 +598,75 @@ describe("generate-kilin-workflow publisher", () => {
       ),
     ).toBe(false);
   });
+
+  it("stages a referenced json output schema file and validates clean", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "schema-review-candidate.yaml");
+    const schemaSource = `${JSON.stringify({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      additionalProperties: false,
+      required: ["findings"],
+      properties: { findings: { type: "array" } },
+    })}\n`;
+    await mkdir(join(directory, "schemas"));
+    await writeFile(join(directory, "schemas", "findings.json"), schemaSource);
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "schema-review", name: "Schema review" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Scan the workspace.",
+          output: { type: "json", schema: "./schemas/findings.json" },
+        },
+      ],
+      edges: [],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "schema-review");
+    const stagedSchema = join(directory, ".agents/workflows/schema-review/schemas/findings.json");
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ validation: { valid: true } });
+    await expect(readFile(stagedSchema, "utf8")).resolves.toBe(schemaSource);
+    expect((await stat(stagedSchema)).mode & 0o777).toBe(0o600);
+  });
+
+  it("fails loudly when a referenced json output schema file is missing", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "schema-missing-candidate.yaml");
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "schema-missing", name: "Schema missing" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Scan the workspace.",
+          output: { type: "json", schema: "./schemas/findings.json" },
+        },
+      ],
+      edges: [],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "schema-missing");
+
+    expect(result).toMatchObject({ exitCode: 1, stdout: "" });
+    expect(result.stderr).toContain(
+      'The json output schema "./schemas/findings.json" does not exist or is unreadable.',
+    );
+    await expect(
+      lstat(join(directory, ".agents", "workflows", "schema-missing")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
 describe("discover-kilin-workflows reducer", () => {
