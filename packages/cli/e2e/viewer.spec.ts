@@ -113,36 +113,58 @@ type StubbedPermission = "default" | "granted" | "denied";
 /**
  * Replaces the Notification constructor with one that records its constructions and reports a
  * permission the test controls. `context.grantPermissions` drives only the native permission, so it
- * cannot express the `default` and `denied` suppression cases.
+ * cannot express the `default` and `denied` suppression cases. `requestOutcome` is the permission
+ * `requestPermission()` settles on; omitting it leaves the current permission unchanged.
  */
-const stubNotifications = async (page: Page, permission: StubbedPermission): Promise<void> => {
-  await page.addInitScript((granted: string) => {
-    const holder = window as unknown as { __raisedNotifications: RaisedNotification[] };
-    holder.__raisedNotifications = [];
-    class StubNotification {
-      static permission = granted;
-      static requestPermission(): Promise<string> {
-        return Promise.resolve(StubNotification.permission);
+const stubNotifications = async (
+  page: Page,
+  permission: StubbedPermission,
+  requestOutcome?: StubbedPermission,
+): Promise<void> => {
+  await page.addInitScript(
+    (stub: { readonly permission: string; readonly requestOutcome: string | null }) => {
+      const holder = window as unknown as {
+        __raisedNotifications: RaisedNotification[];
+        __permissionRequests: number;
+      };
+      holder.__raisedNotifications = [];
+      holder.__permissionRequests = 0;
+      class StubNotification {
+        static permission = stub.permission;
+        static requestPermission(): Promise<string> {
+          holder.__permissionRequests += 1;
+          if (stub.requestOutcome !== null) {
+            StubNotification.permission = stub.requestOutcome;
+          }
+          return Promise.resolve(StubNotification.permission);
+        }
+        public onclick: (() => void) | null = null;
+        constructor(title: string, options?: { readonly body?: string; readonly tag?: string }) {
+          holder.__raisedNotifications.push({
+            title,
+            body: options?.body ?? "",
+            tag: options?.tag,
+          });
+        }
+        close(): void {
+          this.onclick = null;
+        }
       }
-      public onclick: (() => void) | null = null;
-      constructor(title: string, options?: { readonly body?: string; readonly tag?: string }) {
-        holder.__raisedNotifications.push({
-          title,
-          body: options?.body ?? "",
-          tag: options?.tag,
-        });
-      }
-      close(): void {
-        this.onclick = null;
-      }
-    }
-    Object.defineProperty(window, "Notification", {
-      configurable: true,
-      writable: true,
-      value: StubNotification,
-    });
-  }, permission);
+      Object.defineProperty(window, "Notification", {
+        configurable: true,
+        writable: true,
+        value: StubNotification,
+      });
+    },
+    { permission, requestOutcome: requestOutcome ?? null },
+  );
 };
+
+const permissionRequests = async (page: Page): Promise<number> =>
+  page.evaluate(() => {
+    const holder = window as unknown as { __permissionRequests?: number };
+    return holder.__permissionRequests ?? 0;
+  });
 
 const setNotificationPermission = async (
   page: Page,
@@ -2373,6 +2395,45 @@ test("a hidden tab polls at the reduced interval and resumes the session cadence
   await expect.poll(() => listRequests, { timeout: 4_000 }).toBeGreaterThan(beforeShow + 1);
 });
 
+test("the notification control states its permission, requests it on click, and locks when blocked", async ({
+  page,
+  viewer,
+}) => {
+  await stubNotifications(page, "default", "granted");
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([ordinaryRunningSummary("run-notify")]),
+    runDetail: (runId) =>
+      runId === "run-notify"
+        ? gateRunDetail(ordinaryRunningSummary("run-notify"), runningNodes())
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const toggle = page.locator("#notify-toggle");
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveText("Notify me");
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(await permissionRequests(page)).toBe(0);
+
+  await toggle.click();
+
+  await expect(toggle).toHaveText("Notifications on");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  expect(await permissionRequests(page)).toBe(1);
+
+  // The launch token is stripped after the first exchange, so the reload resumes on the cookie.
+  await stubNotifications(page, "denied");
+  await page.reload();
+  await expect(page.locator("#connection-status")).toHaveText("Live");
+
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveText("Notifications blocked");
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+});
+
 test("a gate arriving while the tab is hidden notifies once and is decidable on return", async ({
   page,
   viewer,
@@ -2411,6 +2472,21 @@ test("a gate arriving while the tab is hidden notifies once and is decidable on 
   const afterNotification = listRequests;
   await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(afterNotification);
   expect(await raisedNotifications(page)).toHaveLength(1);
+
+  // A second gate on the same run must notify again once the first one clears. Refresh polls
+  // immediately without touching visibility, so the tab stays hidden throughout.
+  const waitingRow = page.getByRole("button", {
+    name: /^Run run-hidden-gate, waiting for approval,/u,
+  });
+  await expect(waitingRow).toHaveCount(1, { timeout: 20_000 });
+  waiting = false;
+  await page.locator("#refresh-button").click();
+  await expect(waitingRow).toHaveCount(0, { timeout: 20_000 });
+  expect(await raisedNotifications(page)).toHaveLength(1);
+
+  waiting = true;
+  await page.locator("#refresh-button").click();
+  await expect.poll(() => raisedNotifications(page), { timeout: 20_000 }).toHaveLength(2);
 
   await setDocumentHidden(page, false);
   const banner = page.locator("#decision-needed-banner");
@@ -2602,9 +2678,11 @@ test("cancelling a gated run clears its approval controls without waiting for a 
   await openViewer(page, viewer.launchUrl);
 
   const banner = page.locator("#decision-needed-banner");
+  const dock = page.locator("#decision-dock");
   await expect(banner).toBeVisible();
   await expect(page.locator("#decision-approve")).toBeVisible();
   await expect(page.locator("#decision-reject")).toBeVisible();
+  await expect(dock.locator(".approval-commands")).toContainText("kilin runs approve");
 
   await waitForRunListResponse(page, viewer.origin);
   const pollsAtClick = listRequests;
@@ -2613,6 +2691,12 @@ test("cancelling a gated run clears its approval controls without waiting for a 
   await expect(banner).toBeHidden();
   await expect(page.locator("#decision-approve")).toHaveCount(0);
   await expect(page.locator("#decision-reject")).toHaveCount(0);
+  // The dock still renders, so the controls are gone because the gate is undecidable, not because
+  // the whole dock vanished.
+  await expect(dock.locator(".decision-footer")).toContainText(
+    "This run is being cancelled, so this gate can no longer be decided.",
+  );
+  await expect(dock.locator(".approval-commands")).toHaveCount(0);
   expect(listRequests).toBe(pollsAtClick);
 });
 

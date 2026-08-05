@@ -1128,89 +1128,94 @@ describe("viewer server read-only records and output", () => {
 
   it("guards run cancellation with the session, CSRF, origin, body, and scope rules", async () => {
     const fixture = await createApprovalFixture();
-    const session = await exchangeSession(fixture.handle);
-    const postHeaders = {
-      ...authenticatedHeaders(session),
-      Origin: fixture.handle.origin,
-      "Content-Type": "application/json",
-    };
-    const cancelPath = `/api/runs/${fixture.runId}/cancel`;
+    const lock = await acquireCanonicalWorkspaceLock(fixture.cwd, fixture.dataDirectory);
+    try {
+      const session = await exchangeSession(fixture.handle);
+      const postHeaders = {
+        ...authenticatedHeaders(session),
+        Origin: fixture.handle.origin,
+        "Content-Type": "application/json",
+      };
+      const cancelPath = `/api/runs/${fixture.runId}/cancel`;
 
-    const methodResponse = await requestViewer(fixture.handle, {
-      method: "GET",
-      path: cancelPath,
-      headers: authenticatedHeaders(session),
-    });
-    expect(methodResponse.status).toBe(405);
-    expect(methodResponse.headers.allow).toBe("POST");
-    expect(
-      (
-        await requestViewer(fixture.handle, {
-          method: "POST",
-          path: cancelPath,
-          headers: { Origin: fixture.handle.origin, "Content-Type": "application/json" },
-          body: "{}",
-        })
-      ).status,
-    ).toBe(401);
-    expect(
-      (
-        await requestViewer(fixture.handle, {
-          method: "POST",
-          path: cancelPath,
-          headers: {
-            Cookie: session.cookie,
-            Origin: fixture.handle.origin,
-            "Content-Type": "application/json",
-          },
-          body: "{}",
-        })
-      ).status,
-    ).toBe(403);
-    expect(
-      (
-        await requestViewer(fixture.handle, {
-          method: "POST",
-          path: cancelPath,
-          headers: { ...postHeaders, Origin: "http://localhost:9999" },
-          body: "{}",
-        })
-      ).status,
-    ).toBe(403);
-    expect(
-      (
-        await requestViewer(fixture.handle, {
-          method: "POST",
-          path: `/api/runs/${fixture.outOfScopeRunId}/cancel`,
-          headers: postHeaders,
-          body: "{}",
-        })
-      ).status,
-    ).toBe(404);
-    expect(
-      (
-        await requestViewer(fixture.handle, {
-          method: "POST",
-          path: "/api/runs/missing-run/cancel",
-          headers: postHeaders,
-          body: "{}",
-        })
-      ).status,
-    ).toBe(404);
+      const methodResponse = await requestViewer(fixture.handle, {
+        method: "GET",
+        path: cancelPath,
+        headers: authenticatedHeaders(session),
+      });
+      expect(methodResponse.status).toBe(405);
+      expect(methodResponse.headers.allow).toBe("POST");
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: cancelPath,
+            headers: { Origin: fixture.handle.origin, "Content-Type": "application/json" },
+            body: "{}",
+          })
+        ).status,
+      ).toBe(401);
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: cancelPath,
+            headers: {
+              Cookie: session.cookie,
+              Origin: fixture.handle.origin,
+              "Content-Type": "application/json",
+            },
+            body: "{}",
+          })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: cancelPath,
+            headers: { ...postHeaders, Origin: "http://localhost:9999" },
+            body: "{}",
+          })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: `/api/runs/${fixture.outOfScopeRunId}/cancel`,
+            headers: postHeaders,
+            body: "{}",
+          })
+        ).status,
+      ).toBe(404);
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: "/api/runs/missing-run/cancel",
+            headers: postHeaders,
+            body: "{}",
+          })
+        ).status,
+      ).toBe(404);
 
-    const populatedBody = await requestViewer(fixture.handle, {
-      method: "POST",
-      path: cancelPath,
-      headers: postHeaders,
-      body: JSON.stringify({ note: "stop now" }),
-    });
-    expect(populatedBody.status).toBe(400);
-    expect((JSON.parse(populatedBody.body) as ViewerApiErrorResponse).error.message).toContain(
-      "run cancellation",
-    );
-    expect(storedCancellation(fixture.dataDirectory, fixture.runId)).toMatchObject({
-      cancel_requested_at: null,
-    });
+      const populatedBody = await requestViewer(fixture.handle, {
+        method: "POST",
+        path: cancelPath,
+        headers: postHeaders,
+        body: JSON.stringify({ note: "stop now" }),
+      });
+      expect(populatedBody.status).toBe(400);
+      expect((JSON.parse(populatedBody.body) as ViewerApiErrorResponse).error.message).toContain(
+        "run cancellation",
+      );
+      expect(storedCancellation(fixture.dataDirectory, fixture.runId)).toMatchObject({
+        cancel_requested_at: null,
+      });
+    } finally {
+      await lock.release();
+    }
   });
 
   it("latches a cancellation request for a scoped running run holding its workspace", async () => {
