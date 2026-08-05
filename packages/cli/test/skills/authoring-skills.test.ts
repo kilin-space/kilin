@@ -599,7 +599,7 @@ describe("generate-kilin-workflow publisher", () => {
     ).toBe(false);
   });
 
-  it("stages a referenced json output schema file and validates clean", async () => {
+  it("stages one copy of a json output schema shared by two nodes and validates clean", async () => {
     const directory = await createTemporaryDirectory();
     const candidate = join(directory, "schema-review-candidate.yaml");
     const schemaSource = `${JSON.stringify({
@@ -623,18 +623,28 @@ describe("generate-kilin-workflow publisher", () => {
           prompt: "Scan the workspace.",
           output: { type: "json", schema: "./schemas/findings.json" },
         },
+        {
+          id: "rescan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Rescan the workspace.",
+          output: { type: "json", schema: "./schemas/findings.json" },
+        },
       ],
-      edges: [],
+      edges: [{ from: "scan", to: "rescan", input: "first" }],
     });
     await writeFile(candidate, source);
 
     const result = await runPublisher(directory, candidate, "schema-review");
-    const stagedSchema = join(directory, ".agents/workflows/schema-review/schemas/findings.json");
+    const packageDirectory = join(directory, ".agents/workflows/schema-review");
+    const stagedSchema = join(packageDirectory, "schemas/findings.json");
 
     expect(result).toMatchObject({ exitCode: 0, stderr: "" });
     expect(JSON.parse(result.stdout)).toMatchObject({ validation: { valid: true } });
     await expect(readFile(stagedSchema, "utf8")).resolves.toBe(schemaSource);
     expect((await stat(stagedSchema)).mode & 0o777).toBe(0o600);
+    await expect(readdir(join(packageDirectory, "schemas"))).resolves.toEqual(["findings.json"]);
   });
 
   it("fails loudly when a referenced json output schema file is missing", async () => {
@@ -666,6 +676,75 @@ describe("generate-kilin-workflow publisher", () => {
     await expect(
       lstat(join(directory, ".agents", "workflows", "schema-missing")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("stages a json output schema referenced from a loop body and validates clean", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "loop-schema-candidate.yaml");
+    const schemaSource = `${JSON.stringify({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      additionalProperties: false,
+      required: ["summary"],
+      properties: { summary: { type: "string" } },
+    })}\n`;
+    await mkdir(join(directory, "schemas"));
+    await writeFile(join(directory, "schemas", "summary.json"), schemaSource);
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "loop-schema", name: "Loop schema" },
+      nodes: [
+        {
+          id: "refinement",
+          kind: "loop",
+          maxIterations: 2,
+          body: {
+            nodes: [
+              {
+                id: "worker",
+                kind: "agent",
+                runtime: "codex",
+                access: "read_only",
+                prompt: "Revise the work.",
+                output: { type: "json", schema: "./schemas/summary.json" },
+              },
+              {
+                id: "review",
+                kind: "agent",
+                runtime: "codex",
+                access: "read_only",
+                prompt: "Review the work.",
+                output: { type: "text" },
+              },
+              {
+                id: "check",
+                kind: "agent",
+                runtime: "codex",
+                access: "read_only",
+                prompt: "Decide.",
+                output: { type: "choice", choices: ["pass", "revise"] },
+              },
+            ],
+            edges: [
+              { from: "worker", to: "review", input: "draft" },
+              { from: "review", to: "check", input: "feedback" },
+            ],
+          },
+          decision: { node: "check", passChoice: "pass", reviseChoice: "revise" },
+          feedback: { from: "review", to: "worker", input: "feedback" },
+          result: { node: "worker" },
+        },
+      ],
+      edges: [],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "loop-schema");
+    const stagedSchema = join(directory, ".agents/workflows/loop-schema/schemas/summary.json");
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ validation: { valid: true } });
+    await expect(readFile(stagedSchema, "utf8")).resolves.toBe(schemaSource);
   });
 });
 

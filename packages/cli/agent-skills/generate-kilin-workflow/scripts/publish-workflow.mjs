@@ -160,7 +160,7 @@ const stageDeclaredSchemaFiles = async (definitionBytes, definitionCandidate, st
       `Candidate workflow definition is not valid YAML: ${error instanceof Error ? error.message : "parse failure"}`,
     );
   }
-  const candidateDirectory = dirname(definitionCandidate);
+  const candidateDirectory = await realpath(dirname(definitionCandidate));
   const staged = new Set();
   for (const declared of collectDeclaredSchemaPaths(definition)) {
     const relativePath = declared.startsWith("./") ? declared.slice(2) : declared;
@@ -169,24 +169,30 @@ const stageDeclaredSchemaFiles = async (definitionBytes, definitionCandidate, st
         `The json output schema path "${declared}" is invalid. Use 1 through 1,024 UTF-8 bytes in normalized POSIX-relative form with no leading or trailing "/", non-empty segments, "/" separators, and no ".", "..", backslash, or control characters.`,
       );
     }
+    if (relativePath === "WORKFLOW.md" || relativePath === "WORKFLOW.yaml") {
+      fail(
+        `The json output schema "${declared}" collides with the reserved workflow package file "${relativePath}".`,
+      );
+    }
     if (staged.has(relativePath)) {
       continue;
     }
     staged.add(relativePath);
-    const schemaFile = resolve(candidateDirectory, relativePath);
-    const containment = relative(candidateDirectory, schemaFile);
-    if (containment.startsWith("..") || isAbsolute(containment)) {
-      fail(`The json output schema "${declared}" resolves outside the candidate directory.`);
-    }
-    let schemaBytes;
+    let schemaFile;
     try {
-      schemaBytes = await readFile(schemaFile);
+      schemaFile = await realpath(resolve(candidateDirectory, relativePath));
     } catch (error) {
       if (isErrorCode(error, "ENOENT") || isErrorCode(error, "ENOTDIR")) {
         fail(`The json output schema "${declared}" does not exist or is unreadable.`);
       }
       throw error;
     }
+    const containment = relative(candidateDirectory, schemaFile);
+    if (containment.startsWith("..") || isAbsolute(containment)) {
+      fail(`The json output schema "${declared}" resolves outside the candidate directory.`);
+    }
+    await requireRegularFile(schemaFile, `The json output schema "${declared}"`);
+    const schemaBytes = await readFile(schemaFile);
     const stagedFile = join(stagePackage, ...relativePath.split("/"));
     await mkdir(dirname(stagedFile), { recursive: true, mode: 0o700 });
     await writeFile(stagedFile, schemaBytes, { mode: 0o600, flag: "wx" });
