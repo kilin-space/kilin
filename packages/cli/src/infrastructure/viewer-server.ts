@@ -11,9 +11,11 @@ import Database from "better-sqlite3";
 import type { Database as SqliteDatabase } from "better-sqlite3";
 
 import { recordApprovalDecision, requestRunCancellation } from "../application/runs.js";
+import type { ExecutionEnvironment } from "../application/runs.js";
 import { ViewerApplication } from "../application/viewer.js";
 import type { ViewerRunListRecord } from "../application/viewer.js";
 import { KilinError } from "../domain/errors.js";
+import type { KilinErrorCode } from "../domain/errors.js";
 import type { RunDetail } from "../domain/run-state.js";
 import { maximumApprovalNoteCharacters } from "../domain/run-state.js";
 import type { WorkflowIdentity } from "../domain/workflow-package.js";
@@ -51,6 +53,11 @@ const maximumRequestBodyBytes = 4_096;
 const maximumLineageLength = 1_000;
 const defaultPollIntervalMs = 2_000;
 const outputVersion = 1 as const;
+const errorCodeStatuses: Partial<Record<KilinErrorCode, number>> = {
+  RUN_NOT_FOUND: 404,
+  APPROVAL_NOT_WAITING: 409,
+  RUN_NOT_CANCELLABLE: 409,
+};
 const contentSecurityPolicy = [
   "default-src 'none'",
   "script-src 'self'",
@@ -518,6 +525,12 @@ export const startViewerServer = async (
     options.clientJavaScript ?? (await readViewerClientAsset(import.meta.url));
   const application = new ViewerApplication(options);
   const store = new ReadonlyViewerStore(options.dataDirectory);
+  const executionEnvironment: ExecutionEnvironment = {
+    dataDirectory: options.dataDirectory,
+    userWorkflowsDirectory: join(homedir(), ".agents", "workflows"),
+    runtimeExecutables: defaultRuntimeExecutables,
+    environment: {},
+  };
   const launchToken = secret();
   const launchTokenDigest = secretDigest(launchToken);
   const sessionSecret = secret();
@@ -727,12 +740,7 @@ export const startViewerServer = async (
         decisionRequest.decision === "approved" ? "approve" : "reject",
         "human",
         decisionRequest.note,
-        {
-          dataDirectory: options.dataDirectory,
-          userWorkflowsDirectory: join(homedir(), ".agents", "workflows"),
-          runtimeExecutables: defaultRuntimeExecutables,
-          environment: {},
-        },
+        executionEnvironment,
       );
       const decisionResponse: ApprovalDecisionResponse = {
         outputVersion,
@@ -762,12 +770,7 @@ export const startViewerServer = async (
       const runId = decodePathSegment(runSegment);
       requireEmptyBody(await readJsonBody(request), "run cancellation");
       scopedDetail(runId);
-      const cancellation = await requestRunCancellation(runId, {
-        dataDirectory: options.dataDirectory,
-        userWorkflowsDirectory: join(homedir(), ".agents", "workflows"),
-        runtimeExecutables: defaultRuntimeExecutables,
-        environment: {},
-      });
+      const cancellation = await requestRunCancellation(runId, executionEnvironment);
       const cancellationResponse: RunCancellationResponse = {
         outputVersion,
         runId: cancellation.runId,
@@ -805,13 +808,10 @@ export const startViewerServer = async (
         return;
       }
       if (error instanceof KilinError) {
-        const status =
-          error.code === "RUN_NOT_FOUND"
-            ? 404
-            : error.code === "APPROVAL_NOT_WAITING" || error.code === "RUN_NOT_CANCELLABLE"
-              ? 409
-              : 500;
-        sendError(response, new HttpError(status, error.code, error.message));
+        sendError(
+          response,
+          new HttpError(errorCodeStatuses[error.code] ?? 500, error.code, error.message),
+        );
         return;
       }
       sendError(

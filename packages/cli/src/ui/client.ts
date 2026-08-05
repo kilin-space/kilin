@@ -389,8 +389,9 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     const index = graphCardIndex(cards, target.cardKey);
     const fallbackIndex =
       index >= 0 ? index : graphCardIndex(cards, containerCardKey(target.cardKey));
+    const restoredExactCard = index >= 0;
     if (fallbackIndex >= 0) {
-      updateGraphRovingFocus(cards, fallbackIndex, index >= 0);
+      updateGraphRovingFocus(cards, fallbackIndex, restoredExactCard);
     }
     return;
   }
@@ -1829,10 +1830,6 @@ const renderGraphExpansion = (): void => {
 
 const renderRunInspector = (): void => {
   elements.runInspector.replaceChildren();
-  const cancelMessage = cancelStatusMessage();
-  if (elements.cancelAnnouncement.textContent !== cancelMessage) {
-    setText(elements.cancelAnnouncement, cancelMessage);
-  }
   const title = document.createElement("p");
   title.className = "inspector-title";
   if (state.viewMode === "current") {
@@ -3567,6 +3564,13 @@ const announceApprovalGateTransitions = (): void => {
   }
 };
 
+const announceCancellation = (): void => {
+  const cancelMessage = cancelStatusMessage();
+  if (elements.cancelAnnouncement.textContent !== cancelMessage) {
+    setText(elements.cancelAnnouncement, cancelMessage);
+  }
+};
+
 const resetEvidencePanel = (content: Node | string): void => {
   renderedEvidence = undefined;
   elements.outputPanel.replaceChildren(content);
@@ -3800,6 +3804,7 @@ const renderPresentation = (): void => {
   renderDecisionDock();
   renderDecisionNeededBanner();
   announceApprovalGateTransitions();
+  announceCancellation();
   updateLiveElements();
   renderGraphExpansion();
   restoreViewerFocus(focusTarget);
@@ -4165,6 +4170,8 @@ const raiseApprovalNotification = (run: RunSummaryDto): void => {
 };
 
 const notifyNewApprovalGates = (runs: readonly RunSummaryDto[]): void => {
+  const canRaiseNotification =
+    document.hidden && "Notification" in window && Notification.permission === "granted";
   const listedRunIds = new Set<string>();
   for (const run of runs) {
     listedRunIds.add(run.runId);
@@ -4176,7 +4183,7 @@ const notifyNewApprovalGates = (runs: readonly RunSummaryDto[]): void => {
       continue;
     }
     notifiedApprovalRunIds.add(run.runId);
-    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+    if (canRaiseNotification) {
       raiseApprovalNotification(run);
     }
   }
@@ -4217,9 +4224,10 @@ const schedulePoll = (): void => {
   if (state.session === undefined) {
     return;
   }
-  const baseInterval = document.hidden
-    ? Math.max(hiddenPollIntervalMs, state.session.pollIntervalMs)
-    : Math.max(minimumPollIntervalMs, state.session.pollIntervalMs);
+  const baseInterval = Math.max(
+    document.hidden ? hiddenPollIntervalMs : minimumPollIntervalMs,
+    state.session.pollIntervalMs,
+  );
   const backoff = Math.min(baseInterval * 2 ** state.pollFailures, maximumBackoffMs);
   pollTimer = window.setTimeout(() => {
     void pollViewer();
@@ -4270,7 +4278,9 @@ const pollViewer = async (): Promise<void> => {
     elements.appShell.setAttribute("aria-busy", "false");
     notifyNewApprovalGates(runList.runs);
     renderPresentation();
-    maybeRefreshEvidence();
+    if (!document.hidden) {
+      maybeRefreshEvidence();
+    }
     applyInitialSelectionOnce();
   } catch (error: unknown) {
     if (!(error instanceof DOMException && error.name === "AbortError")) {
