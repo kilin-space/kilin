@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { parse } from "yaml";
@@ -154,7 +154,12 @@ const collectDeclaredSchemaPaths = (definition) => {
 const stageDeclaredSchemaFiles = async (definitionBytes, definitionCandidate, stagePackage) => {
   let definition;
   try {
-    definition = parse(definitionBytes.toString("utf8"));
+    definition = parse(definitionBytes.toString("utf8"), {
+      maxAliasCount: 0,
+      schema: "core",
+      strict: true,
+      uniqueKeys: true,
+    });
   } catch (error) {
     fail(
       `Candidate workflow definition is not valid YAML: ${error instanceof Error ? error.message : "parse failure"}`,
@@ -188,7 +193,7 @@ const stageDeclaredSchemaFiles = async (definitionBytes, definitionCandidate, st
       throw error;
     }
     const containment = relative(candidateDirectory, schemaFile);
-    if (containment.startsWith("..") || isAbsolute(containment)) {
+    if (containment === ".." || containment.startsWith(`..${sep}`) || isAbsolute(containment)) {
       fail(`The json output schema "${declared}" resolves outside the candidate directory.`);
     }
     await requireRegularFile(schemaFile, `The json output schema "${declared}"`);

@@ -798,6 +798,75 @@ describe("generate-kilin-workflow publisher", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ validation: { valid: true } });
     await expect(readFile(stagedSchema, "utf8")).resolves.toBe(schemaSource);
   });
+
+  it("rejects a definition containing a YAML alias during collection", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "alias-guard-candidate.yaml");
+    const source = [
+      "schemaVersion: 1",
+      "workflow: { id: alias-guard, name: Alias guard }",
+      "nodes:",
+      "  - id: first",
+      "    kind: agent",
+      "    runtime: codex",
+      "    access: read_only",
+      "    prompt: &shared Review the code.",
+      "  - id: second",
+      "    kind: agent",
+      "    runtime: codex",
+      "    access: read_only",
+      "    prompt: *shared",
+      "edges: [{ from: first, to: second }]",
+      "",
+    ].join("\n");
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "alias-guard");
+
+    expect(result).toMatchObject({ exitCode: 1, stdout: "" });
+    expect(result.stderr).toContain("Candidate workflow definition is not valid YAML");
+    expect(result.stderr).not.toContain("Candidate validation failed");
+    await expect(
+      lstat(join(directory, ".agents", "workflows", "alias-guard")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("stages a json output schema beneath a directory whose name starts with two dots", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "dotdot-schema-candidate.yaml");
+    const schemaSource = `${JSON.stringify({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      additionalProperties: false,
+      required: ["findings"],
+      properties: { findings: { type: "array" } },
+    })}\n`;
+    await mkdir(join(directory, "..foo"));
+    await writeFile(join(directory, "..foo", "findings.json"), schemaSource);
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "dotdot-schema", name: "Dotdot schema" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Scan the workspace.",
+          output: { type: "json", schema: "./..foo/findings.json" },
+        },
+      ],
+      edges: [],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "dotdot-schema");
+    const stagedSchema = join(directory, ".agents/workflows/dotdot-schema/..foo/findings.json");
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ validation: { valid: true } });
+    await expect(readFile(stagedSchema, "utf8")).resolves.toBe(schemaSource);
+  });
 });
 
 describe("discover-kilin-workflows reducer", () => {
