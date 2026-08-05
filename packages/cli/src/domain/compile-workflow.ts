@@ -634,6 +634,9 @@ export const isNormalizedRelativePath = (value: unknown): value is string => {
   );
 };
 
+export const normalizedRelativePathGuidance =
+  'Use 1 through 1,024 UTF-8 bytes in normalized POSIX-relative form with no leading or trailing "/", non-empty segments, "/" separators, and no ".", "..", backslash, or control characters.';
+
 const validatedOutput = (
   output: AgentOutputDeclarationInput | undefined,
   nodeId: string,
@@ -714,7 +717,7 @@ const validatedOutput = (
   }
   if (output.type === "artifact") {
     const errorPath = `nodes[${String(index)}].output.path`;
-    const errorMessage = `Node "${nodeId}" has an invalid artifact output path. Use 1 through 1,024 UTF-8 bytes in normalized POSIX-relative form with no leading or trailing "/", non-empty segments, "/" separators, and no ".", "..", backslash, or control characters.`;
+    const errorMessage = `Node "${nodeId}" has an invalid artifact output path. ${normalizedRelativePathGuidance}`;
     if (!isNormalizedRelativePath(output.path)) {
       throw new KilinError("WORKFLOW_GRAPH_INVALID", errorMessage, errorPath);
     }

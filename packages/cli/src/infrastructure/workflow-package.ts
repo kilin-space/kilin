@@ -6,7 +6,10 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseDocument, visit } from "yaml";
 
 import { parseCanonicalJson, type JsonValue } from "../domain/canonical-json.js";
-import { isNormalizedRelativePath } from "../domain/compile-workflow.js";
+import {
+  isNormalizedRelativePath,
+  normalizedRelativePathGuidance,
+} from "../domain/compile-workflow.js";
 import { KilinError } from "../domain/errors.js";
 import type { WorkflowCompilationInput } from "../domain/workflow.js";
 import type {
@@ -279,7 +282,7 @@ const readPackage = async (scope: WorkflowScope, directory: string): Promise<Wor
     await readRegularFile(definitionFile, "Workflow definition", maximumWorkflowDefinitionBytes),
     definitionFile,
   );
-  await resolveJsonOutputSchemas(definition, directory);
+  await resolveJsonOutputSchemas(definition.nodes, directory);
   if (definition.workflow.id !== manifest.name) {
     throw packageError(
       `${workflowDefinitionFileName} workflow.id "${definition.workflow.id}" must match package name "${manifest.name}".`,
@@ -306,7 +309,7 @@ const resolveDeclaredSchema = async (
   const relativePath = declared.startsWith("./") ? declared.slice(2) : declared;
   if (!isNormalizedRelativePath(relativePath)) {
     throw packageError(
-      `The json output schema path "${declared}" is invalid. Use 1 through 1,024 UTF-8 bytes in normalized POSIX-relative form with no leading or trailing "/", non-empty segments, "/" separators, and no ".", "..", backslash, or control characters.`,
+      `The json output schema path "${declared}" is invalid. ${normalizedRelativePathGuidance}`,
     );
   }
   let bytes: Uint8Array;
@@ -360,14 +363,14 @@ const resolveDeclaredSchema = async (
   return parsed;
 };
 
-const resolveNodeOutputSchemas = async (
+export const resolveJsonOutputSchemas = async (
   nodes: WorkflowCompilationInput["nodes"],
   packageDirectory: string,
 ): Promise<void> => {
   for (const node of nodes) {
     if (node.kind === "loop") {
       if ("body" in node && isRecord(node.body) && Array.isArray(node.body.nodes)) {
-        await resolveNodeOutputSchemas(
+        await resolveJsonOutputSchemas(
           node.body.nodes as WorkflowCompilationInput["nodes"],
           packageDirectory,
         );
@@ -388,11 +391,6 @@ const resolveNodeOutputSchemas = async (
     }
   }
 };
-
-export const resolveJsonOutputSchemas = async (
-  definition: WorkflowCompilationInput,
-  packageDirectory: string,
-): Promise<void> => resolveNodeOutputSchemas(definition.nodes, packageDirectory);
 
 const canonicalDirectory = async (
   directory: string,

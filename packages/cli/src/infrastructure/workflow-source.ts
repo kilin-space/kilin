@@ -1,13 +1,12 @@
 import { open } from "node:fs/promises";
 
 import type { SchemaObject } from "ajv";
-import Ajv2020Module from "ajv/dist/2020.js";
 import { isScalar, LineCounter, parseAllDocuments, visit } from "yaml";
 import type { ErrorCode as YamlErrorCode } from "yaml";
 
 import { KilinError } from "../domain/errors.js";
 import type { WorkflowCompilationInput } from "../domain/workflow.js";
-import { schemaErrorPath } from "./json-schema.js";
+import { createAjv, schemaErrorPath } from "./json-schema.js";
 import workflowSchema from "./workflow-v1.schema.json" with { type: "json" };
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -29,10 +28,7 @@ const parseSchema = (schema: unknown): SchemaObject => {
   return schema;
 };
 
-const validateWorkflow = new Ajv2020Module.default({
-  allErrors: false,
-  strict: true,
-}).compile<WorkflowCompilationInput>(parseSchema(workflowSchema));
+const validateWorkflow = createAjv().compile<WorkflowCompilationInput>(parseSchema(workflowSchema));
 
 const sourcePosition = (lineCounter: LineCounter, offset: number | undefined): string => {
   if (offset === undefined || offset < 0) {

@@ -241,8 +241,7 @@
               "path": {
                 "type": "string"
               },
-              "choices": false,
-              "schema": false
+              "choices": false
             }
           },
           "else": {
@@ -258,32 +257,29 @@
               "required": ["choices"],
               "properties": {
                 "path": false,
-                "choices": true,
-                "schema": false
+                "choices": true
               }
             },
             "else": {
-              "if": {
-                "required": ["type"],
-                "properties": {
-                  "type": {
-                    "const": "json"
-                  }
-                }
-              },
-              "then": {
-                "properties": {
-                  "path": false,
-                  "choices": false
-                }
-              },
-              "else": {
-                "properties": {
-                  "path": false,
-                  "choices": false,
-                  "schema": false
-                }
+              "properties": {
+                "path": false,
+                "choices": false
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "json"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "schema": false
             }
           }
         }

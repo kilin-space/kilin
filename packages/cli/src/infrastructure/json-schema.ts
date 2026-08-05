@@ -6,7 +6,7 @@ import { KilinError } from "../domain/errors.js";
 
 const maximumPathSegmentLength = 64;
 
-const createAjv = (): InstanceType<typeof Ajv2020Module.default> =>
+export const createAjv = (): InstanceType<typeof Ajv2020Module.default> =>
   new Ajv2020Module.default({
     allErrors: false,
     strict: true,

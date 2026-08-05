@@ -607,7 +607,7 @@ export class ViewerApplication {
     }
     try {
       const definition = parseWorkflowBytes(bytes, "Workflow source");
-      await resolveJsonOutputSchemas(definition, dirname(this.#definitionFile));
+      await resolveJsonOutputSchemas(definition.nodes, dirname(this.#definitionFile));
       const plan = compileWorkflow(definition);
       if (plan.definition.workflow.id !== this.#scope.identity.workflowId) {
         return invalidWorkflow(
