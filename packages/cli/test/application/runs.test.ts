@@ -2078,6 +2078,39 @@ describe("workflow run lifecycle", () => {
     expect(detail.nodes).toMatchObject([{ nodeId: "scan", status: "succeeded" }]);
   });
 
+  it("accepts any canonical JSON value under an empty declared schema", async () => {
+    const scanPrompt = jsonSchemaOutputPrompt("scan for findings", {});
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "schema-empty", name: "Schema empty" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "scan for findings",
+          output: { type: "json", schema: {} },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({ [scanPrompt]: "[1,2,3]" }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run.status).toBe("succeeded");
+    expect(detail.nodes).toMatchObject([{ nodeId: "scan", status: "succeeded" }]);
+  });
+
   it("fails the producer when the json output violates its declared schema", async () => {
     const scanPrompt = jsonSchemaOutputPrompt("scan for findings", findingsSchema);
     const definition: WorkflowDefinitionV1 = {
@@ -2121,6 +2154,84 @@ describe("workflow run lifecycle", () => {
     expect(detail.nodes).toMatchObject([
       { nodeId: "scan", status: "failed", failure: { code: "NODE_OUTPUT_INVALID" } },
     ]);
+    expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(1);
+  });
+
+  it("fails the run when a loop body producer violates its declared schema", async () => {
+    const workerPrompt = jsonSchemaOutputPrompt("produce draft", findingsSchema);
+    const definition: WorkflowDefinitionV1 = {
+      schemaVersion: 1,
+      workflow: { id: "loop-schema-invalid", name: "Loop schema invalid" },
+      nodes: [
+        {
+          id: "refinement",
+          kind: "loop",
+          maxIterations: 1,
+          body: {
+            nodes: [
+              {
+                id: "worker",
+                kind: "agent",
+                runtime: "codex",
+                access: "read_only",
+                prompt: "produce draft",
+                output: { type: "json", schema: findingsSchema },
+                retry: {
+                  maxAttempts: 1,
+                  initialBackoffMs: 0,
+                  maxBackoffMs: 0,
+                  safeToRepeat: true,
+                },
+              },
+              {
+                id: "check",
+                kind: "agent",
+                runtime: "codex",
+                access: "read_only",
+                prompt: "check draft",
+                output: { type: "choice", choices: ["pass", "revise"] },
+              },
+            ],
+            edges: [{ from: "worker", to: "check", input: "draft" }],
+          },
+          decision: { node: "check", passChoice: "pass", reviseChoice: "revise" },
+          feedback: { from: "worker", to: "worker", input: "feedback" },
+          result: { node: "worker" },
+        },
+      ],
+      edges: [],
+    };
+    const context = await createContext(definition, {
+      FAKE_CODEX_RESULTS: JSON.stringify({ [workerPrompt]: findingsMissingSeverity }),
+    });
+
+    const detail = await runWorkflow(
+      context.workflowName,
+      context.project,
+      options,
+      {},
+      context.environment,
+    );
+
+    expect(detail.run).toMatchObject({
+      status: "failed",
+      failure: { code: "NODE_OUTPUT_INVALID" },
+    });
+    // Loop body failures name the compiled body execution id; the contract here is the instance path.
+    expect(detail.run.failure?.message).toContain(
+      "does not satisfy its declared schema at \"findings[0].severity\": must have required property 'severity'",
+    );
+    expect(detail.nodes.find((node) => node.bodyNodeId === "worker")).toMatchObject({
+      status: "failed",
+      failure: { code: "NODE_OUTPUT_INVALID" },
+    });
+    expect(detail.nodes.find((node) => node.kind === "loop")).toMatchObject({
+      status: "failed",
+      failure: { code: "NODE_OUTPUT_INVALID" },
+    });
+    expect(detail.nodes.find((node) => node.bodyNodeId === "check")).toMatchObject({
+      status: "skipped",
+    });
     expect(await readJsonLines<unknown>(context.executionLog)).toHaveLength(1);
   });
 

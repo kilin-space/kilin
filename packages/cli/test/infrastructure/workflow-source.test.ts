@@ -276,6 +276,22 @@ edges: []
     );
   });
 
+  it.each([
+    ["a boolean", "      schema: true\n"],
+    ["a number", "      schema: 42\n"],
+  ] as const)("rejects %s as a json output schema", (_name, declaration) => {
+    const source = canonicalWorkflow.replace(
+      "    access: workspace_write\n    prompt:",
+      `    access: workspace_write\n    output:\n      type: json\n${declaration}    prompt:`,
+    );
+
+    expectKilinError(
+      () => parseWorkflowBytes(encoder.encode(source)),
+      "WORKFLOW_SCHEMA_INVALID",
+      "nodes[0].output.schema",
+    );
+  });
+
   it("accepts a named input binding structurally", () => {
     const source = canonicalWorkflow.replace(
       "  - from: analyze\n    to: implement",

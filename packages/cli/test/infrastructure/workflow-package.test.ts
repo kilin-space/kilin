@@ -549,6 +549,45 @@ edges:
     ]);
   });
 
+  it("embeds a schema file that resolves local $defs references", async () => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    const packageDirectory = await writeSchemaPackage(
+      project,
+      "schema-local-ref",
+      schemaDefinition("schema-local-ref", "      schema: schemas/findings.json\n"),
+    );
+    const localRefSchema = JSON.stringify({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      additionalProperties: false,
+      required: ["findings"],
+      properties: {
+        findings: { type: "array", items: { $ref: "#/$defs/finding" } },
+      },
+      $defs: {
+        finding: {
+          type: "object",
+          additionalProperties: false,
+          required: ["severity", "file", "line", "summary"],
+          properties: {
+            severity: { type: "string" },
+            file: { type: "string" },
+            line: { type: "integer" },
+            summary: { type: "string" },
+          },
+        },
+      },
+    });
+    await writeFindingsSchema(packageDirectory, localRefSchema);
+
+    const resolved = await resolvePackage(project, "schema-local-ref");
+
+    expect(resolved.definition.nodes[0]).toMatchObject({
+      output: { type: "json", schema: JSON.parse(localRefSchema) as unknown },
+    });
+  });
+
   it("resolves a schema referenced from a loop body node output", async () => {
     const root = await createTemporaryDirectory();
     const project = join(root, "project");
