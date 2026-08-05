@@ -4,6 +4,21 @@ All notable changes to `@kilin-space/cli` are documented here.
 
 ## Unreleased
 
+- Notice an approval that arrives while you are looking elsewhere, and stop a run without leaving
+  the Viewer. A hidden tab now keeps polling at a reduced fifteen-second cadence instead of stopping
+  altogether, so a gate reached while you were in another tab is picked up rather than waiting for
+  you to come back; switching back polls at once and resumes the normal cadence. A notification
+  control sits beside Refresh where the browser supports notifications: once you grant permission, a
+  run that starts waiting for approval while its tab is hidden raises a notification for that run,
+  and clicking it returns there. A running run gains a Cancel run button beside its existing
+  copyable command, which latches the request through the same use case as `kilin runs cancel` and
+  clears the approval controls in the same tick; cancelling a run that already finished now reports a
+  409 conflict with an actionable message instead of a server error. This makes the Viewer's mutation
+  surface a closed set of two run-scoped routes — the approval decision and the run cancellation —
+  recorded as decision D-016; it still starts no run, edits no workflow, and schedules nothing.
+  Selecting a node also scrolls the graph to it, so a node outside the visible area of a large
+  workflow comes into view on its own, including from the Loop iterations list, and a background
+  refresh no longer moves the graph out from under you (#40).
 - Terminate the process trees a run spawns, reliably. Forced cleanup now works on macOS: a
   TERM-resistant descendant that outlives its process-group leader is force-terminated on every host
   that exposes a process snapshot, where before macOS declined the escalation and left the process

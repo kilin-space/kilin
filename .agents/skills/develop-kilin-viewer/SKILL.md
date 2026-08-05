@@ -37,8 +37,10 @@ The Viewer is static HTML, CSS, and a no-framework DOM client served by the CLI:
 - do not make the Viewer start runs, edit workflows, or become a public API.
 
 The attached Viewer binds numeric loopback and uses a one-use launch credential, a scoped session,
-CSRF protection, and bounded reads. It has exactly one guarded mutation class: an eligible approval
-decision. Do not expand this authority as part of presentation work.
+CSRF protection, and bounded reads. Its mutation authority is a closed set of two guarded run-scoped
+routes recorded in D-016: an eligible approval decision, and a cancellation request for a run already
+in the Viewer's scope. Do not add a third mutation as part of presentation work; a new mutation class
+needs its own recorded decision.
 
 ## Use the existing visual language
 

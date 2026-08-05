@@ -34,8 +34,8 @@ Run parameter 不會出現在公開生命週期檢視中，但 `--param` 值仍�
 ## Viewer 邊界
 
 附著式 Viewer 繫結到數字位址 `127.0.0.1` 和作業系統選擇的連接埠，並使用一次性啟動憑證。不要公開或
-重用啟動 URL。Viewer 唯一的狀態變更是記錄符合條件的核准決策；它不是 daemon、scheduler、
-可編輯工作流程介面或公開 API。只有確認 Agent 行程與請求者的瀏覽器在同一台主機執行後，外層 Agent
+重用啟動 URL。Viewer 的狀態變更是一個封閉的兩項集合：記錄符合條件的核准決策，以及請求取消一次
+已在其作用域內的執行。它不是 daemon、scheduler、可編輯工作流程介面或公開 API。只有確認 Agent 行程與請求者的瀏覽器在同一台主機執行後，外層 Agent
 才可以將 URL 直接回傳給請求者；雙方都使用 `127.0.0.1` 並不能證明這一點。附著式 Viewer 結束後
 URL 立即失效。以下是外層 Agent 的操作指引，而非 Viewer 強制執行的行為：不得把 URL 持久化到工作流程
 檔案、run event、artifact、issue、pull request 或公開 log；遠端 Agent 應回傳本機啟動命令，不能把

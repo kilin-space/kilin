@@ -86,7 +86,7 @@ Application/server tests use recorded synthetic state and never expose a runtime
 - absent database remains absent through read-only inspection;
 - numeric-loopback peer, exact Host and Origin, fixed methods/routes, content types, body bounds, CSP, no-store, and local-only assets;
 - one-use fragment-token exchange, process-lifetime cookie, CSRF resume and API enforcement;
-- exactly one authenticated, CSRF-protected, scope-checked waiting-approval decision route; rejection of every other mutation, reconciliation, generic file, raw-path, WebSocket, or runtime route; and
+- exactly two authenticated, CSRF-protected, scope-checked mutation routes — the waiting-approval decision and the run cancellation — each covered on its own; rejection of every other mutation, reconciliation, generic file, raw-path, WebSocket, or runtime route; and
 - exact stored-path authorization, traversal/symlink/non-regular rejection, identity recheck, and 64 KiB output tail.
 
 Playwright exercises the built CLI/server/client with fake or pre-recorded state:

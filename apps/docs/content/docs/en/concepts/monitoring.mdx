@@ -67,6 +67,15 @@ strip that holds it, an Expand control appears beside the workflow status and ra
 cap, so a workflow with many parallel branches needs less scrolling; the choice survives polling
 until you collapse it again.
 
+Beside Refresh, a notification control appears where your browser supports notifications. Granting
+permission lets the Viewer tell you when a run starts waiting for approval while its tab is hidden —
+it raises a notification for that run, and clicking it brings you back there. A hidden tab keeps
+polling at a reduced fifteen-second cadence rather than stopping, so an approval that arrives while
+you are elsewhere is still picked up; switching back polls at once and resumes the normal cadence.
+
+Selecting a node scrolls the graph to it, so a node below or beside the visible area of a large
+workflow comes into view without scrolling the strip yourself.
+
 A loop node keeps the word `loop` on its card and adds its iteration progress, `loop · 2/3`, once
 an iteration starts; until then it keeps its bound, `loop · up to 3`. Selecting it expands the card
 into a container that draws the body pipeline at the
@@ -78,8 +87,9 @@ first one runs.
 
 When a run stops at an approval, the Viewer shows guarded Approve and Reject buttons alongside the
 equivalent CLI commands. The optional note is a multi-line field, so Enter starts a new line and
-only Approve or Reject submits. That decision is its only state mutation: it cannot edit
-workflows, start provider runs, or schedule work. Pass `--no-open` to print the launch URL instead
+only Approve or Reject submits. A running run also offers a Cancel run button beside the equivalent
+`kilin runs cancel` command. Those two are its whole state-mutation surface, a closed set: it cannot
+edit workflows, start provider runs, or schedule work. Pass `--no-open` to print the launch URL instead
 of opening a browser, and treat that URL as a credential.
 
 Without a browser, the same history is available as text:

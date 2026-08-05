@@ -39,7 +39,7 @@ The complete V1 journey is:
 3. Run `kilin workflow validate <name> --cwd /absolute/project --json` and fix actionable errors before a provider starts; pass `--scope` only when inspecting one scope directly.
 4. Run the workflow against an explicit project directory and observe deterministic lifecycle events.
 5. Inspect persisted metadata and output paths with `runs list` and `runs show`.
-6. Optionally launch `kilin ui <workflow-name> --cwd <directory> [--no-open] [--json]` for an attached, authenticated view of the DAG, history, lineage, states, failures, and bounded output. It is read-only except for the single guarded waiting-approval decision. When the user's browser shares the agent's loopback, the run skill starts and manages this separate process, reports its URL directly to the requester, and reports Viewer and run outcomes independently.
+6. Optionally launch `kilin ui <workflow-name> --cwd <directory> [--no-open] [--json]` for an attached, authenticated view of the DAG, history, lineage, states, failures, and bounded output. It is read-only except for two guarded run-scoped mutations, the waiting-approval decision and the run cancellation. When the user's browser shares the agent's loopback, the run skill starts and manages this separate process, reports its URL directly to the requester, and reports Viewer and run outcomes independently.
 7. Use `kilin rerun <run-id>` to create a new run from the prior run's immutable workflow revision,
    canonical cwd, authored node timeouts, and persisted run options.
 
@@ -64,7 +64,7 @@ The complete V1 journey is:
 The following are outside V1:
 
 - an embedded LLM or prompt generator;
-- an editable Canvas or browser mutation surface beyond the single guarded approval decision;
+- an editable Canvas or browser mutation surface beyond the closed set of two guarded run-scoped mutations, the approval decision and the run cancellation;
 - a daemon, public HTTP API, WebSocket, remote listener, or background service;
 - a transcript database, cache, registry, watcher, or persistent history ingestion system;
 - implicit skill discovery across user history, or all-project/cross-provider history access without explicit consent and egress disclosure;
@@ -92,7 +92,7 @@ V1 is complete only when all of the following hold:
 8. Human, JSON-document, and JSON Lines paths expose only their documented contracts and never mix prompts or provider events into public output.
 9. Generation publishes exactly one complete validated target with no overwrite or model/run invocation, including under publisher contention, and rejects out-of-root targets or symlinked path components observed during its path checks.
 10. Discovery is explicit, defaults to `[now - 30 days, now)` for the exact current project and active provider, reconstructs resumes and child agents under their root, sanitizes rich textual evidence before model analysis, reports incomplete coverage, separates observations from inference and design, and writes nothing before approval.
-11. The Viewer binds only numeric `127.0.0.1` on an OS-selected port, authenticates through its one-use fragment bootstrap plus cookie/CSRF, enforces exact request boundaries and restrictive CSP, exposes exactly one guarded waiting-approval mutation and no runtime or generic reconciliation route, and stops with the CLI.
+11. The Viewer binds only numeric `127.0.0.1` on an OS-selected port, authenticates through its one-use fragment bootstrap plus cookie/CSRF, enforces exact request boundaries and restrictive CSP, exposes exactly two guarded run-scoped mutations — the waiting-approval decision and the run cancellation — and no runtime or generic reconciliation route, and stops with the CLI.
 12. Viewer history is newest 50 for the exact full workflow identity and canonical cwd; output reads derive only from authorized stored node records, reject path/symlink substitution, and return at most the 64 KiB tail.
 13. Keyboard/focus behavior, reduced motion, semantic graph equivalence, and 1440x900 and 390x844 layouts pass automated browser coverage without horizontal page overflow.
 14. The single canonical [release gate](../../../../RELEASING.md#release-gate) exits

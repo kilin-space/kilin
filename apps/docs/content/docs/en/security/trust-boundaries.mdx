@@ -49,9 +49,9 @@ shell history and local process listings. Do not use command-line parameters for
 ## Viewer boundary
 
 The attached Viewer binds to numeric `127.0.0.1` on an operating-system-selected port and uses a
-one-use launch credential. Do not publish or reuse its launch URL. The Viewer's only state mutation
-is recording an eligible approval decision; it is not a daemon, scheduler, editable workflow
-surface, or public API. An outer agent may return the URL directly to the requester only after
+one-use launch credential. Do not publish or reuse its launch URL. The Viewer's state mutations are
+a closed set of two: recording an eligible approval decision, and requesting cancellation of a run
+already in its scope. It is not a daemon, scheduler, editable workflow surface, or public API. An outer agent may return the URL directly to the requester only after
 confirming that the agent process and the requester's browser run on the same host. Sharing the
 `127.0.0.1` address alone does not establish this. The URL stops working when the attached Viewer
 exits. As operational guidance for outer agents, do not persist the URL in workflow files, run
