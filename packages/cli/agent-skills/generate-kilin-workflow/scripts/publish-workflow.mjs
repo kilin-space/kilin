@@ -195,7 +195,14 @@ const stageDeclaredSchemaFiles = async (definitionBytes, definitionCandidate, st
     const schemaBytes = await readFile(schemaFile);
     const stagedFile = join(stagePackage, ...relativePath.split("/"));
     await mkdir(dirname(stagedFile), { recursive: true, mode: 0o700 });
-    await writeFile(stagedFile, schemaBytes, { mode: 0o600, flag: "wx" });
+    try {
+      await writeFile(stagedFile, schemaBytes, { mode: 0o600, flag: "wx" });
+    } catch (error) {
+      if (isErrorCode(error, "EEXIST")) {
+        fail(`The json output schema "${declared}" collides with another staged package file.`);
+      }
+      throw error;
+    }
   }
 };
 

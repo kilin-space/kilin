@@ -678,6 +678,58 @@ describe("generate-kilin-workflow publisher", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("rejects a schema path that case-collides with a staged package file", async (context) => {
+    const directory = await createTemporaryDirectory();
+    const probe = join(directory, "CaseProbe");
+    await writeFile(probe, "");
+    const caseInsensitive = await lstat(join(directory, "caseprobe")).then(
+      () => true,
+      () => false,
+    );
+    await rm(probe);
+    if (!caseInsensitive) {
+      context.skip();
+    }
+    const candidate = join(directory, "schema-collision-candidate.yaml");
+    await writeFile(
+      join(directory, "Workflow.yaml"),
+      `${JSON.stringify({
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        additionalProperties: false,
+        required: ["findings"],
+        properties: { findings: { type: "array" } },
+      })}\n`,
+    );
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "schema-collision", name: "Schema collision" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Scan the workspace.",
+          output: { type: "json", schema: "./Workflow.yaml" },
+        },
+      ],
+      edges: [],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "schema-collision");
+
+    expect(result).toMatchObject({ exitCode: 1, stdout: "" });
+    expect(result.stderr).toContain(
+      'The json output schema "./Workflow.yaml" collides with another staged package file.',
+    );
+    expect(result.stderr).not.toContain("already exists");
+    await expect(
+      lstat(join(directory, ".agents", "workflows", "schema-collision")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("stages a json output schema referenced from a loop body and validates clean", async () => {
     const directory = await createTemporaryDirectory();
     const candidate = join(directory, "loop-schema-candidate.yaml");
