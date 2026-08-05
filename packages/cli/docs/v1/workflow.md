@@ -114,8 +114,10 @@ unresolvable schema file with `WORKFLOW_PACKAGE_INVALID`, each naming the declar
 document that does not satisfy the declared schema fails the producing node with
 `NODE_OUTPUT_INVALID` naming the failing instance path (for example `findings[0].severity`, or
 the document root); the existing retry policy is unchanged, and the retry attempt's prompt
-restates the schema. The schema is serialized into the producer's injected output contract on
-every attempt, so its size counts against the prompt budget.
+restates the schema. The resolved schema is serialized into the producer's injected output
+contract on every attempt. Kilin does not enforce a prompt-size limit; the 256 KiB
+(262,144-byte) schema-file cap at package load is the only bound Kilin enforces, and a provider
+can still reject an oversized prompt at run time, so keep schemas small.
 Artifacts are live workspace-relative references and require `workspace_write`; Kilin does not
 copy them into managed storage. Bound text, JSON, Decision Packets, choices, and run parameters
 reach only declared consumers through the `KILIN_RESOLVED_INPUTS_V1` untrusted-data envelope.
