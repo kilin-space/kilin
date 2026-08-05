@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { CompletedProcess, RuntimeInvocation } from "../../src/application/runtime.js";
+import type { AttemptProcessIdentity } from "../../src/domain/run-state.js";
 import {
   cleanupRuntimeResult,
   loopResultPath,
@@ -29,6 +30,7 @@ import {
   resolvedInputsPath,
   runProcess,
   runtimeResultStagingPath,
+  terminateRecordedProcesses,
 } from "../../src/infrastructure/process-runner.js";
 import { killProcessIfRunning, processIsRunning } from "../helpers/subprocess.js";
 
@@ -391,11 +393,7 @@ describe("process execution", () => {
 
       expect(outcome.status).toBe("timed_out");
       expect(Date.now() - startedAt).toBeLessThan(timeoutMs + terminationGraceMs + 500);
-      if (process.platform === "linux") {
-        await waitFor(() => !processIsRunning(recordedDescendantPid));
-      } else {
-        expect(processIsRunning(recordedDescendantPid)).toBe(true);
-      }
+      await waitFor(() => !processIsRunning(recordedDescendantPid));
     } finally {
       if (descendantPid !== undefined) {
         killProcessIfRunning(descendantPid);
@@ -422,6 +420,74 @@ describe("process execution", () => {
 
     expect(outcome.status).toBe("succeeded");
     expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  it("reports the spawned process group leader before the process produces output", async () => {
+    const directory = await createTemporaryDirectory();
+    const paths = nodeOutputPaths(directory, "run", "identity", 0);
+    await prepareNodeOutput(paths);
+    const reported: AttemptProcessIdentity[] = [];
+
+    const outcome = await runProcess(
+      invocation(
+        directory,
+        runtimeResultStagingPath(paths),
+        join(directory, "record.json"),
+        "success",
+      ),
+      paths,
+      {
+        timeoutMs: 1_000,
+        maxOutputBytes: 10_000,
+        terminationGraceMs: 30,
+        onProcessStarted: (identity) => reported.push(identity),
+      },
+    );
+
+    expect(outcome.status).toBe("succeeded");
+    expect(reported).toHaveLength(1);
+    const identity = reported[0];
+    if (identity === undefined) {
+      throw new Error("Expected one reported process identity");
+    }
+    expect(identity.pid).toBeGreaterThan(0);
+    // A detached spawn makes the child its own group leader, which is what lets a later command
+    // reach the whole tree from this one recorded value.
+    expect(identity.processGroupId).toBe(identity.pid);
+    expect(identity.startIdentifier.length).toBeGreaterThan(0);
+  });
+
+  it("runs to completion when recording the process identity fails", async () => {
+    const directory = await createTemporaryDirectory();
+    const paths = nodeOutputPaths(directory, "run", "identity-failure", 0);
+    await prepareNodeOutput(paths);
+    let observedPid: number | undefined;
+
+    const outcome = await runProcess(
+      invocation(
+        directory,
+        runtimeResultStagingPath(paths),
+        join(directory, "record.json"),
+        "success",
+      ),
+      paths,
+      {
+        timeoutMs: 1_000,
+        maxOutputBytes: 10_000,
+        terminationGraceMs: 30,
+        onProcessStarted: (identity) => {
+          observedPid = identity.pid;
+          throw new Error("state write failed");
+        },
+      },
+    );
+
+    // Losing the record costs a later reap, never the run: the group was already spawned and the
+    // capture handles were already open when the write failed.
+    expect(outcome.status).toBe("succeeded");
+    expect(observedPid).toBeGreaterThan(0);
+    await expect(readFile(paths.stdoutPath, "utf8")).resolves.toBe("stdout exact\n");
+    expect(processIsRunning(observedPid ?? 0)).toBe(false);
   });
 
   it("settles cancellation after a TERM-resistant descendant outlives its group leader", async () => {
@@ -463,11 +529,7 @@ describe("process execution", () => {
       const outcome = await running;
 
       expect(outcome.status).toBe("cancelled");
-      if (process.platform === "linux") {
-        await waitFor(() => !processIsRunning(recordedDescendantPid));
-      } else {
-        expect(processIsRunning(recordedDescendantPid)).toBe(true);
-      }
+      await waitFor(() => !processIsRunning(recordedDescendantPid));
     } finally {
       controller.abort();
       await Promise.allSettled([running]);
@@ -530,7 +592,7 @@ describe("process execution", () => {
     }
   });
 
-  it("forces delayed detached-descendant cleanup only with stable process identity", async () => {
+  it("forces delayed cleanup of a detached descendant that outlives its leader", async () => {
     const directory = await createTemporaryDirectory();
     const paths = nodeOutputPaths(directory, "run", "detached-descendant", 0);
     await prepareNodeOutput(paths);
@@ -566,11 +628,7 @@ describe("process execution", () => {
       const outcome = await running;
 
       expect(outcome.status).toBe("timed_out");
-      if (process.platform === "linux") {
-        await waitFor(() => !processIsRunning(recordedDescendantPid));
-      } else {
-        expect(processIsRunning(recordedDescendantPid)).toBe(true);
-      }
+      await waitFor(() => !processIsRunning(recordedDescendantPid));
     } finally {
       if (descendantPid !== undefined) {
         killProcessIfRunning(descendantPid);
@@ -621,5 +679,89 @@ describe("process execution", () => {
 
     expect(outcome.status).toBe("capture_failed");
     expect(outcome.completed).toMatchObject({ exitCode: null, signal: null });
+  });
+});
+
+describe("recorded process termination", () => {
+  const spawnDetachedSurvivor = async (): Promise<AttemptProcessIdentity> => {
+    const paths = nodeOutputPaths(await createTemporaryDirectory(), "run", "survivor", 0);
+    await prepareNodeOutput(paths);
+    let recorded: AttemptProcessIdentity | undefined;
+    const running = runProcess(
+      invocation(
+        dirname(paths.stdoutPath),
+        runtimeResultStagingPath(paths),
+        join(dirname(paths.stdoutPath), "record.json"),
+        "wait",
+      ),
+      paths,
+      {
+        timeoutMs: 30_000,
+        maxOutputBytes: 10_000,
+        terminationGraceMs: 30,
+        onProcessStarted: (identity) => {
+          recorded = identity;
+        },
+      },
+    );
+    await waitFor(() => recorded !== undefined);
+    if (recorded === undefined) {
+      throw new Error("Expected a recorded process identity");
+    }
+    // Abandon the runProcess promise the way a killed Kilin process would: the child stays alive.
+    void running.catch(() => undefined);
+    return recorded;
+  };
+
+  it("terminates a recorded process that is still running", async () => {
+    const recorded = await spawnDetachedSurvivor();
+    try {
+      const examined = await terminateRecordedProcesses(
+        [{ startedAt: new Date().toISOString(), process: recorded }],
+        30,
+      );
+
+      expect(examined).toBe(true);
+      await waitFor(() => !processIsRunning(recorded.pid));
+    } finally {
+      killProcessIfRunning(recorded.pid);
+    }
+  });
+
+  it("leaves a recorded process alone when the host booted after the attempt started", async () => {
+    const recorded = await spawnDetachedSurvivor();
+    try {
+      // A start time before the current boot cannot describe a live process, so the recorded pid
+      // now belongs to somebody else.
+      const examined = await terminateRecordedProcesses(
+        [{ startedAt: "1999-01-01T00:00:00.000Z", process: recorded }],
+        30,
+      );
+
+      expect(examined).toBe(true);
+      expect(processIsRunning(recorded.pid)).toBe(true);
+    } finally {
+      killProcessIfRunning(recorded.pid);
+    }
+  });
+
+  it("leaves a recorded process alone when its start identifier no longer matches", async () => {
+    const recorded = await spawnDetachedSurvivor();
+    try {
+      const examined = await terminateRecordedProcesses(
+        [
+          {
+            startedAt: new Date().toISOString(),
+            process: { ...recorded, startIdentifier: "some other process" },
+          },
+        ],
+        30,
+      );
+
+      expect(examined).toBe(true);
+      expect(processIsRunning(recorded.pid)).toBe(true);
+    } finally {
+      killProcessIfRunning(recorded.pid);
+    }
   });
 });

@@ -73,6 +73,7 @@ import {
   resolvedInputsPath,
   runProcess,
   runtimeResultStagingPath,
+  terminateRecordedProcesses,
 } from "../infrastructure/process-runner.js";
 import type { ProcessRunOutcome } from "../infrastructure/process-runner.js";
 import {
@@ -1225,6 +1226,9 @@ const executeAgentNode = async (
           ? {}
           : { terminationGraceMs: executionEnvironment.terminationGraceMs }),
         ...(delivery.signal === undefined ? {} : { signal: delivery.signal }),
+        onProcessStarted: (identity) => {
+          store.recordAttemptProcess(created.run.id, node.id, attempt, identity);
+        },
       });
     } catch (error: unknown) {
       executionFailure = asKilinError(error);
@@ -2280,6 +2284,29 @@ const prepareRecoveryRun = async (
   return store.getRun(created.run.id);
 };
 
+/**
+ * Terminates the processes a previous owner of this working directory left behind, then forgets
+ * their identities so a later command cannot signal a recycled pid.
+ *
+ * Runs under the exclusive working-directory lock and before the directory's earlier runs are
+ * reconciled, so the physical cleanup and the bookkeeping that declares them dead stay together.
+ * The identities are kept when the host could not be examined at all, because forgetting them would
+ * discard the only record of survivors nobody has looked for yet.
+ */
+const reapRecordedProcesses = async (
+  store: StateStore,
+  canonicalCwd: string,
+  terminationGraceMs: number | undefined,
+): Promise<void> => {
+  const unreaped = store.listUnreapedAttemptProcesses(canonicalCwd);
+  if (unreaped.length === 0) {
+    return;
+  }
+  if (await terminateRecordedProcesses(unreaped, terminationGraceMs)) {
+    store.clearAttemptProcesses(canonicalCwd);
+  }
+};
+
 const executeWithLock = async (
   store: StateStore,
   lock: WorkspaceLock,
@@ -2298,6 +2325,11 @@ const executeWithLock = async (
   expectedRevisionId?: string,
   recovery?: RecoveryRequest,
 ): Promise<RunDetail> => {
+  await reapRecordedProcesses(
+    store,
+    lock.canonicalWorkingDirectory,
+    executionEnvironment.terminationGraceMs,
+  );
   const created = store.createRunAfterStaleReconciliation({
     plan,
     identity,

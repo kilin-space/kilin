@@ -1893,6 +1893,9 @@ const renderNodeInspector = (): void => {
         nodeRun.exitCode === undefined ? "—" : String(nodeRun.exitCode),
       );
       appendProperty(list, "Effective", nodeRun.effectiveModel ?? nodeRun.requestedModel ?? "—");
+      if (nodeRun.pid !== undefined) {
+        appendProperty(list, "Process", String(nodeRun.pid));
+      }
     } else if (nodeRun.kind === "approval") {
       appendDurationProperty(list, nodeRun.durationMs, nodeRun.requestedAt, nodeRun.finishedAt);
       appendProperty(

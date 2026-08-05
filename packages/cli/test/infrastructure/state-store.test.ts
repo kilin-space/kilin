@@ -69,6 +69,43 @@ const createStore = async (): Promise<{ dataDirectory: string; store: TestStateS
   return { dataDirectory, store };
 };
 
+const createVersionOneDatabase = async (): Promise<string> => {
+  const dataDirectory = await createDirectory();
+  await mkdir(dataDirectory);
+  const database = new Database(join(dataDirectory, "kilin.db"));
+  try {
+    database.exec(
+      await readFile(new URL("../fixtures/state-version-1.sql", import.meta.url), "utf8"),
+    );
+    database.exec(`
+      INSERT INTO workflow_revisions
+        VALUES ('rev', 'user', '', 'wf', 1, 'hash', '{}', '${validStoredTimestamp}');
+      INSERT INTO workflow_runs (id, revision_id, canonical_cwd, options_json, status, started_at)
+        VALUES (
+          'run', 'rev', '/tmp',
+          '{"nodeTimeoutMs":60000,"approvalTimeoutMs":60000,"maxOutputBytes":1048576,"maxParallel":1}',
+          'running', '${validStoredTimestamp}'
+        );
+      INSERT INTO node_runs (
+        run_id, node_id, ordinal, kind, runtime, status, started_at,
+        stdout_path, stderr_path, result_path, current_attempt
+      ) VALUES (
+        'run', 'node', 0, 'agent', 'codex', 'running', '${validStoredTimestamp}',
+        '/tmp/stdout.log', '/tmp/stderr.log', '/tmp/result.txt', 1
+      );
+      INSERT INTO node_attempts (
+        run_id, node_id, attempt, status, started_at, stdout_path, stderr_path, result_path
+      ) VALUES (
+        'run', 'node', 1, 'running', '${validStoredTimestamp}',
+        '/tmp/stdout.log', '/tmp/stderr.log', '/tmp/result.txt'
+      );
+    `);
+  } finally {
+    database.close();
+  }
+  return dataDirectory;
+};
+
 const createLegacyMigrationOneDatabase = async (): Promise<string> => {
   const dataDirectory = await createDirectory();
   await mkdir(dataDirectory);
@@ -617,7 +654,7 @@ describe("StateStore bootstrap", () => {
       "workflow_revisions",
       "workflow_runs",
     ]);
-    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([1]);
+    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([2]);
     expect(database.pragma("foreign_key_check")).toEqual([]);
     expect(database.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(database.pragma("foreign_keys", { simple: true })).toBe(1);
@@ -677,7 +714,7 @@ describe("StateStore bootstrap", () => {
       { exitCode: 0, stdout: "[]", stderr: "" },
     ]);
     const database = new Database(join(dataDirectory, "kilin.db"), { readonly: true });
-    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([1]);
+    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([2]);
     expect(
       database
         .prepare(
@@ -710,7 +747,7 @@ describe("StateStore bootstrap", () => {
     ).toEqual([]);
     prepareSpy.mockRestore();
     initializeStateSchema(database, validStoredTimestamp, true);
-    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([1]);
+    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([2]);
     database.close();
   });
 
@@ -767,6 +804,230 @@ describe("StateStore bootstrap", () => {
     after.close();
   });
 
+  it("upgrades a version one database in place and keeps its recorded attempts", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const databasePath = join(dataDirectory, "kilin.db");
+
+    const store = new TestStateStore(dataDirectory);
+    store.close();
+
+    const database = new Database(databasePath, { readonly: true });
+    expect(database.prepare("SELECT version FROM schema_migrations").pluck().all()).toEqual([2]);
+    expect(database.prepare("SELECT * FROM node_attempts").all()).toEqual([
+      {
+        run_id: "run",
+        node_id: "node",
+        attempt: 1,
+        status: "running",
+        started_at: validStoredTimestamp,
+        finished_at: null,
+        exit_code: null,
+        failure_code: null,
+        failure_message: null,
+        stdout_path: "/tmp/stdout.log",
+        stderr_path: "/tmp/stderr.log",
+        result_path: "/tmp/result.txt",
+        process_pid: null,
+        process_group_id: null,
+        process_start_identifier: null,
+      },
+    ]);
+    expect(database.pragma("foreign_key_check")).toEqual([]);
+    database.close();
+  });
+
+  it("records a process identity on an upgraded database", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([
+      {
+        startedAt: validStoredTimestamp,
+        process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
+      },
+    ]);
+    store.close();
+  });
+
+  it("forgets a recorded process once its attempt reaches a terminal state", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toHaveLength(1);
+
+    store.transitionNode("run", "node", { status: "succeeded", exitCode: 0 });
+
+    // A process Kilin watched exit is not an orphan, so a later recovery must not signal its pid.
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([]);
+    store.close();
+  });
+
+  it("records and reaps process identities only within one working directory", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+    // A second run in a different working directory. Reaping is scoped by the directory lock the
+    // caller holds, so it must not reach a directory nobody has examined.
+    store.createRun({
+      plan: plan("elsewhere", [node("only")]),
+      identity: { scope: { kind: "user" }, workflowId: "elsewhere" },
+      canonicalCwd: "/elsewhere",
+      options,
+    });
+    const elsewhere = store.listRuns()[0];
+    if (elsewhere === undefined) {
+      throw new Error("Expected the second run");
+    }
+    store.transitionNode(elsewhere.id, "only", {
+      status: "running",
+      stdoutPath: "/elsewhere/stdout.log",
+      stderrPath: "/elsewhere/stderr.log",
+      resultPath: "/elsewhere/result.txt",
+    });
+    store.recordAttemptProcess(elsewhere.id, "only", 1, {
+      pid: 5150,
+      processGroupId: 5150,
+      startIdentifier: "elsewhere-start",
+    });
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([
+      {
+        startedAt: validStoredTimestamp,
+        process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
+      },
+    ]);
+
+    store.clearAttemptProcesses("/tmp");
+
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([]);
+    expect(store.listUnreapedAttemptProcesses("/elsewhere")).toEqual([
+      {
+        startedAt: expect.any(String) as unknown as string,
+        process: { pid: 5150, processGroupId: 5150, startIdentifier: "elsewhere-start" },
+      },
+    ]);
+    store.close();
+  });
+
+  it("records no process identity for an attempt that already finished", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+    store.transitionNode("run", "node", { status: "succeeded", exitCode: 0 });
+
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+
+    // The finishing transition clears identities, so one written afterwards would never be cleared
+    // and would name a process nobody needs to reap for the rest of the database's life.
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([]);
+    store.close();
+  });
+
+  it("keeps a recorded process through the reconciliation of an ownerless run", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const store = new TestStateStore(dataDirectory);
+    store.recordAttemptProcess("run", "node", 1, {
+      pid: 4242,
+      processGroupId: 4242,
+      startIdentifier: "recorded-start",
+    });
+
+    store.reconcileStaleRuns("/tmp");
+
+    // Reconciliation rewrites status without observing the process, so the identity has to survive
+    // it — otherwise a single `runs show` would hide the orphan from `resume`.
+    expect(store.getRun("run").run.status).toBe("interrupted");
+    expect(store.listUnreapedAttemptProcesses("/tmp")).toEqual([
+      {
+        startedAt: validStoredTimestamp,
+        process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
+      },
+    ]);
+    store.close();
+  });
+
+  it("rejects a version-one database whose ledger table is missing without mutating it", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const databasePath = join(dataDirectory, "kilin.db");
+    const database = new Database(databasePath);
+    database.exec("DROP TABLE schema_migrations");
+    const beforeObjects = database
+      .prepare(
+        `
+          SELECT type, name, sql FROM sqlite_master
+          WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+        `,
+      )
+      .all();
+    database.close();
+
+    const error = expectKilinError(() => new StateStore(dataDirectory), "INTERNAL_ERROR");
+    expect(error.message).toContain("Archive or reset");
+
+    const after = new Database(databasePath, { readonly: true });
+    expect(
+      after
+        .prepare(
+          `
+            SELECT type, name, sql FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+          `,
+        )
+        .all(),
+    ).toEqual(beforeObjects);
+    after.close();
+  });
+
+  it("rejects a tampered database that claims version one without mutating it", async () => {
+    const dataDirectory = await createVersionOneDatabase();
+    const databasePath = join(dataDirectory, "kilin.db");
+    const database = new Database(databasePath);
+    database.pragma("foreign_keys = OFF");
+    database.exec("DROP TABLE run_workspaces");
+    const readState = (connection: Database.Database): Record<string, unknown[]> => ({
+      objects: connection
+        .prepare(
+          `
+            SELECT type, name, sql FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+          `,
+        )
+        .all(),
+      migrations: connection.prepare("SELECT * FROM schema_migrations ORDER BY version").all(),
+      runs: connection.prepare("SELECT * FROM workflow_runs ORDER BY id").all(),
+      nodes: connection.prepare("SELECT * FROM node_runs ORDER BY node_id").all(),
+      attempts: connection.prepare("SELECT * FROM node_attempts ORDER BY node_id, attempt").all(),
+    });
+    const before = readState(database);
+    database.close();
+    expect(before.attempts).toHaveLength(1);
+
+    const error = expectKilinError(() => new StateStore(dataDirectory), "INTERNAL_ERROR");
+    expect(error.message).toContain("Archive or reset");
+
+    // Schema objects alone would not catch a migration that rewrote rows before failing.
+    const after = new Database(databasePath, { readonly: true });
+    expect(readState(after)).toEqual(before);
+    after.close();
+  });
+
   it("rejects the legacy eleven-entry migration ledger without changing it", async () => {
     const dataDirectory = await createDirectory();
     const store = new TestStateStore(dataDirectory);
@@ -776,7 +1037,7 @@ describe("StateStore bootstrap", () => {
     const insert = database.prepare(
       "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
     );
-    for (let version = 2; version <= 11; version += 1) {
+    for (let version = 3; version <= 12; version += 1) {
       insert.run(version, validStoredTimestamp);
     }
     const beforeMigrations = database
@@ -800,7 +1061,7 @@ describe("StateStore bootstrap", () => {
     [
       "a future ledger entry",
       `INSERT INTO schema_migrations (version, applied_at)
-       VALUES (2, '2026-07-26T00:00:00.000Z')`,
+       VALUES (3, '2026-07-26T00:00:00.000Z')`,
     ],
   ])("rejects current state with %s without repairing it", async (_name, mutation) => {
     const dataDirectory = await createDirectory();

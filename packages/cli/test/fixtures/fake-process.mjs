@@ -4,6 +4,9 @@ import { appendFileSync } from "node:fs";
 import { appendFile, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 
+// Bounds this process and any descendant it spawns, so a failed run leaves no residue.
+const fixtureLifetimeMs = 60_000;
+
 const args = process.argv.slice(2);
 const valueAfter = (name) => {
   const index = args.indexOf(name);
@@ -54,11 +57,11 @@ if (scenario === "output-limit") {
   }
   process.stdout.write("o".repeat(2_048));
   process.stderr.write("e".repeat(2_048));
-  await new Promise(() => setInterval(() => undefined, 60_000));
+  await new Promise(() => setTimeout(() => process.exit(0), fixtureLifetimeMs));
 }
 
 if (scenario === "wait") {
-  await new Promise(() => setInterval(() => undefined, 60_000));
+  await new Promise(() => setTimeout(() => process.exit(0), fixtureLifetimeMs));
 }
 
 if (scenario === "descendant" || scenario === "detached-descendant") {
@@ -78,7 +81,7 @@ if (scenario === "descendant" || scenario === "detached-descendant") {
         'const pendingPidPath = pidPath + ".pending";',
         "writeFileSync(pendingPidPath, String(process.pid));",
         "renameSync(pendingPidPath, pidPath);",
-        "setInterval(() => undefined, 60_000);",
+        `setTimeout(() => process.exit(0), ${String(fixtureLifetimeMs)});`,
       ].join(" "),
     ],
     {
@@ -87,7 +90,7 @@ if (scenario === "descendant" || scenario === "detached-descendant") {
       stdio: "ignore",
     },
   );
-  await new Promise(() => setInterval(() => undefined, 60_000));
+  await new Promise(() => setTimeout(() => process.exit(0), fixtureLifetimeMs));
 }
 
 if (scenario === "signal-counting-descendant") {
@@ -122,7 +125,7 @@ if (scenario === "signal-counting-descendant") {
         "  }",
         "});",
         "writeFileSync(pidPath, String(process.pid));",
-        "setInterval(() => undefined, 60_000);",
+        `setTimeout(() => process.exit(0), ${String(fixtureLifetimeMs)});`,
       ].join(" "),
     ],
     {
@@ -134,7 +137,7 @@ if (scenario === "signal-counting-descendant") {
       stdio: "ignore",
     },
   );
-  await new Promise(() => setInterval(() => undefined, 60_000));
+  await new Promise(() => setTimeout(() => process.exit(0), fixtureLifetimeMs));
 }
 
 if (scenario === "retained-pipes") {
@@ -144,7 +147,7 @@ if (scenario === "retained-pipes") {
     [
       "--input-type=module",
       "--eval",
-      "process.on('SIGTERM', () => {}); setInterval(() => {}, 60000)",
+      `process.on('SIGTERM', () => {}); setTimeout(() => process.exit(0), ${String(fixtureLifetimeMs)})`,
     ],
     { stdio: ["ignore", "inherit", "inherit"] },
   );

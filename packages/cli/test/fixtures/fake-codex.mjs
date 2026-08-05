@@ -5,6 +5,9 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+// Bounds this process and any descendant it spawns, so a failed run leaves no residue.
+const fixtureLifetimeMs = 60_000;
+
 const args = process.argv.slice(2);
 const scenario = process.env.FAKE_CODEX_SCENARIO ?? "supported";
 const logPath = process.env.FAKE_CODEX_LOG;
@@ -44,7 +47,7 @@ if (args.length === 1 && args[0] === "--version") {
 
   if (scenario === "version-timeout") {
     await new Promise(() => {
-      setInterval(() => undefined, 60_000);
+      setTimeout(() => process.exit(0), fixtureLifetimeMs);
     });
   }
 
@@ -256,21 +259,21 @@ if (
             'const pendingPidPath = pidPath + ".pending";',
             "writeFileSync(pendingPidPath, String(process.pid));",
             "renameSync(pendingPidPath, pidPath);",
-            "setInterval(()=>{},60000);",
+            `setTimeout(()=>process.exit(0),${String(fixtureLifetimeMs)});`,
           ].join(""),
         ],
         { stdio: "ignore" },
       );
     }
     await new Promise(() => {
-      setInterval(() => undefined, 60_000);
+      setTimeout(() => process.exit(0), fixtureLifetimeMs);
     });
   }
 
   if (behavior === "overflow") {
     process.stdout.write("provider-output".repeat(16_384));
     await new Promise(() => {
-      setInterval(() => undefined, 60_000);
+      setTimeout(() => process.exit(0), fixtureLifetimeMs);
     });
   }
 

@@ -156,7 +156,12 @@ export type AgentNodeSummaryDocument = AgentNodeIdentityDocument &
   (
     | { readonly status: "pending" }
     | { readonly status: "skipped"; readonly finishedAt: string }
-    | (NodeStartedDocument & { readonly status: "running" })
+    | (NodeStartedDocument & {
+        readonly status: "running";
+        readonly pid?: number;
+        // Measured when this document is produced, not persisted.
+        readonly durationMs: number;
+      })
     | (NodeStartedDocument &
         CompletionDocument & {
           readonly status: "succeeded";
@@ -526,7 +531,14 @@ const agentNodeSummary = (
     };
   }
   if (node.status === "running") {
-    return { ...identity, ...nodeStarted(node), status: node.status };
+    const started = nodeStarted(node);
+    return {
+      ...identity,
+      ...started,
+      ...(node.process === undefined ? {} : { pid: node.process.pid }),
+      durationMs: elapsedMs(started.startedAt, new Date().toISOString()),
+      status: node.status,
+    };
   }
   return terminalAgentNodeSummary(node, identity);
 };
@@ -990,6 +1002,9 @@ const renderExecutionSummary = (
     }
     if (node.attempt !== undefined) {
       lines.push(`${indent}   attempt: ${String(node.attempt)}`);
+    }
+    if ("pid" in node) {
+      lines.push(`${indent}   process: ${String(node.pid)}`);
     }
     if (nodeAttempts !== undefined) {
       for (const attempt of nodeAttempts) {

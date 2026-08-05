@@ -4253,11 +4253,7 @@ describe("workflow run lifecycle", () => {
       await expect(
         readdir(dirname(resultPath ?? "missing")).then((entries) => entries.sort()),
       ).resolves.toEqual(["result.txt", "stderr.log", "stdout.log"]);
-      if (process.platform === "linux") {
-        await waitFor(() => !processIsRunning(descendantPid));
-      } else {
-        expect(processIsRunning(descendantPid)).toBe(true);
-      }
+      await waitFor(() => !processIsRunning(descendantPid));
     } finally {
       controller.abort();
       await Promise.allSettled([running]);

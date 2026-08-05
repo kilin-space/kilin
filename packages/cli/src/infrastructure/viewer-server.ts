@@ -25,6 +25,7 @@ import {
   decodeStoredRevisionRow as revisionFromRow,
   decodeStoredRunWorkspaceRow as workspaceFromRow,
   decodeStoredRunRow as runFromRow,
+  withRunningAttemptProcesses,
 } from "./state-record-decoder.js";
 import { assertCurrentStateSchema } from "./state-schema.js";
 import type {
@@ -214,7 +215,7 @@ class ReadonlyViewerStore {
       return {
         run: runFromRow(runRow),
         revision: revisionFromRow(revisionRow),
-        nodes: nodeRows.map(nodeFromRow),
+        nodes: withRunningAttemptProcesses(nodeRows.map(nodeFromRow), attemptRows),
         attempts: attemptRows.map(attemptFromRow),
         workspaces: workspaceRows.map((row) => workspaceFromRow(row, runId)),
       };

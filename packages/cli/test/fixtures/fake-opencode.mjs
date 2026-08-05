@@ -2,6 +2,9 @@
 
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
+// Bounds this process and any descendant it spawns, so a failed run leaves no residue.
+const fixtureLifetimeMs = 60_000;
+
 const args = process.argv.slice(2);
 const scenario = process.env.FAKE_OPENCODE_SCENARIO ?? "supported";
 const logPath = process.env.FAKE_OPENCODE_LOG;
@@ -13,7 +16,7 @@ if (logPath !== undefined) {
 if (args.length === 1 && args[0] === "--version") {
   if (scenario === "version-timeout") {
     await new Promise(() => {
-      setInterval(() => undefined, 60_000);
+      setTimeout(() => process.exit(0), fixtureLifetimeMs);
     });
   }
   const versions = {
@@ -37,7 +40,7 @@ if (args.length === 2 && args[0] === "run" && args[1] === "--help") {
   if (scenario === "help-output-limit") {
     process.stdout.write("CAPABILITY_SECRET_FROM_PROVIDER".repeat(4_096));
     await new Promise(() => {
-      setInterval(() => undefined, 60_000);
+      setTimeout(() => process.exit(0), fixtureLifetimeMs);
     });
   }
   if (scenario === "pinned-help") {

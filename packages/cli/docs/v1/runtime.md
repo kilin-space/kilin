@@ -154,15 +154,25 @@ Signals and exact grace periods are platform-specific infrastructure details. Ki
 initial termination signal to the current process tree, retains captured output, and starts no
 later node. Delayed signals require a process identity that remains safe after PID reuse.
 
-Linux revalidates delayed signals with the kernel start ticks from `/proc/<pid>/stat`. macOS
-`/bin/ps` exposes process starts only to whole-second resolution. After the original leader exits,
-Kilin therefore declines every delayed signal on macOS, both to the original process group and to
-individually captured processes. Any TERM-resistant descendant that outlives its leader and
-requires forced termination may therefore remain on macOS. The descendant does not have to detach
-first. BusyBox-only Linux environments and other hosts without stable process-start identity have
-the same limit.
+Linux revalidates delayed signals with the kernel start ticks from `/proc/<pid>/stat`. macOS uses
+the whole-second process start that `/bin/ps` reports, read under a pinned locale and time zone so
+the same process renders identically across readings. Both platforms therefore force-terminate a
+TERM-resistant descendant that outlives its leader. Second resolution is sufficient because a false
+match would need a PID to be recycled and its successor to start within the same second, which
+requires exhausting the PID space in that second. Hosts without a usable `/bin/ps` take no process
+snapshot at all and can only signal the process group while its leader is alive.
 
-If the Kilin parent is killed before cleanup completes, the next command marks stale records interrupted. It does not assume the external process or workspace side effects were rolled back.
+An attached run stops on `SIGINT`, `SIGTERM`, or `SIGHUP`. All three route through the same
+cancellation path, so a supervisor, container stop, CI cancellation, or terminal close terminates
+the provider tree rather than orphaning it, and the command exits `130`.
+
+If the Kilin parent is killed before cleanup can run at all, the next command marks stale records
+interrupted. It does not assume the external process or workspace side effects were rolled back.
+Kilin records the process identity of each running attempt. Every command that takes the exclusive
+working-directory lock to start or continue work terminates the processes an earlier owner of that
+directory left behind before it proceeds, so a crashed run's provider never keeps editing a
+directory a new run has started using. Reaping does not depend on the recorded status, which an
+intervening `kilin runs show` or `runs list` may already have reconciled.
 
 ## Adding another runtime
 

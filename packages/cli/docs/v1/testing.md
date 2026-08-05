@@ -46,7 +46,7 @@ authentication, and never write normal `~/.kilin` state.
 - exact human output, single JSON documents, JSON Lines events, error vocabulary, and exit codes;
 - prompt/provider-output isolation and secret-safe errors;
 - unknown, duplicate, missing, and extra arguments; and
-- SIGINT during preflight and after run creation.
+- SIGINT during preflight, and each stop signal after run creation.
 
 ### Authoring skill tests
 
@@ -140,8 +140,11 @@ Playwright exercises the built CLI/server/client with fake or pre-recorded state
 - Authentication/environment values never appear in Kilin-generated events or errors.
 - Zero exit plus durable capture succeeds. Non-zero exit, timeout, output breach, final-result/log failure, and internal post-create failure terminally fail and skip later nodes.
 - Partial output remains inspectable. Cancellation and timeout signal the current process tree,
-  retain capture, and force-terminate revalidated descendants where the host exposes a stable
-  process-start identity.
+  retain capture, and force-terminate revalidated descendants on every host that exposes a process
+  snapshot.
+- A run killed without a chance to clean up leaves its recorded process identity behind, and the
+  next command to take that working directory — a plain `run` as much as a recovery — terminates
+  those survivors, even after an intervening `runs show` reconciled the run.
 - A passing decision publishes the declared bounded result through the loop control before outer
   consumers become eligible. A revising decision exposes only the declared bounded feedback to the
   next iteration's designated consumer. Revising at the final bound fails with
@@ -151,7 +154,7 @@ Playwright exercises the built CLI/server/client with fake or pre-recorded state
   provenance, and the lowest-ordinal independent failure is primary.
 - Cancellation during any body phase drains active work, starts no later iteration, cancels the
   loop and run, and does not publish a materialized-but-unauthorized result.
-- Pre-run SIGINT reaps probe descendants, emits no public event or diagnostic, creates no state, and exits `130`; post-create SIGINT persists normal cancelled lifecycle and starts no later node.
+- Pre-run SIGINT reaps probe descendants, emits no public event or diagnostic, creates no state, and exits `130`; post-create SIGINT, SIGTERM, and SIGHUP each persist normal cancelled lifecycle, reap the provider tree, and start no later node.
 
 ### CLI and viewer contracts
 

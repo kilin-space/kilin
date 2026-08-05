@@ -56,6 +56,9 @@ kilin runs reject <run-id> <node-id> --actor <agent|human> [--note <text>] [--js
 
 取消操作会记录持久请求；前台 owner 观察该请求并终止活动 provider 工作。确认只表示请求已记录，不代表所有进程已停止。
 
+对于仍在执行的 agent 节点，`runs show` 会报告其操作系统进程及其已运行时长，因此无需检索进程表即可
+识别卡住的 provider。节点进入终态后不再报告进程，其时长则变为最终记录值。
+
 ## 本地 Viewer
 
 ```text

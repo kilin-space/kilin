@@ -121,6 +121,13 @@ const readHostTriggerRequest = async (requestFile: string): Promise<HostTriggerR
   return parseHostTriggerRequestBytes(bytes, requestFile);
 };
 
+/**
+ * Signals that would otherwise kill an attached run before it can terminate the process group it
+ * owns. A supervisor, container stop, or CI cancellation sends `SIGTERM`; closing the terminal
+ * sends `SIGHUP`.
+ */
+const stopSignals: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+
 const runAttached = async (
   json: boolean,
   operation: (control: RunControl) => Promise<RunDetail>,
@@ -137,7 +144,9 @@ const runAttached = async (
     renderRunEvent(event, json);
   };
   const cancel = (): void => controller.abort();
-  process.on("SIGINT", cancel);
+  for (const signal of stopSignals) {
+    process.on(signal, cancel);
+  }
   try {
     const detail = await operation({ signal: controller.signal, onEvent });
     return exitCodeForRunStatus(detail.run.status);
@@ -150,7 +159,9 @@ const runAttached = async (
     }
     return state.runStarted ? 1 : 2;
   } finally {
-    process.off("SIGINT", cancel);
+    for (const signal of stopSignals) {
+      process.off(signal, cancel);
+    }
   }
 };
 

@@ -86,6 +86,7 @@ Initialization and the generation skill never overwrite an existing package. Bot
 
 ## State baseline
 
-State must match the complete current V1 baseline. Kilin does not infer missing identity or lifecycle
-fields and does not upgrade unpublished prototype databases. It rejects incompatible state without
-mutation; archive the old data directory and start with a fresh one.
+State must match the complete current baseline. Kilin does not infer missing identity or lifecycle
+fields. A database at the immediately preceding baseline is upgraded in place by an additive
+forward migration; every other shape—unpublished prototype, partial, future, or tampered—is rejected
+without mutation, and the remedy is to archive the old data directory and start with a fresh one.

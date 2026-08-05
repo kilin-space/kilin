@@ -33,6 +33,7 @@ import type {
   ApprovalDecision,
   ApprovalDecisionRecord,
   ApprovalNodeRunRecord,
+  AttemptProcessIdentity,
   FailureInfo,
   LoopNodeRunRecord,
   LoopTransition,
@@ -47,6 +48,7 @@ import type {
   RunStatus,
   RunTransition,
   RunWorkspaceRecord,
+  UnreapedAttemptProcess,
   WorkflowRunRecord,
 } from "../domain/run-state.js";
 import type { ExecutionPlan } from "../domain/workflow.js";
@@ -55,6 +57,8 @@ import { workflowScopeRoot } from "../domain/workflow-package.js";
 import { parseCronTriggerSource } from "../domain/workflow-trigger.js";
 import type { CronTriggerSource } from "../domain/workflow-trigger.js";
 import {
+  decodeStoredAttemptProcessIdentity,
+  withRunningAttemptProcesses,
   decodeStoredNodeAttemptRow as attemptFromRow,
   decodeStoredNodeRunRow as nodeFromRow,
   decodeStoredRevisionRow as revisionFromRow,
@@ -921,7 +925,8 @@ export class StateStore {
               `
             UPDATE node_attempts
             SET status = ?, finished_at = ?, exit_code = ?,
-                failure_code = ?, failure_message = ?
+                failure_code = ?, failure_message = ?,
+                process_pid = NULL, process_group_id = NULL, process_start_identifier = NULL
             WHERE run_id = ? AND node_id = ? AND attempt = ? AND status = 'running'
           `,
             )
@@ -1074,6 +1079,81 @@ export class StateStore {
       const node = transact.immediate();
       this.#protectDatabaseFiles();
       return node;
+    } catch (error: unknown) {
+      throw asStateError(error);
+    }
+  }
+
+  /**
+   * Records the operating-system process a running attempt started. The identity stays on the row
+   * until the attempt finishes through the ordinary path, which clears it — so a row that still
+   * carries one names a process Kilin never observed ending.
+   *
+   * Writing nothing is the correct outcome when the attempt has already left `running`: a
+   * cancellation can commit between the spawn and this call, and that owner is about to terminate
+   * the process group itself. Recording an identity then would name a process nobody needs to reap.
+   */
+  public recordAttemptProcess(
+    runId: string,
+    nodeId: string,
+    attempt: number,
+    identity: AttemptProcessIdentity,
+  ): void {
+    try {
+      this.#database
+        .prepare(
+          `
+        UPDATE node_attempts
+        SET process_pid = ?, process_group_id = ?, process_start_identifier = ?
+        WHERE run_id = ? AND node_id = ? AND attempt = ? AND status = 'running'
+      `,
+        )
+        .run(
+          identity.pid,
+          identity.processGroupId,
+          identity.startIdentifier,
+          runId,
+          nodeId,
+          attempt,
+        );
+    } catch (error: unknown) {
+      throw asStateError(error);
+    }
+  }
+
+  /**
+   * Every attempt in a working directory whose recorded process was never observed ending.
+   *
+   * The scope is the directory rather than one run because the caller's claim on these processes is
+   * the exclusive working-directory lock, which covers every run recorded against that directory.
+   * Status is deliberately not part of the predicate: reconciliation rewrites a stale attempt to
+   * `interrupted` without touching the process, so filtering on status would hide exactly the
+   * orphans this exists to find.
+   */
+  public listUnreapedAttemptProcesses(canonicalCwd: string): UnreapedAttemptProcess[] {
+    try {
+      return this.#listAttemptRowsWithProcess({ canonicalCwd }).flatMap((row) => {
+        const identity = decodeStoredAttemptProcessIdentity(row);
+        return identity === undefined ? [] : [{ startedAt: row.started_at, process: identity }];
+      });
+    } catch (error: unknown) {
+      throw asStateError(error);
+    }
+  }
+
+  /** Forgets reaped identities so a later command cannot signal a recycled pid. */
+  public clearAttemptProcesses(canonicalCwd: string): void {
+    try {
+      this.#database
+        .prepare(
+          `
+        UPDATE node_attempts
+        SET process_pid = NULL, process_group_id = NULL, process_start_identifier = NULL
+        WHERE process_pid IS NOT NULL
+          AND run_id IN (SELECT id FROM workflow_runs WHERE canonical_cwd = ?)
+      `,
+        )
+        .run(canonicalCwd);
     } catch (error: unknown) {
       throw asStateError(error);
     }
@@ -1763,7 +1843,10 @@ export class StateStore {
         `Run "${runId}" references a missing workflow revision. This indicates damaged local state rather than a problem with your workflow. Report it at https://github.com/kilin-space/kilin/issues.`,
       );
     }
-    const nodes = this.#listNodeRows(runId).map(nodeFromRow);
+    const nodes = withRunningAttemptProcesses(
+      this.#listNodeRows(runId).map(nodeFromRow),
+      this.#listAttemptRowsWithProcess({ runId }),
+    );
     const retriedNodeIds = new Set(
       nodes
         .filter(
@@ -1782,6 +1865,31 @@ export class StateStore {
       ...(attempts.length === 0 ? {} : { attempts }),
       ...(workspaces.length === 0 ? {} : { workspaces }),
     };
+  }
+
+  #listAttemptRowsWithProcess(
+    scope: { runId: string } | { canonicalCwd: string },
+  ): NodeAttemptRow[] {
+    if ("runId" in scope) {
+      return this.#database
+        .prepare(
+          `
+        SELECT * FROM node_attempts
+        WHERE run_id = ? AND process_pid IS NOT NULL ORDER BY node_id, attempt
+      `,
+        )
+        .all(scope.runId) as NodeAttemptRow[];
+    }
+    return this.#database
+      .prepare(
+        `
+        SELECT node_attempts.* FROM node_attempts
+        JOIN workflow_runs ON workflow_runs.id = node_attempts.run_id
+        WHERE workflow_runs.canonical_cwd = ? AND node_attempts.process_pid IS NOT NULL
+        ORDER BY node_attempts.run_id, node_attempts.node_id, node_attempts.attempt
+      `,
+      )
+      .all(scope.canonicalCwd) as NodeAttemptRow[];
   }
 
   #listRetriedNodeAttempts(

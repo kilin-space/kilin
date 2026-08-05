@@ -39,7 +39,7 @@ import { maximumHostTriggerRequestBytes } from "../../src/domain/workflow-trigge
 import { expectOptionError } from "../helpers/cli-errors.js";
 import { pathExists } from "../helpers/filesystem.js";
 import { parseJsonLines, readStrictJsonLines } from "../helpers/json-lines.js";
-import { isCommandFailure, processIsRunning } from "../helpers/subprocess.js";
+import { isCommandFailure, killProcessIfRunning, processIsRunning } from "../helpers/subprocess.js";
 import { writeTestWorkflowPackage } from "../helpers/workflow-package.js";
 
 const execFileAsync = promisify(execFile);
@@ -167,6 +167,19 @@ const approvalDetail = (node: NodeRunRecord): RunDetail => ({
   revision: revisionForPlan(approvalProjectionPlan, "revision-approval"),
   nodes: [node],
 });
+
+/**
+ * A fixture publishes its descendant's pid by atomic rename, so a partial read should be
+ * impossible — but an empty or malformed file would parse to `0`, and `processIsRunning(0)` reports
+ * a dead process, which would let a termination assertion pass without asserting anything.
+ */
+const publishedPid = (contents: string): number => {
+  const pid = Number(contents.trim());
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error(`Fixture published an unusable descendant pid: ${JSON.stringify(contents)}`);
+  }
+  return pid;
+};
 
 const waitFor = async (
   predicate: () => boolean | Promise<boolean>,
@@ -1126,7 +1139,7 @@ describe("run CLI documents", () => {
     }
   });
 
-  it("omits terminal and process fields from running and pending summaries", () => {
+  it("exposes the live process on a running summary and omits terminal fields", () => {
     const plan = compileWorkflow({
       schemaVersion: 1,
       workflow: { id: "workflow-active", name: "Workflow active" },
@@ -1177,6 +1190,7 @@ describe("run CLI documents", () => {
             stderrPath: "/state/running/stderr.log",
             resultPath: "/state/running/result.txt",
           },
+          process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
         },
         {
           kind: "agent",
@@ -1202,9 +1216,11 @@ describe("run CLI documents", () => {
       "workflowScope",
     ]);
     expect(sortedKeys(document.nodes[0] ?? {})).toEqual([
+      "durationMs",
       "kind",
       "nodeId",
       "ordinal",
+      "pid",
       "resultPath",
       "runtime",
       "startedAt",
@@ -1212,6 +1228,13 @@ describe("run CLI documents", () => {
       "stderrPath",
       "stdoutPath",
     ]);
+    const running = document.nodes[0];
+    if (running?.kind !== "agent" || running.status !== "running") {
+      throw new Error("Expected a running agent summary");
+    }
+    expect(running.pid).toBe(4242);
+    // Not a placeholder zero, and not a final duration.
+    expect(running.durationMs).toBeGreaterThan(Date.now() - Date.parse("2026-07-22T00:00:00.000Z"));
     expect(sortedKeys(document.nodes[1] ?? {})).toEqual([
       "kind",
       "nodeId",
@@ -1219,6 +1242,123 @@ describe("run CLI documents", () => {
       "runtime",
       "status",
     ]);
+  });
+
+  it("prints the process of an executing agent node in human output", () => {
+    const plan = compileWorkflow({
+      schemaVersion: 1,
+      workflow: { id: "workflow-human-process", name: "Workflow human process" },
+      nodes: [
+        {
+          id: "running-node",
+          kind: "agent",
+          runtime: "codex",
+          prompt: "run",
+          access: "read_only",
+        },
+      ],
+      edges: [],
+    });
+    const detail: RunDetail = {
+      run: {
+        id: "run-human-process",
+        revisionId: "revision-human-process",
+        canonicalCwd: "/project",
+        options: {
+          nodeTimeoutMs: 1_000,
+          approvalTimeoutMs: 1_000,
+          maxOutputBytes: 1_024,
+          maxParallel: 1,
+        },
+        status: "running",
+        startedAt: "2026-07-21T00:00:00.000Z",
+      },
+      revision: revisionForPlan(plan, "revision-human-process"),
+      nodes: [
+        {
+          kind: "agent",
+          runId: "run-human-process",
+          nodeId: "running-node",
+          ordinal: 0,
+          runtime: "codex",
+          status: "running",
+          startedAt: "2026-07-21T00:00:00.100Z",
+          outputPaths: {
+            stdoutPath: "/state/running/stdout.log",
+            stderrPath: "/state/running/stderr.log",
+            resultPath: "/state/running/result.txt",
+          },
+          process: { pid: 4242, processGroupId: 4242, startIdentifier: "recorded-start" },
+        },
+      ],
+    };
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      renderRunDetail(detail, createRunDetailDocument(detail, plan));
+
+      expect(write.mock.calls.map(([value]) => String(value)).join("")).toContain("process: 4242");
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("omits the process from a running summary whose attempt recorded none", () => {
+    const plan = compileWorkflow({
+      schemaVersion: 1,
+      workflow: { id: "workflow-unrecorded", name: "Workflow unrecorded" },
+      nodes: [
+        {
+          id: "running-node",
+          kind: "agent",
+          runtime: "codex",
+          prompt: "run",
+          access: "read_only",
+        },
+      ],
+      edges: [],
+    });
+    const detail: RunDetail = {
+      run: {
+        id: "run-unrecorded",
+        revisionId: "revision-unrecorded",
+        canonicalCwd: "/project",
+        options: {
+          nodeTimeoutMs: 1_000,
+          approvalTimeoutMs: 1_000,
+          maxOutputBytes: 1_024,
+          maxParallel: 1,
+        },
+        status: "running",
+        startedAt: "2026-07-21T00:00:00.000Z",
+      },
+      revision: revisionForPlan(plan, "revision-unrecorded"),
+      nodes: [
+        {
+          kind: "agent",
+          runId: "run-unrecorded",
+          nodeId: "running-node",
+          ordinal: 0,
+          runtime: "codex",
+          status: "running",
+          startedAt: "2026-07-21T00:00:00.100Z",
+          outputPaths: {
+            stdoutPath: "/state/running/stdout.log",
+            stderrPath: "/state/running/stderr.log",
+            resultPath: "/state/running/result.txt",
+          },
+        },
+      ],
+    };
+
+    const document = createRunDetailDocument(detail, plan);
+
+    const running = document.nodes[0];
+    if (running?.kind !== "agent" || running.status !== "running") {
+      throw new Error("Expected a running agent summary");
+    }
+    expect(sortedKeys(running)).not.toContain("pid");
+    expect(running.durationMs).toBeGreaterThan(Date.now() - Date.parse("2026-07-22T00:00:00.000Z"));
   });
 
   it("renders interrupted and skipped summaries without inventing skipped paths", () => {
@@ -1796,7 +1936,7 @@ describe("run CLI lifecycle", () => {
       });
     });
     await waitFor(() => pathExists(descendantReadyPath));
-    const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
+    const descendantPid = publishedPid(await readFile(descendantPidPath, "utf8"));
     const interruptedAt = Date.now();
 
     child.kill("SIGINT");
@@ -1811,91 +1951,164 @@ describe("run CLI lifecycle", () => {
     await waitFor(() => !processIsRunning(descendantPid));
   }, 7_000);
 
-  it("cancels an attached run on SIGINT, persists cancellation, and exits 130", async () => {
-    const context = await createContext(["wait forever"]);
-    const environment = {
-      ...context.environment,
-      FAKE_CODEX_BEHAVIOR: "wait",
-    };
-    const child = spawn(
-      process.execPath,
-      [cliFile, "run", context.workflowName, "--cwd", context.project, "--json"],
-      { env: environment, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    let stdout = "";
-    let stderr = "";
-    let interrupted = false;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-      if (!interrupted && stdout.includes('"type":"node.started"')) {
-        interrupted = true;
-        child.kill("SIGINT");
-      }
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        child.kill("SIGKILL");
-        reject(new Error("Timed out waiting for the SIGINT cancellation contract."));
-      }, 5_000);
-      child.once("error", reject);
-      child.once("close", (code, signal) => {
-        clearTimeout(timeout);
-        if (signal !== null || code === null) {
-          reject(new Error(`CLI closed with signal ${signal ?? "unknown"}.`));
-          return;
-        }
-        resolve(code);
+  it.each(["resume", "rerun", "run"] as const)(
+    "reaps the process tree an unhandleably killed run left behind when %s next takes the directory",
+    async (recoveryCommand) => {
+      const context = await createContext(["wait forever"]);
+      const descendantPidPath = join(context.root, "orphan-descendant.pid");
+      const environment = {
+        ...context.environment,
+        FAKE_CODEX_BEHAVIOR: "cancel-child",
+        FAKE_CODEX_DESCENDANT_PID: descendantPidPath,
+      };
+      const child = spawn(
+        process.execPath,
+        [cliFile, "run", context.workflowName, "--cwd", context.project, "--json"],
+        { env: environment, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "";
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
       });
-    });
-    const events = jsonLines(stdout);
+      let descendantPid: number | undefined;
+      try {
+        await waitFor(() => pathExists(descendantPidPath));
+        const provider = publishedPid(await readFile(descendantPidPath, "utf8"));
+        descendantPid = provider;
+        const runId = String(jsonLines(stdout).find(({ type }) => type === "run.started")?.runId);
+        // SIGKILL cannot be handled, so no signal handler and no `finally` can clean up here.
+        child.kill("SIGKILL");
+        await new Promise<void>((resolve) => child.once("close", () => resolve()));
+        expect(processIsRunning(provider)).toBe(true);
 
-    expect(interrupted).toBe(true);
-    expect(exitCode).toBe(130);
-    expect(stderr).toBe("");
-    expect(events.at(-1)).toMatchObject({ type: "run.finished", status: "cancelled" });
-    expect(events.filter(({ type }) => type === "run.finished")).toHaveLength(1);
+        // Inspecting the run first reconciles it to `interrupted`. The reap must survive that, since
+        // looking up the run id is the normal thing to do before resuming.
+        const shownBefore = await runCli(["runs", "show", runId, "--json"], environment);
+        expect(JSON.parse(shownBefore.stdout)).toMatchObject({ run: { status: "interrupted" } });
+        expect(processIsRunning(provider)).toBe(true);
 
-    const runId = events.find(({ type }) => type === "run.started")?.runId;
-    expect(typeof runId).toBe("string");
-    const shown = await runCli(["runs", "show", String(runId), "--json"], environment);
-    expect(shown.exitCode).toBe(0);
-    const shownDocument = JSON.parse(shown.stdout) as {
-      run: Record<string, unknown>;
-      nodes: Record<string, unknown>[];
-    };
-    expect(shownDocument).toMatchObject({ run: { status: "cancelled" } });
-    expect(sortedKeys(shownDocument.run)).toEqual([
-      "cwd",
-      "durationMs",
-      "finishedAt",
-      "projectRoot",
-      "revisionId",
-      "runId",
-      "startedAt",
-      "status",
-      "workflowId",
-      "workflowScope",
-    ]);
-    expect(sortedKeys(shownDocument.nodes[0] ?? {})).toEqual([
-      "durationMs",
-      "finishedAt",
-      "kind",
-      "nodeId",
-      "ordinal",
-      "resultPath",
-      "runtime",
-      "startedAt",
-      "status",
-      "stderrPath",
-      "stdoutPath",
-    ]);
-  }, 7_000);
+        // `run` starts fresh work in the same directory rather than recovering by id, which is
+        // exactly why it has to clear the previous owner's processes out of the way first.
+        const recoveryArguments =
+          recoveryCommand === "run"
+            ? ["run", context.workflowName, "--cwd", context.project, "--json"]
+            : [recoveryCommand, runId, "--json"];
+        const recovered = await runCli(recoveryArguments, {
+          ...environment,
+          FAKE_CODEX_BEHAVIOR: "success",
+        });
+
+        expect(recovered.exitCode).toBe(0);
+        await waitFor(() => !processIsRunning(provider));
+      } finally {
+        child.kill("SIGKILL");
+        if (descendantPid !== undefined) {
+          killProcessIfRunning(descendantPid);
+        }
+      }
+    },
+    20_000,
+  );
+
+  it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
+    "cancels an attached run on %s, reaps the process tree, persists cancellation, and exits 130",
+    async (stopSignal) => {
+      const context = await createContext(["wait forever"]);
+      const descendantPidPath = join(context.root, `attached-descendant-${stopSignal}.pid`);
+      const environment = {
+        ...context.environment,
+        FAKE_CODEX_BEHAVIOR: "cancel-child",
+        FAKE_CODEX_DESCENDANT_PID: descendantPidPath,
+      };
+      const child = spawn(
+        process.execPath,
+        [cliFile, "run", context.workflowName, "--cwd", context.project, "--json"],
+        { env: environment, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk: string) => {
+        stderr += chunk;
+      });
+      let descendantPid: number | undefined;
+      try {
+        await waitFor(() => pathExists(descendantPidPath));
+        const provider = publishedPid(await readFile(descendantPidPath, "utf8"));
+        descendantPid = provider;
+        child.kill(stopSignal);
+
+        const exitCode = await new Promise<number>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            child.kill("SIGKILL");
+            reject(new Error(`Timed out waiting for the ${stopSignal} cancellation contract.`));
+          }, 5_000);
+          child.once("error", reject);
+          child.once("close", (code, signal) => {
+            clearTimeout(timeout);
+            if (signal !== null || code === null) {
+              reject(new Error(`CLI closed with signal ${signal ?? "unknown"}.`));
+              return;
+            }
+            resolve(code);
+          });
+        });
+        const events = jsonLines(stdout);
+
+        expect(exitCode).toBe(130);
+        expect(stderr).toBe("");
+        await waitFor(() => !processIsRunning(provider));
+        expect(events.at(-1)).toMatchObject({ type: "run.finished", status: "cancelled" });
+        expect(events.filter(({ type }) => type === "run.finished")).toHaveLength(1);
+
+        const runId = events.find(({ type }) => type === "run.started")?.runId;
+        expect(typeof runId).toBe("string");
+        const shown = await runCli(["runs", "show", String(runId), "--json"], environment);
+        expect(shown.exitCode).toBe(0);
+        const shownDocument = JSON.parse(shown.stdout) as {
+          run: Record<string, unknown>;
+          nodes: Record<string, unknown>[];
+        };
+        expect(shownDocument).toMatchObject({ run: { status: "cancelled" } });
+        expect(sortedKeys(shownDocument.run)).toEqual([
+          "cwd",
+          "durationMs",
+          "finishedAt",
+          "projectRoot",
+          "revisionId",
+          "runId",
+          "startedAt",
+          "status",
+          "workflowId",
+          "workflowScope",
+        ]);
+        expect(sortedKeys(shownDocument.nodes[0] ?? {})).toEqual([
+          "durationMs",
+          "finishedAt",
+          "kind",
+          "nodeId",
+          "ordinal",
+          "resultPath",
+          "runtime",
+          "startedAt",
+          "status",
+          "stderrPath",
+          "stdoutPath",
+        ]);
+      } finally {
+        child.kill("SIGKILL");
+        if (descendantPid !== undefined) {
+          killProcessIfRunning(descendantPid);
+        }
+      }
+    },
+    10_000,
+  );
 });
 
 describe("run CLI history and rerun", () => {
