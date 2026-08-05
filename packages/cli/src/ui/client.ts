@@ -10,6 +10,7 @@ import type {
   LoopWorkflowNodeDto,
   NodeRunDto,
   OutputStream,
+  RunCancellationResponse,
   RunSummaryDto,
   ScopedRunDetailResponse,
   ScopedRunListResponse,
@@ -43,6 +44,7 @@ const routes = {
     `/api/runs/${encodeURIComponent(runId)}/nodes/${String(ordinal)}/output/${stream}`,
   decision: (runId: string, nodeId: string): string =>
     `/api/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/decision`,
+  cancel: (runId: string): string => `/api/runs/${encodeURIComponent(runId)}/cancel`,
 } as const;
 
 type ViewMode = "current" | "run";
@@ -74,6 +76,8 @@ interface ViewerState {
   decisionNoteDraft: string;
   decisionSubmitting: boolean;
   decisionError: string | undefined;
+  cancelSubmitting: boolean;
+  cancelError: string | undefined;
   pollFailures: number;
 }
 
@@ -96,6 +100,8 @@ const state: ViewerState = {
   decisionNoteDraft: "",
   decisionSubmitting: false,
   decisionError: undefined,
+  cancelSubmitting: false,
+  cancelError: undefined,
   pollFailures: 0,
 };
 
@@ -203,6 +209,7 @@ type ViewerFocusTarget =
       readonly selectionDirection: HTMLTextAreaElement["selectionDirection"];
     }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
+  | { readonly type: "run-cancel" }
   | { readonly type: "command-copy"; readonly command: string }
   | { readonly type: "decision-needed"; readonly runId: string; readonly graphNodeId: string };
 
@@ -319,6 +326,9 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   }
   if (activeElement instanceof HTMLElement && activeElement.id === "decision-reject") {
     return { type: "decision-action", decision: "rejected" };
+  }
+  if (activeElement instanceof HTMLElement && activeElement.id === "cancel-run") {
+    return { type: "run-cancel" };
   }
   const copyCommand = focusedAttribute(activeElement, "copy-button", "data-copy-command");
   if (copyCommand !== undefined) {
@@ -442,6 +452,10 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
   if (target.type === "decision-action") {
     const identifier = target.decision === "approved" ? "#decision-approve" : "#decision-reject";
     elements.decisionDock.querySelector<HTMLButtonElement>(identifier)?.focus();
+    return;
+  }
+  if (target.type === "run-cancel") {
+    elements.runInspector.querySelector<HTMLButtonElement>("#cancel-run")?.focus();
     return;
   }
   if (target.type === "decision-needed") {
@@ -1787,6 +1801,9 @@ const renderRunInspector = (): void => {
   if (detail.run.status === "running" && detail.run.cancelRequestedAt === undefined) {
     elements.runInspector.append(cancelCommand(detail.run.runId));
   }
+  if (state.cancelSubmitting || state.cancelError !== undefined) {
+    elements.runInspector.append(cancelStatus());
+  }
   if (detail.attempts.length > 0) {
     const attempts = document.createElement("details");
     const summary = document.createElement("summary");
@@ -3012,10 +3029,33 @@ const cancelCommand = (runId: string): HTMLElement => {
   const commands = document.createElement("section");
   commands.className = "run-commands";
   commands.setAttribute("aria-label", "Run cancellation command");
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.id = "cancel-run";
+  cancel.disabled = state.cancelSubmitting;
+  setText(cancel, "Cancel run");
+  cancel.addEventListener("click", () => {
+    void submitCancellation(runId);
+  });
   const guidance = document.createElement("p");
   setText(guidance, "Fallback: cancel this run from your terminal:");
-  commands.append(guidance, copyCommandRow(`kilin runs cancel ${runId}`));
+  commands.append(cancel, guidance, copyCommandRow(`kilin runs cancel ${runId}`));
   return commands;
+};
+
+const cancelStatus = (): HTMLElement => {
+  const status = document.createElement("p");
+  status.id = "cancel-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  if (state.cancelError === undefined) {
+    status.className = "empty-copy";
+    setText(status, "Requesting cancellation…");
+    return status;
+  }
+  status.className = "failure-copy";
+  setText(status, state.cancelError);
+  return status;
 };
 
 const fallbackCommands = (runId: string, nodeId: string): HTMLElement => {
@@ -3138,6 +3178,61 @@ const applyRecordedDecision = (response: ApprovalDecisionResponse): void => {
   };
 };
 
+const cancellingRun = (run: RunSummaryDto, cancelRequestedAt: string): RunSummaryDto => ({
+  ...withoutWaitingForApproval(run),
+  cancelRequestedAt,
+});
+
+const applyRequestedCancellation = (response: RunCancellationResponse): void => {
+  pollController?.abort();
+  const runList = state.runList;
+  if (runList !== undefined) {
+    state.runList = {
+      ...runList,
+      runs: runList.runs.map((run) =>
+        run.runId === response.runId ? cancellingRun(run, response.cancelRequestedAt) : run,
+      ),
+    };
+  }
+  const detail = state.runDetail;
+  if (detail === undefined || detail.run.runId !== response.runId) {
+    return;
+  }
+  state.runDetail = {
+    ...detail,
+    run: cancellingRun(detail.run, response.cancelRequestedAt),
+    lineage: {
+      ...detail.lineage,
+      runs: detail.lineage.runs.map((run) =>
+        run.runId === response.runId ? cancellingRun(run, response.cancelRequestedAt) : run,
+      ),
+    },
+  };
+};
+
+const submitCancellation = async (runId: string): Promise<void> => {
+  if (state.cancelSubmitting) {
+    return;
+  }
+  state.cancelSubmitting = true;
+  state.cancelError = undefined;
+  renderPresentation();
+  try {
+    const response = await apiPost<RunCancellationResponse>(routes.cancel(runId), {});
+    if (state.selectedRunId === runId) {
+      state.cancelSubmitting = false;
+    }
+    applyRequestedCancellation(response);
+  } catch (error: unknown) {
+    if (state.selectedRunId === runId) {
+      state.cancelSubmitting = false;
+      state.cancelError =
+        error instanceof Error ? error.message : "The run could not be cancelled.";
+    }
+  }
+  renderPresentation();
+};
+
 const submitDecision = async (decision: ViewerApprovalDecision): Promise<void> => {
   const runId = state.selectedRunId;
   const context = approvalDockContext();
@@ -3177,6 +3272,7 @@ const renderDecisionDock = (): void => {
   elements.decisionDock.hidden = false;
   elements.evidencePlaceholder.hidden = true;
   const { node, nodeRun } = context;
+  const cancelRequestedAt = state.runDetail?.run.cancelRequestedAt;
   const upstream = dockUpstreamAgents(node, nodeRun);
   for (const dependencyRun of upstream) {
     ensureDockEvidence(runId, dependencyRun.ordinal);
@@ -3200,6 +3296,7 @@ const renderDecisionDock = (): void => {
     nodeRun.decision?.decision ?? "",
     nodeRun.decision?.decidedAt ?? "",
     nodeRun.deadlineAt ?? "",
+    cancelRequestedAt ?? "",
     state.decisionSubmitting,
     state.decisionError ?? "",
     evidenceStates,
@@ -3246,7 +3343,11 @@ const renderDecisionDock = (): void => {
     setText(copy, "This gate has no upstream evidence to display.");
     body.append(copy);
   }
-  if (nodeRun.decision === undefined && nodeRun.status === "waiting_for_approval") {
+  if (
+    nodeRun.decision === undefined &&
+    nodeRun.status === "waiting_for_approval" &&
+    cancelRequestedAt === undefined
+  ) {
     body.append(fallbackCommands(runId, nodeRun.executionId));
   }
 
@@ -3254,12 +3355,17 @@ const renderDecisionDock = (): void => {
   footer.className = "decision-footer";
   if (nodeRun.decision !== undefined) {
     footer.append(decisionRecordElement(nodeRun.decision));
-  } else if (nodeRun.status === "waiting_for_approval") {
+  } else if (nodeRun.status === "waiting_for_approval" && cancelRequestedAt === undefined) {
     footer.append(decisionControls());
   } else {
     const copy = document.createElement("p");
     copy.className = "empty-copy";
-    setText(copy, `This gate is ${statusLabel(nodeRun.status).toLowerCase()}.`);
+    setText(
+      copy,
+      nodeRun.status === "waiting_for_approval"
+        ? "This run is being cancelled, so this gate can no longer be decided."
+        : `This gate is ${statusLabel(nodeRun.status).toLowerCase()}.`,
+    );
     footer.append(copy);
   }
   setText(dockStatusElement, statusText);
@@ -3850,6 +3956,8 @@ const selectRun = async (runId: string, initial?: InitialRunSelection): Promise<
   state.decisionNoteDraft = "";
   state.decisionError = undefined;
   state.decisionSubmitting = false;
+  state.cancelError = undefined;
+  state.cancelSubmitting = false;
   dockEvidenceCache.clear();
   approvalGateSnapshot = undefined;
   renderPresentation();
@@ -3907,6 +4015,8 @@ const selectCurrentWorkflow = (): void => {
   state.decisionNoteDraft = "";
   state.decisionError = undefined;
   state.decisionSubmitting = false;
+  state.cancelError = undefined;
+  state.cancelSubmitting = false;
   dockEvidenceCache.clear();
   approvalGateSnapshot = undefined;
   renderPresentation();
