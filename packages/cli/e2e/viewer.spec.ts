@@ -2529,7 +2529,7 @@ test("a gate arriving while the tab is hidden notifies once and is decidable on 
   await expect(page.locator("#decision-approve")).toBeVisible();
 });
 
-test("a gate raises no notification while the tab is visible or while permission is withheld", async ({
+test("a gate raises no notification while the tab is visible, once that tab hides, or while permission is withheld", async ({
   page,
   viewer,
 }) => {
@@ -2566,8 +2566,15 @@ test("a gate raises no notification while the tab is visible or while permission
   await expect(waitingRow("run-visible")).toHaveCount(1, { timeout: 20_000 });
   expect(await raisedNotifications(page)).toHaveLength(0);
 
-  await setNotificationPermission(page, "default");
+  // A gate the reader already watched open stays silent when the tab hides afterwards: hiding is
+  // not news about that gate. Permission is still granted here, so only the gate's history
+  // suppresses the notification.
   await setDocumentHidden(page, true);
+  const beforeHidden = listRequests;
+  await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(beforeHidden);
+  expect(await raisedNotifications(page)).toHaveLength(0);
+
+  await setNotificationPermission(page, "default");
   waitingRunIds.add("run-permission-default");
   const beforeDefault = listRequests;
   await expect.poll(() => listRequests, { timeout: 20_000 }).toBeGreaterThan(beforeDefault);

@@ -53,11 +53,11 @@ const maximumRequestBodyBytes = 4_096;
 const maximumLineageLength = 1_000;
 const defaultPollIntervalMs = 2_000;
 const outputVersion = 1 as const;
-const errorCodeStatuses: Partial<Record<KilinErrorCode, number>> = {
-  RUN_NOT_FOUND: 404,
-  APPROVAL_NOT_WAITING: 409,
-  RUN_NOT_CANCELLABLE: 409,
-};
+const errorCodeStatuses = new Map<KilinErrorCode, number>([
+  ["RUN_NOT_FOUND", 404],
+  ["APPROVAL_NOT_WAITING", 409],
+  ["RUN_NOT_CANCELLABLE", 409],
+]);
 const contentSecurityPolicy = [
   "default-src 'none'",
   "script-src 'self'",
@@ -810,7 +810,7 @@ export const startViewerServer = async (
       if (error instanceof KilinError) {
         sendError(
           response,
-          new HttpError(errorCodeStatuses[error.code] ?? 500, error.code, error.message),
+          new HttpError(errorCodeStatuses.get(error.code) ?? 500, error.code, error.message),
         );
         return;
       }

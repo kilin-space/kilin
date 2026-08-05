@@ -3364,6 +3364,10 @@ const renderDecisionDock = (): void => {
   const { node, nodeRun } = context;
   const cancelRequestedAt = state.runDetail?.run.cancelRequestedAt;
   const cancellationPending = state.cancelSubmitting || cancelRequestedAt !== undefined;
+  const canDecide =
+    nodeRun.decision === undefined &&
+    nodeRun.status === "waiting_for_approval" &&
+    !cancellationPending;
   const upstream = dockUpstreamAgents(node, nodeRun);
   for (const dependencyRun of upstream) {
     ensureDockEvidence(runId, dependencyRun.ordinal);
@@ -3435,11 +3439,7 @@ const renderDecisionDock = (): void => {
     setText(copy, "This gate has no upstream evidence to display.");
     body.append(copy);
   }
-  if (
-    nodeRun.decision === undefined &&
-    nodeRun.status === "waiting_for_approval" &&
-    !cancellationPending
-  ) {
+  if (canDecide) {
     body.append(fallbackCommands(runId, nodeRun.executionId));
   }
 
@@ -3447,7 +3447,7 @@ const renderDecisionDock = (): void => {
   footer.className = "decision-footer";
   if (nodeRun.decision !== undefined) {
     footer.append(decisionRecordElement(nodeRun.decision));
-  } else if (nodeRun.status === "waiting_for_approval" && !cancellationPending) {
+  } else if (canDecide) {
     footer.append(decisionControls());
   } else {
     const copy = document.createElement("p");
@@ -4151,7 +4151,7 @@ const applyInitialSelectionOnce = (): void => {
   void selectRun(targetRunId, { restore });
 };
 
-const notifiedApprovalRunIds = new Set<string>();
+let notifiedApprovalRunIds = new Set<string>();
 
 const raiseApprovalNotification = (run: RunSummaryDto): void => {
   try {
@@ -4172,26 +4172,18 @@ const raiseApprovalNotification = (run: RunSummaryDto): void => {
 const notifyNewApprovalGates = (runs: readonly RunSummaryDto[]): void => {
   const canRaiseNotification =
     document.hidden && "Notification" in window && Notification.permission === "granted";
-  const listedRunIds = new Set<string>();
+  const waitingRunIds = new Set<string>();
   for (const run of runs) {
-    listedRunIds.add(run.runId);
     if (run.waitingForApproval !== true) {
-      notifiedApprovalRunIds.delete(run.runId);
       continue;
     }
-    if (notifiedApprovalRunIds.has(run.runId)) {
-      continue;
-    }
-    notifiedApprovalRunIds.add(run.runId);
-    if (canRaiseNotification) {
+    const alreadyNotified = notifiedApprovalRunIds.has(run.runId);
+    waitingRunIds.add(run.runId);
+    if (!alreadyNotified && canRaiseNotification) {
       raiseApprovalNotification(run);
     }
   }
-  for (const runId of notifiedApprovalRunIds) {
-    if (!listedRunIds.has(runId)) {
-      notifiedApprovalRunIds.delete(runId);
-    }
-  }
+  notifiedApprovalRunIds = waitingRunIds;
 };
 
 const notifyToggleLabels: Record<NotificationPermission, string> = {
