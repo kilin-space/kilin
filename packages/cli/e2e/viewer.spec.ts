@@ -2536,13 +2536,14 @@ test("the notification control states its permission, requests it on click, and 
   await expect(toggle).toBeVisible();
   await expect(toggle).toBeEnabled();
   await expect(toggle).toHaveText("Notify me");
-  await expect(toggle).toHaveAttribute("aria-pressed", "false");
   expect(await permissionRequests(page)).toBe(0);
 
   await toggle.click();
 
+  // A page cannot revoke a granted permission, so the control states the outcome and stops
+  // offering an action it could not carry out.
   await expect(toggle).toHaveText("Notifications on");
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(toggle).toBeDisabled();
   expect(await permissionRequests(page)).toBe(1);
 
   // The launch token is stripped after the first exchange, so the reload resumes on the cookie.
@@ -2553,7 +2554,6 @@ test("the notification control states its permission, requests it on click, and 
   await expect(toggle).toBeVisible();
   await expect(toggle).toBeDisabled();
   await expect(toggle).toHaveText("Notifications blocked");
-  await expect(toggle).toHaveAttribute("aria-pressed", "false");
 });
 
 test("a gate arriving while the tab is hidden notifies once and is decidable on return", async ({
@@ -2964,4 +2964,106 @@ test("activating the cancel control keeps focus in the run inspector", async ({ 
     inspector.getByRole("term").filter({ hasText: "Cancellation requested" }),
   ).toBeVisible();
   expect(await keepsDomFocus(inspector)).toBe(true);
+});
+
+const cancelSwitchSourceRunId = "run-cancel-switch-a";
+const cancelSwitchTargetRunId = "run-cancel-switch-b";
+
+interface CancelSwitchWorld {
+  readonly heldCancel: Deferred<Route>;
+  readonly listRequests: () => number;
+}
+
+/**
+ * Opens a two-run world, holds the source run's cancellation in flight, and leaves the inspector on
+ * the target run. The cancel control locks while a request is in flight but history rows stay
+ * clickable, so the outcome settles against a run that never asked for it.
+ */
+const openCancelSwitchWorld = async (
+  page: Page,
+  origin: string,
+  launchUrl: string,
+): Promise<CancelSwitchWorld> => {
+  let listRequests = 0;
+  const source = ordinaryRunningSummary(cancelSwitchSourceRunId);
+  const target = succeededSummary(cancelSwitchTargetRunId);
+  await installWorldRoutes(page, origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => {
+      listRequests += 1;
+      return runListResponse([source, target]);
+    },
+    runDetail: (runId) => {
+      if (runId === cancelSwitchSourceRunId) {
+        return gateRunDetail(source, runningNodes());
+      }
+      return runId === cancelSwitchTargetRunId
+        ? gateRunDetail(target, succeededNodes())
+        : undefined;
+    },
+  });
+  const heldCancel = deferred<Route>();
+  await page.route(`${origin}/api/runs/${cancelSwitchSourceRunId}/cancel`, (route) => {
+    heldCancel.resolve(route);
+  });
+  await openViewer(page, launchUrl);
+
+  const inspector = page.locator("#run-inspector");
+  await expect(inspector.locator(".inspector-title")).toHaveText(cancelSwitchSourceRunId);
+  await page.locator("#cancel-run").click();
+  await expect(page.locator("#cancel-run")).toBeDisabled();
+
+  await page.locator(`.history-button[data-run-id="${cancelSwitchTargetRunId}"]`).click();
+  await expect(inspector.locator(".inspector-title")).toHaveText(cancelSwitchTargetRunId);
+  return { heldCancel, listRequests: () => listRequests };
+};
+
+test("a refused cancellation stays off the run the reader switched to", async ({
+  page,
+  viewer,
+}) => {
+  const world = await openCancelSwitchWorld(page, viewer.origin, viewer.launchUrl);
+
+  const pollsAtRelease = world.listRequests();
+  const refusal = await world.heldCancel.promise;
+  await refusal.fulfill({
+    status: 409,
+    contentType: "application/json",
+    body: JSON.stringify({
+      outputVersion: 1,
+      error: {
+        code: "RUN_NOT_CANCELLABLE",
+        message: `Run ${cancelSwitchSourceRunId} is not running, so it cannot be cancelled.`,
+      },
+    }),
+  });
+
+  // A whole poll cycle after the refusal lands gives the client every chance to paint it.
+  await expect
+    .poll(() => world.listRequests(), { timeout: 10_000 })
+    .toBeGreaterThan(pollsAtRelease + 1);
+  await expect(page.locator("#cancel-status")).toHaveCount(0);
+  await expect(page.locator("#cancel-announcement")).toBeEmpty();
+});
+
+test("a granted cancellation stays off the run the reader switched to", async ({
+  page,
+  viewer,
+}) => {
+  const world = await openCancelSwitchWorld(page, viewer.origin, viewer.launchUrl);
+
+  const pollsAtRelease = world.listRequests();
+  const response: RunCancellationResponse = {
+    outputVersion: 1,
+    runId: cancelSwitchSourceRunId,
+    cancelRequestedAt: "2026-07-26T01:00:30.000Z",
+  };
+  await fulfillJson(await world.heldCancel.promise, response);
+
+  await expect
+    .poll(() => world.listRequests(), { timeout: 10_000 })
+    .toBeGreaterThan(pollsAtRelease + 1);
+  // The target run never requested a cancellation, so nothing may be announced against it.
+  await expect(page.locator("#cancel-announcement")).toBeEmpty();
+  await expect(page.locator("#cancel-status")).toHaveCount(0);
 });

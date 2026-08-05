@@ -21,7 +21,7 @@ export const viewerHtml = `<!doctype html>
         <button type="button" id="decision-needed-banner" class="decision-needed-banner" hidden></button>
         <div class="connection-block">
           <p id="connection-status" class="connection-status" role="status" aria-live="polite">Connecting…</p>
-          <button type="button" id="notify-toggle" class="quiet-button" aria-pressed="false" hidden>Notify me</button>
+          <button type="button" id="notify-toggle" class="quiet-button" hidden>Notify me</button>
           <button type="button" id="refresh-button" class="quiet-button">Refresh</button>
         </div>
         <p id="selection-announcement" class="sr-only" role="status" aria-live="polite"></p>

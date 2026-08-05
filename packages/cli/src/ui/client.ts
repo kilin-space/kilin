@@ -4204,8 +4204,7 @@ const renderNotifyToggle = (): void => {
   }
   const permission = Notification.permission;
   elements.notifyToggle.hidden = false;
-  elements.notifyToggle.disabled = permission === "denied";
-  elements.notifyToggle.setAttribute("aria-pressed", String(permission === "granted"));
+  elements.notifyToggle.disabled = permission !== "default";
   setText(elements.notifyToggle, notifyToggleLabels[permission]);
 };
 
