@@ -21,10 +21,13 @@ export const viewerHtml = `<!doctype html>
         <button type="button" id="decision-needed-banner" class="decision-needed-banner" hidden></button>
         <div class="connection-block">
           <p id="connection-status" class="connection-status" role="status" aria-live="polite">Connecting…</p>
+          <button type="button" id="notify-toggle" class="quiet-button" hidden>Notify me</button>
           <button type="button" id="refresh-button" class="quiet-button">Refresh</button>
         </div>
         <p id="selection-announcement" class="sr-only" role="status" aria-live="polite"></p>
         <p id="approval-status" class="sr-only" role="status" aria-live="polite"></p>
+        <p id="cancel-announcement" class="sr-only" role="status" aria-live="polite"></p>
+        <p id="notify-announcement" class="sr-only" role="status" aria-live="polite"></p>
       </header>
 
       <div class="viewer-layout">
@@ -80,7 +83,7 @@ export const viewerHtml = `<!doctype html>
             <div id="output-panel" class="evidence-body" role="tabpanel" tabindex="0"></div>
             <p id="output-meta" class="output-meta"></p>
           </section>
-          <section id="decision-dock" class="decision-dock" aria-labelledby="decision-heading" hidden></section>
+          <section id="decision-dock" class="decision-dock" aria-labelledby="decision-heading" tabindex="-1" hidden></section>
           <p id="evidence-placeholder" class="empty-copy evidence-placeholder">Select a stored run to inspect its evidence.</p>
         </main>
 
@@ -89,7 +92,7 @@ export const viewerHtml = `<!doctype html>
             <p class="eyebrow">Selection</p>
             <h2 id="inspector-heading">Inspector</h2>
           </div>
-          <div id="run-inspector" class="inspector-section"></div>
+          <div id="run-inspector" class="inspector-section" tabindex="-1"></div>
           <div id="node-inspector" class="inspector-section"></div>
           <section id="loop-iterations-section" class="inspector-section" aria-labelledby="loop-iterations-heading" hidden>
             <h3 id="loop-iterations-heading">Loop iterations</h3>
@@ -185,6 +188,10 @@ button:focus-visible,
 }
 
 button:disabled {
+  cursor: default;
+}
+
+button[aria-disabled="true"] {
   cursor: default;
 }
 
@@ -1304,6 +1311,20 @@ h3 {
 .approval-commands .copy-button {
   color: #7c1f56;
   border-color: #e6b7d3;
+}
+
+.cancel-run-button {
+  justify-self: start;
+  padding: 0 14px;
+  color: var(--dim-ink);
+  background: white;
+  border: 1px solid var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cancel-run-button:disabled {
+  opacity: 0.6;
 }
 
 .decision-packet {

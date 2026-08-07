@@ -7,7 +7,7 @@ placeholder. The release gate is owned by [RELEASING.md](../../../../RELEASING.m
 
 ### D-001 — The product is a foreground CLI
 
-**Decision:** V1 runs as one foreground local CLI process. Execution and recorded-state mutations are direct CLI use cases; workflow source remains an ordinary authored project- or user-scoped package whose executable graph is `WORKFLOW.yaml`. Its only listener is the `kilin ui` exception in D-013: an attached, authenticated numeric-loopback viewer that terminates with the command and whose only mutation is the single approval-decision route sanctioned there.
+**Decision:** V1 runs as one foreground local CLI process. Execution and recorded-state mutations are direct CLI use cases; workflow source remains an ordinary authored project- or user-scoped package whose executable graph is `WORKFLOW.yaml`. Its only listener is the `kilin ui` exception in D-013: an attached, authenticated numeric-loopback viewer that terminates with the command and whose mutations are the closed set of two run-scoped routes sanctioned in D-016.
 
 **Reason:** Author, validate, run, inspect, and rerun do not need a service lifecycle. The bounded viewer makes graph and run inspection clearer without becoming a second execution surface.
 
@@ -133,6 +133,8 @@ parameter override, so a repeated run cannot silently change its inputs.
 
 **Consequence:** The viewer enforces exact loopback peer, Host, and Origin boundaries, a restrictive CSP, local assets, exact workflow-plus-canonical-cwd scoping, newest-50 history, and an authorized 64 KiB output tail. The decision route accepts `{decision: "approved" | "rejected", note?}` with a bounded note, is guarded exactly like every authenticated route (session cookie plus CSRF token on top of the request boundary), applies only to a scoped run's waiting, undecided, unexpired approval node, and records through the same application transition the CLI uses — including stale-run reconciliation when no attached run holds the workspace, in which case the decision is refused with `APPROVAL_NOT_WAITING`. There is no other mutation route and no daemon mode, WebSocket, public API, raw filesystem path parameter, or runtime adapter. It polls read-only projections otherwise, stops when the CLI stops, and never invokes Codex.
 
+**Status:** Extended in mutation surface by D-016. The decision route and every boundary recorded here are unchanged; the viewer now also exposes a run cancellation route under the same guards.
+
 ### D-014 — Agent skills remain outside the execution runtime
 
 **Decision:** V1 ships `generate-kilin-workflow`, `discover-kilin-workflows`, and `run-kilin-workflow` as CLI package assets under `packages/cli/agent-skills`, published verbatim rather than copied into `dist`. A cross-platform, no-overwrite linker exposes each skill through the user's `~/.agents/skills` and `~/.claude/skills` directories while keeping the versioned package as the source of truth. They author, propose, or supervise the same strict CLI contract and do not add an embedded model, runtime adapter, transcript store, watcher, or daemon to Kilin.
@@ -148,6 +150,14 @@ parameter override, so a repeated run cannot silently change its inputs.
 **Reason:** Agent clients need a progressively disclosed, repository-native discovery contract, while reusable personal workflows need a portable global scope. Lookup precedence alone cannot safely distinguish run history or revisions for same-named workflows in different scopes.
 
 **Consequence:** The manifest owns `name` and `description`; executable YAML does not repeat description. Package resolution, revision uniqueness, rerun, events, CLI documents, and viewer isolation are scope-aware. Project execution is limited to its root and descendants, while a user package remains portable from descendants of the user's home. Initializers and authoring publishers stage complete packages before no-overwrite publication. Native agent-client integration is deferred, but the filesystem contract is complete. Databases without scope-aware revision identity are rejected rather than migrated or guessed.
+
+### D-016 — The viewer's mutation surface is a closed set of two run-scoped routes
+
+**Decision:** The viewer exposes exactly two mutation routes, each acting on a run already inside its session scope: `POST /api/runs/:run-id/nodes/:node-id/decision`, which records a human approval decision, and `POST /api/runs/:run-id/cancel`, which requests cancellation of a running run. That set is closed. A third mutation route is not a presentation or convenience change and requires a further decision recorded here.
+
+**Reason:** Cancelling is the corrective action the evidence the viewer already renders most often justifies, and a person watching a run stall or loop had to leave the viewer to run `kilin runs cancel`. Cancellation is not arbitrary execution: it requests termination of a run the viewer already scopes and displays, through the same `requestRunCancellation` use case `kilin runs cancel` calls, and it starts nothing. Stating the surface as a closed enumeration rather than relaxing it to "the viewer may mutate" keeps the boundary auditable — the enumeration is the property being protected, not the count.
+
+**Consequence:** The cancel route reuses the decision route's guard chain unchanged: numeric-loopback peer, exact Host and Origin, session cookie plus `X-Kilin-CSRF`, a decoded path segment, and exact workflow-identity-plus-canonical-cwd scoping whose failure is the same 404 a nonexistent run returns. It accepts an empty object, carries no actor and no note, and returns the latched `cancelRequestedAt`. A run that is no longer cancellable is refused with `RUN_NOT_CANCELLABLE` and HTTP 409 rather than a server error. Every other boundary in D-013 holds: the viewer starts no run, edits no workflow, schedules nothing, executes no Proposed Action, and adds no daemon mode, WebSocket, public API, raw filesystem path parameter, or runtime adapter.
 
 ## Delivery evidence
 

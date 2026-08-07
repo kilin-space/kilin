@@ -253,6 +253,12 @@ export interface ApprovalDecisionResponse {
   readonly decision: RecordedApprovalDecision;
 }
 
+export interface RunCancellationResponse {
+  readonly outputVersion: ViewerOutputVersion;
+  readonly runId: string;
+  readonly cancelRequestedAt: string;
+}
+
 export interface SessionBootstrapResponse {
   readonly outputVersion: ViewerOutputVersion;
   readonly csrfToken: string;

@@ -4,7 +4,7 @@
 
 Kilin V1 is one local TypeScript modular monolith with one CLI entry point, one SQLite database, one execution core, and narrow subprocess and filesystem boundaries. It is not a service or package platform.
 
-The foreground CLI owns every execution and recorded-state transition; workflow packages remain ordinary authored project or user files. `kilin ui` is the sole listener: an attached, authenticated loopback Viewer that queries scoped recorded state, may record exactly one guarded Human Decision for an eligible waiting approval, and stops with its CLI process.
+The foreground CLI owns every execution and recorded-state transition; workflow packages remain ordinary authored project or user files. `kilin ui` is the sole listener: an attached, authenticated loopback Viewer that queries scoped recorded state, may record a guarded Human Decision for an eligible waiting approval or a cancellation request for a scoped run — a closed set of two mutations — and stops with its CLI process.
 
 ```text
 author / canonical agent skills
@@ -26,7 +26,7 @@ host cron -> trigger request --------------> run / rerun use case
                                               ├── SQLite metadata
                                               |      |
                                               |      v
-                                              |   viewer query + guarded approval decision
+                                              |   viewer query + guarded decision or cancel
                                               |      |
                                               |      v
                                               |   attached 127.0.0.1 browser view
@@ -77,12 +77,13 @@ paths once a process is about to start.
 
 ## Application operations
 
-The execution path and guarded approval transition are exposed through transport-neutral operations:
+The execution path and the two guarded run-scoped transitions are exposed through transport-neutral operations:
 
 - `runWorkflow(workflowName, cwd, executionOptions, control, environment, parameters)`
 - `runTriggeredWorkflow(hostTriggerRequest, control, environment)`
 - `rerunWorkflow(runId, control, environment, maxParallel)`
 - `recordApprovalDecision(runId, nodeId, decision, actor, note)`
+- `requestRunCancellation(runId)`
 
 History and validation remain application queries or bounded reconciliation commands:
 
@@ -93,8 +94,9 @@ History and validation remain application queries or bounded reconciliation comm
 `control` carries an `AbortSignal` and an in-process `onEvent(RunEvent)` sink. Event delivery cannot
 change durable orchestration state. The CLI maps interruption to the signal and renders events. The
 Viewer never calls `runWorkflow`, `runTriggeredWorkflow`, `rerunWorkflow`, or a runtime adapter. Its
-GET projections use a read-only SQLite connection. Its single approval POST reuses
-`recordApprovalDecision`, including the same narrow stale-owner check as the CLI decision commands.
+GET projections use a read-only SQLite connection. Its two mutation POSTs reuse
+`recordApprovalDecision` and `requestRunCancellation`, including the same narrow stale-owner check
+as the CLI decision and cancel commands.
 
 ## Run lifecycle and lock order
 
@@ -233,8 +235,12 @@ Kilin does not claim exactly-once execution. A crash after spawn may leave works
 `run`, `trigger`, and `rerun` perform that reconciliation and replacement creation without releasing
 and reacquiring the descriptor. Reconciling history commands check each distinct active cwd before
 querying and ignore only live `WORKSPACE_BUSY` groups. Viewer GET projections are pure reads. The
-single approval decision path performs only the existing guarded stale-owner check and decision
-write; it adds no generic reconciliation surface.
+two viewer mutation paths reuse that same owner probe: a busy lock means a live owner is attached,
+so the path records the decision or latches the cancellation; acquiring the lock means none is, so
+the path reconciles that canonical cwd's stale runs and then refuses — `RUN_NOT_CANCELLABLE` for a
+cancellation, and `APPROVAL_NOT_WAITING` for a decision, because the reconciled run holds no
+waiting gate. That reconciliation is the existing scoped one; the paths add no generic
+reconciliation surface.
 
 Rerun repeatability is deliberately narrow: the normalized workflow, dependency plan, authored
 node timeouts, persisted run options, revision identity, and canonical cwd are preserved.
@@ -253,8 +259,10 @@ tampered shape fails closed without mutation. Only a mutating command upgrades a
 read-only Viewer connection validates the current baseline and reports the state as unreadable until
 one has run. Viewer
 projections use a distinct read-only, `query_only` connection and validate the same baseline before
-querying. The approval route opens the ordinary guarded state path only long enough to record one
-eligible Human Decision. Transactions are short and never remain open while a provider runs.
+querying. Each mutation route opens the ordinary guarded state path only long enough to record one
+eligible Human Decision, latch one cancellation request, or reconcile that canonical cwd's stale
+runs before refusing an unowned one. Transactions are short and never remain
+open while a provider runs.
 Private POSIX modes are `0700` for state directories and `0600` for database sidecars, locks, and
 output files, subject to stricter host policy.
 
@@ -289,9 +297,9 @@ The launch URL contains a 256-bit, one-use token only in `#token=...`. Because f
 
 The server enforces an exact loopback peer, exact `Host`, exact `Origin` for POST and any supplied Origin, fixed methods and paths, small request bodies, no-store responses, and local assets. Its CSP starts from `default-src 'none'`, permits only self-hosted script, style, connection, and image sources, and denies fonts, objects, base URLs, forms, frames, inline execution, and unsafe execution. Authenticated API routes require both the cookie and `X-Kilin-CSRF`.
 
-The data routes are current workflow, newest 50 scoped runs, one scoped run with lineage, and one stored node stream selected by run ID, ordinal, and `stdout`, `stderr`, or `result`. Scope is exact workflow identity plus canonical cwd. Output authorization derives the expected path from the stored run/node record, rejects traversal, symlinks, and non-regular files, rechecks identity after `O_NOFOLLOW`, and returns at most the 64 KiB tail. DTOs expose scope kind but not absolute persistence paths or project roots. The run summary carries a derived `waitingForApproval` flag that is presentation-only and grants no decision eligibility; the decision route revalidates the waiting state. The only state-changing route records `approved` or `rejected` for an eligible scoped approval node through `recordApprovalDecision`.
+The data routes are current workflow, newest 50 scoped runs, one scoped run with lineage, and one stored node stream selected by run ID, ordinal, and `stdout`, `stderr`, or `result`. Scope is exact workflow identity plus canonical cwd. Output authorization derives the expected path from the stored run/node record, rejects traversal, symlinks, and non-regular files, rechecks identity after `O_NOFOLLOW`, and returns at most the 64 KiB tail. DTOs expose scope kind but not absolute persistence paths or project roots. The run summary carries a derived `waitingForApproval` flag that is presentation-only and grants no decision eligibility; the decision route revalidates the waiting state. The state-changing routes are a closed set of two: one records `approved` or `rejected` for an eligible scoped approval node through `recordApprovalDecision`, and one latches a cancellation request for a scoped run through `requestRunCancellation`.
 
-The client applies the hierarchy and interaction principles described by Linear's [UI refresh](https://linear.app/changelog/2026-03-12-ui-refresh) and [conceptual model](https://linear.app/docs/conceptual-model) without copying assets: dim history navigation, a focused graph, compact inspector, neutral colors, one accent, and clear typography. It uses local semantic DOM/SVG, a textual execution-order equivalent, keyboard focus movement, reduced-motion handling, and polling (two seconds by default, with bounded backoff and a manual refresh). There is no mutation route beyond the guarded approval decision, no raw path parameter, WebSocket, public API guarantee, daemon mode, generic state reconciliation, or runtime invocation.
+The client applies the hierarchy and interaction principles described by Linear's [UI refresh](https://linear.app/changelog/2026-03-12-ui-refresh) and [conceptual model](https://linear.app/docs/conceptual-model) without copying assets: dim history navigation, a focused graph, compact inspector, neutral colors, one accent, and clear typography. It uses local semantic DOM/SVG, a textual execution-order equivalent, keyboard focus movement, reduced-motion handling, and polling (two seconds by default, with bounded backoff, a manual refresh, and a reduced fifteen-second cadence while the tab is hidden rather than a stop). There is no mutation route beyond the closed set of two guarded run-scoped mutations — the approval decision and the run cancellation — and no raw path parameter, WebSocket, public API guarantee, daemon mode, generic state reconciliation, or runtime invocation.
 
 ## Agent-side authoring boundary
 

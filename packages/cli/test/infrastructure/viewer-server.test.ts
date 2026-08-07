@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
@@ -25,6 +26,7 @@ import {
 } from "../../src/infrastructure/viewer-server.js";
 import type { ViewerServerHandle } from "../../src/infrastructure/viewer-server.js";
 import type {
+  RunCancellationResponse,
   ScopedRunListResponse,
   SessionBootstrapResponse,
   ViewerApiErrorResponse,
@@ -360,6 +362,18 @@ const storedApprovalDecision = (dataDirectory: string, runId: string): unknown =
     FROM node_runs WHERE run_id = ? AND node_id = 'release-approval'
   `,
     )
+    .get(runId);
+  database.close();
+  return row;
+};
+
+const storedCancellation = (dataDirectory: string, runId: string): unknown => {
+  const database = new Database(join(dataDirectory, "kilin.db"), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  const row: unknown = database
+    .prepare("SELECT status, cancel_requested_at FROM workflow_runs WHERE id = ?")
     .get(runId);
   database.close();
   return row;
@@ -1111,5 +1125,206 @@ describe("viewer server read-only records and output", () => {
       headers: authenticatedHeaders(session),
     });
     expect(JSON.parse(detail.body)).toMatchObject({ run: { status: "interrupted" } });
+  });
+
+  it("guards run cancellation with the session, CSRF, origin, body, and scope rules", async () => {
+    const fixture = await createApprovalFixture();
+    const lock = await acquireCanonicalWorkspaceLock(fixture.cwd, fixture.dataDirectory);
+    try {
+      const session = await exchangeSession(fixture.handle);
+      const postHeaders = {
+        ...authenticatedHeaders(session),
+        Origin: fixture.handle.origin,
+        "Content-Type": "application/json",
+      };
+      const cancelPath = `/api/runs/${fixture.runId}/cancel`;
+
+      const methodResponse = await requestViewer(fixture.handle, {
+        method: "GET",
+        path: cancelPath,
+        headers: authenticatedHeaders(session),
+      });
+      expect(methodResponse.status).toBe(405);
+      expect(methodResponse.headers.allow).toBe("POST");
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: cancelPath,
+            headers: { Origin: fixture.handle.origin, "Content-Type": "application/json" },
+            body: "{}",
+          })
+        ).status,
+      ).toBe(401);
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: cancelPath,
+            headers: {
+              Cookie: session.cookie,
+              Origin: fixture.handle.origin,
+              "Content-Type": "application/json",
+            },
+            body: "{}",
+          })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: cancelPath,
+            headers: { ...postHeaders, Origin: "http://localhost:9999" },
+            body: "{}",
+          })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: `/api/runs/${fixture.outOfScopeRunId}/cancel`,
+            headers: postHeaders,
+            body: "{}",
+          })
+        ).status,
+      ).toBe(404);
+      expect(
+        (
+          await requestViewer(fixture.handle, {
+            method: "POST",
+            path: "/api/runs/missing-run/cancel",
+            headers: postHeaders,
+            body: "{}",
+          })
+        ).status,
+      ).toBe(404);
+
+      const populatedBody = await requestViewer(fixture.handle, {
+        method: "POST",
+        path: cancelPath,
+        headers: postHeaders,
+        body: JSON.stringify({ note: "stop now" }),
+      });
+      expect(populatedBody.status).toBe(400);
+      expect((JSON.parse(populatedBody.body) as ViewerApiErrorResponse).error.message).toContain(
+        "run cancellation",
+      );
+      expect(storedCancellation(fixture.dataDirectory, fixture.runId)).toMatchObject({
+        cancel_requested_at: null,
+      });
+    } finally {
+      await lock.release();
+    }
+  });
+
+  it("latches a cancellation request for a scoped running run holding its workspace", async () => {
+    const fixture = await createApprovalFixture();
+    const session = await exchangeSession(fixture.handle);
+    const lock = await acquireCanonicalWorkspaceLock(fixture.cwd, fixture.dataDirectory);
+    try {
+      const response = await requestViewer(fixture.handle, {
+        method: "POST",
+        path: `/api/runs/${fixture.runId}/cancel`,
+        headers: {
+          ...authenticatedHeaders(session),
+          Origin: fixture.handle.origin,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+
+      expect(response.status).toBe(200);
+      const cancellation = JSON.parse(response.body) as RunCancellationResponse;
+      expect(cancellation).toMatchObject({ outputVersion: 1, runId: fixture.runId });
+      expect(storedCancellation(fixture.dataDirectory, fixture.runId)).toMatchObject({
+        status: "running",
+        cancel_requested_at: cancellation.cancelRequestedAt,
+      });
+    } finally {
+      await lock.release();
+    }
+  });
+
+  it("reconciles an ownerless running run before reporting it as not cancellable", async () => {
+    const fixture = await createApprovalFixture();
+    const session = await exchangeSession(fixture.handle);
+
+    const response = await requestViewer(fixture.handle, {
+      method: "POST",
+      path: `/api/runs/${fixture.runId}/cancel`,
+      headers: {
+        ...authenticatedHeaders(session),
+        Origin: fixture.handle.origin,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+
+    expect(response.status).toBe(409);
+    expect((JSON.parse(response.body) as ViewerApiErrorResponse).error.code).toBe(
+      "RUN_NOT_CANCELLABLE",
+    );
+    const detail = await requestViewer(fixture.handle, {
+      path: `/api/runs/${fixture.runId}`,
+      headers: authenticatedHeaders(session),
+    });
+    expect(JSON.parse(detail.body)).toMatchObject({ run: { status: "interrupted" } });
+  });
+
+  it("does not expose filesystem paths when cancellation lock preparation fails", async () => {
+    const fixture = await createApprovalFixture();
+    const session = await exchangeSession(fixture.handle);
+    const lockName = `${createHash("sha256").update(fixture.cwd, "utf8").digest("hex")}.lock`;
+    await mkdir(join(fixture.dataDirectory, "locks", lockName));
+
+    const response = await requestViewer(fixture.handle, {
+      method: "POST",
+      path: `/api/runs/${fixture.runId}/cancel`,
+      headers: {
+        ...authenticatedHeaders(session),
+        Origin: fixture.handle.origin,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+
+    expect(response.status).toBe(500);
+    expect(JSON.parse(response.body)).toEqual({
+      outputVersion: 1,
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "The viewer could not complete the request. Restart Kilin UI and try again.",
+      },
+    });
+    expect(response.body).not.toContain(fixture.dataDirectory);
+    expect(response.body).not.toContain(fixture.cwd);
+  });
+
+  it("reports cancelling a run that is no longer running as a conflict", async () => {
+    const fixture = await createServerFixture();
+    const session = await exchangeSession(fixture.handle);
+    const lock = await acquireCanonicalWorkspaceLock(fixture.cwd, fixture.dataDirectory);
+    try {
+      const response = await requestViewer(fixture.handle, {
+        method: "POST",
+        path: `/api/runs/${fixture.rerunId}/cancel`,
+        headers: {
+          ...authenticatedHeaders(session),
+          Origin: fixture.handle.origin,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+
+      expect(response.status).toBe(409);
+      const failure = JSON.parse(response.body) as ViewerApiErrorResponse;
+      expect(failure.error.code).toBe("RUN_NOT_CANCELLABLE");
+      expect(failure.error.message).toContain(fixture.rerunId);
+      expect(failure.error.message).toContain("failed");
+    } finally {
+      await lock.release();
+    }
   });
 });

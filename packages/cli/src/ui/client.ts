@@ -10,6 +10,7 @@ import type {
   LoopWorkflowNodeDto,
   NodeRunDto,
   OutputStream,
+  RunCancellationResponse,
   RunSummaryDto,
   ScopedRunDetailResponse,
   ScopedRunListResponse,
@@ -23,6 +24,7 @@ import type {
 
 const svgNamespace = "http://www.w3.org/2000/svg";
 const minimumPollIntervalMs = 1_000;
+const hiddenPollIntervalMs = 15_000;
 const maximumBackoffMs = 30_000;
 const maximumApprovalNoteCharacters = 1_000;
 const maximumHistoryRuns = 50;
@@ -43,6 +45,7 @@ const routes = {
     `/api/runs/${encodeURIComponent(runId)}/nodes/${String(ordinal)}/output/${stream}`,
   decision: (runId: string, nodeId: string): string =>
     `/api/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/decision`,
+  cancel: (runId: string): string => `/api/runs/${encodeURIComponent(runId)}/cancel`,
 } as const;
 
 type ViewMode = "current" | "run";
@@ -74,6 +77,9 @@ interface ViewerState {
   decisionNoteDraft: string;
   decisionSubmitting: boolean;
   decisionError: string | undefined;
+  cancelSubmitting: boolean;
+  cancelRequested: boolean;
+  cancelError: string | undefined;
   pollFailures: number;
 }
 
@@ -96,6 +102,9 @@ const state: ViewerState = {
   decisionNoteDraft: "",
   decisionSubmitting: false,
   decisionError: undefined,
+  cancelSubmitting: false,
+  cancelRequested: false,
+  cancelError: undefined,
   pollFailures: 0,
 };
 
@@ -123,6 +132,8 @@ const elements = {
   approvalStatus: requiredElement("#approval-status", HTMLElement),
   appShell: requiredElement("#app-shell", HTMLElement),
   appTitle: requiredElement("#app-title", HTMLElement),
+  cancelAnnouncement: requiredElement("#cancel-announcement", HTMLElement),
+  notifyAnnouncement: requiredElement("#notify-announcement", HTMLElement),
   connectionStatus: requiredElement("#connection-status", HTMLElement),
   currentWorkflowButton: requiredElement("#current-workflow-button", HTMLButtonElement),
   diagnostics: requiredElement("#diagnostics", HTMLElement),
@@ -150,6 +161,7 @@ const elements = {
   loopIterationsList: requiredElement("#loop-iterations-list", HTMLElement),
   loopIterationsSection: requiredElement("#loop-iterations-section", HTMLElement),
   nodeInspector: requiredElement("#node-inspector", HTMLElement),
+  notifyToggle: requiredElement("#notify-toggle", HTMLButtonElement),
   outputMeta: requiredElement("#output-meta", HTMLElement),
   outputPanel: requiredElement("#output-panel", HTMLElement),
   outputSection: requiredElement("#output-section", HTMLElement),
@@ -203,7 +215,12 @@ type ViewerFocusTarget =
       readonly selectionDirection: HTMLTextAreaElement["selectionDirection"];
     }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
-  | { readonly type: "command-copy"; readonly command: string }
+  | { readonly type: "run-cancel" }
+  | {
+      readonly type: "command-copy";
+      readonly command: string;
+      readonly fallback: "decision-dock" | "run-inspector";
+    }
   | { readonly type: "decision-needed"; readonly runId: string; readonly graphNodeId: string };
 
 class ViewerRequestError extends Error {
@@ -320,9 +337,19 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   if (activeElement instanceof HTMLElement && activeElement.id === "decision-reject") {
     return { type: "decision-action", decision: "rejected" };
   }
+  if (activeElement instanceof HTMLElement && activeElement.id === "cancel-run") {
+    return { type: "run-cancel" };
+  }
   const copyCommand = focusedAttribute(activeElement, "copy-button", "data-copy-command");
   if (copyCommand !== undefined) {
-    return { type: "command-copy", command: copyCommand };
+    return {
+      type: "command-copy",
+      command: copyCommand,
+      fallback:
+        activeElement?.closest("#decision-dock") === elements.decisionDock
+          ? "decision-dock"
+          : "run-inspector",
+    };
   }
   return undefined;
 };
@@ -374,8 +401,9 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
     const index = graphCardIndex(cards, target.cardKey);
     const fallbackIndex =
       index >= 0 ? index : graphCardIndex(cards, containerCardKey(target.cardKey));
+    const restoredExactCard = index >= 0;
     if (fallbackIndex >= 0) {
-      updateGraphRovingFocus(cards, fallbackIndex);
+      updateGraphRovingFocus(cards, fallbackIndex, restoredExactCard);
     }
     return;
   }
@@ -441,7 +469,21 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
   }
   if (target.type === "decision-action") {
     const identifier = target.decision === "approved" ? "#decision-approve" : "#decision-reject";
-    elements.decisionDock.querySelector<HTMLButtonElement>(identifier)?.focus();
+    const action = elements.decisionDock.querySelector<HTMLButtonElement>(identifier);
+    if (action === null || action.disabled) {
+      elements.decisionDock.focus();
+      return;
+    }
+    action.focus();
+    return;
+  }
+  if (target.type === "run-cancel") {
+    const cancel = elements.runInspector.querySelector<HTMLButtonElement>("#cancel-run");
+    if (cancel === null || cancel.disabled) {
+      elements.runInspector.focus();
+      return;
+    }
+    cancel.focus();
     return;
   }
   if (target.type === "decision-needed") {
@@ -475,7 +517,11 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
   const copyButton = matchingElement(document, ".copy-button", "data-copy-command", target.command);
   if (copyButton instanceof HTMLButtonElement) {
     copyButton.focus();
+    return;
   }
+  const fallback =
+    target.fallback === "decision-dock" ? elements.decisionDock : elements.runInspector;
+  fallback.focus();
 };
 
 const formatTimestamp = (timestamp: string): string =>
@@ -1001,6 +1047,14 @@ interface GraphCardLayout extends CardSize {
   readonly body?: RankedLayout;
 }
 
+interface GraphBox extends GraphPosition, CardSize {}
+
+interface GraphLayout {
+  readonly cards: ReadonlyMap<string, GraphCardLayout>;
+  readonly width: number;
+  readonly height: number;
+}
+
 interface LayoutNode {
   readonly id: string;
   readonly dependencies: readonly string[];
@@ -1078,14 +1132,7 @@ const containerSize = (body: RankedLayout): CardSize => ({
   height: body.height + containerFeedbackLane + containerPadBottom,
 });
 
-const graphLayout = (
-  graph: WorkflowGraphDto,
-  expandedLoopId: string | undefined,
-): {
-  readonly cards: ReadonlyMap<string, GraphCardLayout>;
-  readonly width: number;
-  readonly height: number;
-} => {
+const graphLayout = (graph: WorkflowGraphDto, expandedLoopId: string | undefined): GraphLayout => {
   const nodes = orderedGraphNodes(graph);
   const expandedLoop = nodes.find(
     (node): node is LoopWorkflowNodeDto => node.kind === "loop" && node.id === expandedLoopId,
@@ -1122,6 +1169,78 @@ const graphLayout = (
     width: Math.max(320, ranked.width + surfacePadding),
     height: ranked.height + surfacePadding,
   };
+};
+
+const graphRevealInset = 24;
+
+let latestGraphLayout: GraphLayout | undefined;
+
+const selectedCardBounds = (layout: GraphLayout, cardKey: string): GraphBox | undefined => {
+  const containerId = containerCardKey(cardKey);
+  const card = layout.cards.get(containerId);
+  if (card === undefined) {
+    return undefined;
+  }
+  const bodyNodeId = cardKey === containerId ? undefined : cardKey.slice(containerId.length + 1);
+  const bodyPosition = bodyNodeId === undefined ? undefined : card.body?.positions.get(bodyNodeId);
+  if (bodyPosition === undefined) {
+    return { ...card.position, width: card.width, height: card.height };
+  }
+  return {
+    x: card.position.x + bodyPosition.x,
+    y: card.position.y + bodyPosition.y,
+    width: bodyCardWidth,
+    height: bodyCardHeight,
+  };
+};
+
+/**
+ * The smallest scroll offset that leaves `[start, start + size]` within the viewport and at least
+ * `graphRevealInset` from the edge scrolled toward. A box wider than the viewport keeps whatever
+ * part of it the reader already has.
+ */
+const revealScrollOffset = (
+  start: number,
+  size: number,
+  offset: number,
+  viewport: number,
+  content: number,
+): number => {
+  const inset = Math.min(graphRevealInset, Math.max(0, (viewport - size) / 2));
+  const atNearEdge = start - inset;
+  const atFarEdge = start + size + inset - viewport;
+  const revealed = Math.min(
+    Math.max(offset, Math.min(atNearEdge, atFarEdge)),
+    Math.max(atNearEdge, atFarEdge),
+  );
+  return Math.min(Math.max(revealed, 0), Math.max(0, content - viewport));
+};
+
+const revealSelectedGraphCard = (): void => {
+  const layout = latestGraphLayout;
+  const cardKey = selectedGraphCardKey();
+  if (layout === undefined || cardKey === undefined) {
+    return;
+  }
+  const bounds = selectedCardBounds(layout, cardKey);
+  if (bounds === undefined) {
+    return;
+  }
+  const strip = elements.graphStrip;
+  strip.scrollLeft = revealScrollOffset(
+    bounds.x,
+    bounds.width,
+    strip.scrollLeft,
+    strip.clientWidth,
+    strip.scrollWidth,
+  );
+  strip.scrollTop = revealScrollOffset(
+    bounds.y,
+    bounds.height,
+    strip.scrollTop,
+    strip.clientHeight,
+    strip.scrollHeight,
+  );
 };
 
 const sizeGraphSurface = (width: number, height: number): void => {
@@ -1550,13 +1669,17 @@ const appendLoopBody = (
   }
 };
 
-const updateGraphRovingFocus = (cards: readonly SVGGElement[], nextIndex: number): void => {
+const updateGraphRovingFocus = (
+  cards: readonly SVGGElement[],
+  nextIndex: number,
+  preventScroll = false,
+): void => {
   if (cards.length === 0) {
     return;
   }
   const normalizedIndex = Math.min(Math.max(nextIndex, 0), cards.length - 1);
   setRovingTabIndex(cards, normalizedIndex);
-  cards[normalizedIndex]?.focus();
+  cards[normalizedIndex]?.focus({ preventScroll });
 };
 
 const renderGraph = (): void => {
@@ -1564,6 +1687,7 @@ const renderGraph = (): void => {
   elements.graph.replaceChildren();
   renderExecutionList(graph);
   if (graph === undefined) {
+    latestGraphLayout = undefined;
     const title = createSvgElement("title");
     title.id = "workflow-graph-title";
     setText(title, "Workflow graph unavailable");
@@ -1611,6 +1735,7 @@ const renderGraph = (): void => {
   }
 
   const layout = graphLayout(graph, expandedLoopNodeId(graph));
+  latestGraphLayout = layout;
   const nodeRuns = currentNodeRuns();
   sizeGraphSurface(layout.width, layout.height);
   elements.graph.append(title, description, definitions);
@@ -1786,6 +1911,9 @@ const renderRunInspector = (): void => {
   elements.runInspector.append(title, list);
   if (detail.run.status === "running" && detail.run.cancelRequestedAt === undefined) {
     elements.runInspector.append(cancelCommand(detail.run.runId));
+  }
+  if (state.cancelSubmitting || state.cancelError !== undefined) {
+    elements.runInspector.append(cancelStatus());
   }
   if (detail.attempts.length > 0) {
     const attempts = document.createElement("details");
@@ -3012,10 +3140,40 @@ const cancelCommand = (runId: string): HTMLElement => {
   const commands = document.createElement("section");
   commands.className = "run-commands";
   commands.setAttribute("aria-label", "Run cancellation command");
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.id = "cancel-run";
+  cancel.className = "cancel-run-button";
+  cancel.disabled = state.cancelSubmitting;
+  setText(cancel, "Cancel run");
+  cancel.addEventListener("click", () => {
+    void submitCancellation(runId);
+  });
   const guidance = document.createElement("p");
   setText(guidance, "Fallback: cancel this run from your terminal:");
-  commands.append(guidance, copyCommandRow(`kilin runs cancel ${runId}`));
+  commands.append(cancel, guidance, copyCommandRow(`kilin runs cancel ${runId}`));
   return commands;
+};
+
+const cancelStatusMessage = (): string => {
+  if (state.runDetail?.run.cancelRequestedAt !== undefined) {
+    return "Cancellation requested.";
+  }
+  if (state.cancelError !== undefined) {
+    return state.cancelError;
+  }
+  if (state.cancelSubmitting) {
+    return "Requesting cancellation…";
+  }
+  return state.cancelRequested ? "Cancellation requested." : "";
+};
+
+const cancelStatus = (): HTMLElement => {
+  const status = document.createElement("p");
+  status.id = "cancel-status";
+  status.className = state.cancelError === undefined ? "empty-copy" : "failure-copy";
+  setText(status, cancelStatusMessage());
+  return status;
 };
 
 const fallbackCommands = (runId: string, nodeId: string): HTMLElement => {
@@ -3138,6 +3296,62 @@ const applyRecordedDecision = (response: ApprovalDecisionResponse): void => {
   };
 };
 
+const cancellingRun = (run: RunSummaryDto, cancelRequestedAt: string): RunSummaryDto => ({
+  ...withoutWaitingForApproval(run),
+  cancelRequestedAt,
+});
+
+const applyRequestedCancellation = (response: RunCancellationResponse): void => {
+  pollController?.abort();
+  const runList = state.runList;
+  if (runList !== undefined) {
+    state.runList = {
+      ...runList,
+      runs: runList.runs.map((run) =>
+        run.runId === response.runId ? cancellingRun(run, response.cancelRequestedAt) : run,
+      ),
+    };
+  }
+  const detail = state.runDetail;
+  if (detail === undefined || detail.run.runId !== response.runId) {
+    return;
+  }
+  state.runDetail = {
+    ...detail,
+    run: cancellingRun(detail.run, response.cancelRequestedAt),
+    lineage: {
+      ...detail.lineage,
+      runs: detail.lineage.runs.map((run) =>
+        run.runId === response.runId ? cancellingRun(run, response.cancelRequestedAt) : run,
+      ),
+    },
+  };
+};
+
+const submitCancellation = async (runId: string): Promise<void> => {
+  if (state.cancelSubmitting) {
+    return;
+  }
+  state.cancelSubmitting = true;
+  state.cancelError = undefined;
+  renderPresentation();
+  try {
+    const response = await apiPost<RunCancellationResponse>(routes.cancel(runId), {});
+    if (state.selectedRunId === runId) {
+      state.cancelSubmitting = false;
+      state.cancelRequested = true;
+    }
+    applyRequestedCancellation(response);
+  } catch (error: unknown) {
+    if (state.selectedRunId === runId) {
+      state.cancelSubmitting = false;
+      state.cancelError =
+        error instanceof Error ? error.message : "The run could not be cancelled.";
+    }
+  }
+  renderPresentation();
+};
+
 const submitDecision = async (decision: ViewerApprovalDecision): Promise<void> => {
   const runId = state.selectedRunId;
   const context = approvalDockContext();
@@ -3177,6 +3391,12 @@ const renderDecisionDock = (): void => {
   elements.decisionDock.hidden = false;
   elements.evidencePlaceholder.hidden = true;
   const { node, nodeRun } = context;
+  const cancelRequestedAt = state.runDetail?.run.cancelRequestedAt;
+  const cancellationPending = state.cancelSubmitting || cancelRequestedAt !== undefined;
+  const canDecide =
+    nodeRun.decision === undefined &&
+    nodeRun.status === "waiting_for_approval" &&
+    !cancellationPending;
   const upstream = dockUpstreamAgents(node, nodeRun);
   for (const dependencyRun of upstream) {
     ensureDockEvidence(runId, dependencyRun.ordinal);
@@ -3200,6 +3420,8 @@ const renderDecisionDock = (): void => {
     nodeRun.decision?.decision ?? "",
     nodeRun.decision?.decidedAt ?? "",
     nodeRun.deadlineAt ?? "",
+    cancelRequestedAt ?? "",
+    state.cancelSubmitting,
     state.decisionSubmitting,
     state.decisionError ?? "",
     evidenceStates,
@@ -3246,7 +3468,7 @@ const renderDecisionDock = (): void => {
     setText(copy, "This gate has no upstream evidence to display.");
     body.append(copy);
   }
-  if (nodeRun.decision === undefined && nodeRun.status === "waiting_for_approval") {
+  if (canDecide) {
     body.append(fallbackCommands(runId, nodeRun.executionId));
   }
 
@@ -3254,12 +3476,17 @@ const renderDecisionDock = (): void => {
   footer.className = "decision-footer";
   if (nodeRun.decision !== undefined) {
     footer.append(decisionRecordElement(nodeRun.decision));
-  } else if (nodeRun.status === "waiting_for_approval") {
+  } else if (canDecide) {
     footer.append(decisionControls());
   } else {
     const copy = document.createElement("p");
     copy.className = "empty-copy";
-    setText(copy, `This gate is ${statusLabel(nodeRun.status).toLowerCase()}.`);
+    setText(
+      copy,
+      nodeRun.status === "waiting_for_approval"
+        ? "This run is being cancelled, so this gate can no longer be decided."
+        : `This gate is ${statusLabel(nodeRun.status).toLowerCase()}.`,
+    );
     footer.append(copy);
   }
   setText(dockStatusElement, statusText);
@@ -3363,6 +3590,13 @@ const announceApprovalGateTransitions = (): void => {
       elements.approvalStatus,
       `Approval gate ${previous.nodeId} is no longer waiting for a decision.`,
     );
+  }
+};
+
+const announceCancellation = (): void => {
+  const cancelMessage = cancelStatusMessage();
+  if (elements.cancelAnnouncement.textContent !== cancelMessage) {
+    setText(elements.cancelAnnouncement, cancelMessage);
   }
 };
 
@@ -3599,6 +3833,7 @@ const renderPresentation = (): void => {
   renderDecisionDock();
   renderDecisionNeededBanner();
   announceApprovalGateTransitions();
+  announceCancellation();
   updateLiveElements();
   renderGraphExpansion();
   restoreViewerFocus(focusTarget);
@@ -3641,9 +3876,10 @@ const applyNodeSelection = (
     const cards = graphCards();
     const index = graphCardIndex(cards, selectedGraphCardKey());
     if (index >= 0) {
-      updateGraphRovingFocus(cards, index);
+      updateGraphRovingFocus(cards, index, true);
     }
   }
+  revealSelectedGraphCard();
   if (availableOutputs.length > 0) {
     void selectOutput(state.selectedOutputStream, false);
   }
@@ -3850,6 +4086,9 @@ const selectRun = async (runId: string, initial?: InitialRunSelection): Promise<
   state.decisionNoteDraft = "";
   state.decisionError = undefined;
   state.decisionSubmitting = false;
+  state.cancelError = undefined;
+  state.cancelSubmitting = false;
+  state.cancelRequested = false;
   dockEvidenceCache.clear();
   approvalGateSnapshot = undefined;
   renderPresentation();
@@ -3907,6 +4146,9 @@ const selectCurrentWorkflow = (): void => {
   state.decisionNoteDraft = "";
   state.decisionError = undefined;
   state.decisionSubmitting = false;
+  state.cancelError = undefined;
+  state.cancelSubmitting = false;
+  state.cancelRequested = false;
   dockEvidenceCache.clear();
   approvalGateSnapshot = undefined;
   renderPresentation();
@@ -3938,6 +4180,79 @@ const applyInitialSelectionOnce = (): void => {
   void selectRun(targetRunId, { restore });
 };
 
+let notifiedApprovalRunIds = new Set<string>();
+
+const raiseApprovalNotification = (run: RunSummaryDto): void => {
+  try {
+    const notification = new Notification("Kilin — approval needed", {
+      body: `${run.workflowId} is waiting for a decision on run ${shortId(run.runId)}.`,
+      tag: run.runId,
+    });
+    notification.onclick = (): void => {
+      window.focus();
+      notification.close();
+      void selectRun(run.runId);
+    };
+  } catch {
+    // A notification the browser refuses must not interrupt the poll cycle.
+  }
+};
+
+const notifyNewApprovalGates = (runs: readonly RunSummaryDto[]): void => {
+  const canRaiseNotification =
+    document.hidden && "Notification" in window && Notification.permission === "granted";
+  const waitingRunIds = new Set<string>();
+  for (const run of runs) {
+    if (run.waitingForApproval !== true) {
+      continue;
+    }
+    const alreadyNotified = notifiedApprovalRunIds.has(run.runId);
+    waitingRunIds.add(run.runId);
+    if (!alreadyNotified && canRaiseNotification) {
+      raiseApprovalNotification(run);
+    }
+  }
+  notifiedApprovalRunIds = waitingRunIds;
+};
+
+const notifyToggleLabels: Record<NotificationPermission, string> = {
+  default: "Notify me",
+  granted: "Notifications on",
+  denied: "Notifications blocked",
+};
+
+const notifyPermissionAnnouncements: Record<NotificationPermission, string> = {
+  default: "Notification permission was not changed.",
+  granted: "Notifications on.",
+  denied: "Notifications blocked.",
+};
+
+const renderNotifyToggle = (): void => {
+  if (!("Notification" in window)) {
+    elements.notifyToggle.hidden = true;
+    return;
+  }
+  const permission = Notification.permission;
+  elements.notifyToggle.hidden = false;
+  elements.notifyToggle.disabled = false;
+  elements.notifyToggle.setAttribute("aria-disabled", String(permission !== "default"));
+  setText(elements.notifyToggle, notifyToggleLabels[permission]);
+};
+
+const requestNotificationPermission = async (): Promise<void> => {
+  if (!("Notification" in window) || Notification.permission !== "default") {
+    return;
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    renderNotifyToggle();
+    setText(elements.notifyAnnouncement, notifyPermissionAnnouncements[permission]);
+  } catch {
+    renderNotifyToggle();
+    setText(elements.notifyAnnouncement, "Notification permission could not be requested.");
+  }
+};
+
 const clearPollTimer = (): void => {
   if (pollTimer !== undefined) {
     window.clearTimeout(pollTimer);
@@ -3947,10 +4262,13 @@ const clearPollTimer = (): void => {
 
 const schedulePoll = (): void => {
   clearPollTimer();
-  if (document.hidden || state.session === undefined) {
+  if (state.session === undefined) {
     return;
   }
-  const baseInterval = Math.max(minimumPollIntervalMs, state.session.pollIntervalMs);
+  const baseInterval = Math.max(
+    document.hidden ? hiddenPollIntervalMs : minimumPollIntervalMs,
+    state.session.pollIntervalMs,
+  );
   const backoff = Math.min(baseInterval * 2 ** state.pollFailures, maximumBackoffMs);
   pollTimer = window.setTimeout(() => {
     void pollViewer();
@@ -3958,12 +4276,13 @@ const schedulePoll = (): void => {
 };
 
 const pollViewer = async (): Promise<void> => {
-  if (pollInProgress || document.hidden || state.session === undefined) {
+  if (pollInProgress || state.session === undefined) {
     schedulePoll();
     return;
   }
   pollInProgress = true;
-  pollController = new AbortController();
+  const controller = new AbortController();
+  pollController = controller;
   const selectedRunId = state.viewMode === "run" ? state.selectedRunId : undefined;
   const detailRequestGeneration =
     selectedRunId === undefined ? undefined : runDetailRequestGeneration + 1;
@@ -3971,17 +4290,20 @@ const pollViewer = async (): Promise<void> => {
     runDetailRequestGeneration = detailRequestGeneration;
   }
   try {
-    const workflowPromise = apiGet<CurrentWorkflowResponse>(routes.workflow, pollController.signal);
-    const runsPromise = apiGet<ScopedRunListResponse>(routes.runs, pollController.signal);
+    const workflowPromise = apiGet<CurrentWorkflowResponse>(routes.workflow, controller.signal);
+    const runsPromise = apiGet<ScopedRunListResponse>(routes.runs, controller.signal);
     const detailPromise =
       selectedRunId === undefined
         ? Promise.resolve<ScopedRunDetailResponse | undefined>(undefined)
-        : apiGet<ScopedRunDetailResponse>(routes.run(selectedRunId), pollController.signal);
+        : apiGet<ScopedRunDetailResponse>(routes.run(selectedRunId), controller.signal);
     const [workflow, runList, detail] = await Promise.all([
       workflowPromise,
       runsPromise,
       detailPromise,
     ]);
+    if (controller.signal.aborted) {
+      return;
+    }
     state.currentWorkflow = workflow;
     state.runList = runList;
     if (
@@ -3995,8 +4317,11 @@ const pollViewer = async (): Promise<void> => {
     state.pollFailures = 0;
     setText(elements.connectionStatus, "Live");
     elements.appShell.setAttribute("aria-busy", "false");
+    notifyNewApprovalGates(runList.runs);
     renderPresentation();
-    maybeRefreshEvidence();
+    if (!document.hidden) {
+      maybeRefreshEvidence();
+    }
     applyInitialSelectionOnce();
   } catch (error: unknown) {
     if (!(error instanceof DOMException && error.name === "AbortError")) {
@@ -4056,8 +4381,13 @@ const setEvidenceView = (view: EvidenceView): void => {
 
 window.setInterval(updateLiveElements, liveTickIntervalMs);
 
+renderNotifyToggle();
+
 elements.currentWorkflowButton.addEventListener("click", selectCurrentWorkflow);
 elements.refreshButton.addEventListener("click", refreshNow);
+elements.notifyToggle.addEventListener("click", () => {
+  void requestNotificationPermission();
+});
 elements.decisionNeededBanner.addEventListener("click", () => {
   const waitingNode = waitingApprovalNodeRun();
   if (waitingNode === undefined) {
@@ -4088,8 +4418,7 @@ elements.outputPanel.addEventListener("scroll", () => {
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
-    clearPollTimer();
-    pollController?.abort();
+    schedulePoll();
     return;
   }
   void pollViewer();

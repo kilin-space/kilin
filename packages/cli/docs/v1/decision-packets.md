@@ -105,8 +105,9 @@ bounded projection required for run inspection. Public lifecycle events do not i
 content.
 
 The Viewer renders the packet as structured read-only content. It escapes all text, applies its
-ordinary output authorization, and exposes no action-execution route. Its only mutation remains
-the guarded approve/reject decision for an eligible approval node.
+ordinary output authorization, and exposes no action-execution route. Its mutations remain the
+closed set of two: the guarded approve/reject decision for an eligible approval node, and a
+cancellation request for a scoped run. Neither executes a Proposed Action.
 
 ## Security
 

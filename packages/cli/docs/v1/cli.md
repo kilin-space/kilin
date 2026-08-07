@@ -4,9 +4,9 @@ Kilin V1 is a foreground CLI. Execution and recorded-state mutation, including h
 reconciliation, are CLI-only. An external scheduler may invoke `trigger`, but each invocation is
 still one foreground CLI process; Kilin does not become a daemon or scheduler. Workflow packages
 remain ordinary project or user files that a human, `workflow init`, or an authoring skill may
-create. The sole listener is the attached, authenticated `ui` command; beyond recording human
-approval decisions through its single guarded route, it mutates nothing, is not a daemon or public
-API, and stops with the command.
+create. The sole listener is the attached, authenticated `ui` command; beyond its two guarded run-scoped
+routes — recording a human approval decision and requesting cancellation of a scoped run — it
+mutates nothing, is not a daemon or public API, and stops with the command.
 
 ## Commands
 
@@ -242,13 +242,13 @@ successful decision command; the attached run has the separate failed outcome.
 
 ## `ui`
 
-Resolves, validates, and compiles the named launch package, canonicalizes the explicit working directory, and starts an attached viewer on numeric `127.0.0.1` with an operating-system-selected port. It fixes the session scope to the full workflow identity and canonical cwd, remains attached, and stops on CLI shutdown. It never opens an execution runtime; its only mutation is the approval-decision route below, which records a human decision through the same guarded transition as `kilin runs approve` and `kilin runs reject`.
+Resolves, validates, and compiles the named launch package, canonicalizes the explicit working directory, and starts an attached viewer on numeric `127.0.0.1` with an operating-system-selected port. It fixes the session scope to the full workflow identity and canonical cwd, remains attached, and stops on CLI shutdown. It never opens an execution runtime; its mutations are the closed set of two run-scoped routes below — the approval decision and the run cancellation — each recording through the same guarded transition as its `kilin runs` equivalent.
 
 The command prints a launch URL. Without `--no-open`, it also asks the operating system to open that URL in the default browser; `--no-open` leaves browser navigation to the user. With `--json`, it emits one `ViewerStarted` document and then remains attached. JSON output does not implicitly suppress browser launch. The fragment-bearing URL is a one-use launch credential for that attached process and must not be published or reused as an API endpoint.
 
 The URL contains a 256-bit one-use token only in `#token=...`. Local client code sends it through exact-origin `POST /session`, which issues a process-lifetime `kilin_session` cookie with `HttpOnly; SameSite=Strict; Path=/` and an in-memory CSRF token. `POST /session/resume` accepts an empty object and requires that cookie. Authenticated routes require both the cookie and `X-Kilin-CSRF`.
 
-Unauthenticated GET is limited to `/`, `/assets/viewer.css`, and `/assets/client.js`. Authenticated routes are exactly:
+Unauthenticated GET is limited to `/`, `/assets/viewer.css`, and `/assets/client.js`. Authenticated routes are exactly the following, and the two `POST` entries are the whole mutation set:
 
 ```text
 GET /api/workflow
@@ -256,13 +256,16 @@ GET /api/runs
 GET /api/runs/:run-id
 GET /api/runs/:run-id/nodes/:ordinal/output/:stream
 POST /api/runs/:run-id/nodes/:node-id/decision
+POST /api/runs/:run-id/cancel
 ```
 
 `:stream` is `stdout`, `stderr`, or `result`. History is newest-first, limited to 50, and scoped by exact workflow identity plus canonical cwd. The current definition is revalidated during polling. Output lookup accepts no filesystem path, authorizes the exact stored run/node path, rejects traversal, symlinks, and non-regular files, and returns at most the 64 KiB tail. Viewer DTOs expose scope kind but omit absolute persistence paths and project roots.
 
-The decision route is the single sanctioned mutation. It accepts `{"decision": "approved" | "rejected", "note"?}` with a note of at most 1000 characters, is scoped like run detail, and records the decision with actor `human` through the same application transition as `kilin runs approve` and `kilin runs reject` — including stale-run reconciliation when no attached run holds the workspace. Any target that is not a waiting, undecided, unexpired approval node of a running scoped run is refused with `APPROVAL_NOT_WAITING`. The blocked `kilin run` consumes the recorded decision through its store poll; a rejection fails the gate and stops the run.
+The decision and cancellation routes are the two sanctioned mutations, and that set is closed. The decision route accepts `{"decision": "approved" | "rejected", "note"?}` with a note of at most 1000 characters, is scoped like run detail, and records the decision with actor `human` through the same application transition as `kilin runs approve` and `kilin runs reject` — including stale-run reconciliation when no attached run holds the workspace. Any target that is not a waiting, undecided, unexpired approval node of a running scoped run is refused with `APPROVAL_NOT_WAITING`. The blocked `kilin run` consumes the recorded decision through its store poll; a rejection fails the gate and stops the run.
 
-Every request must arrive from the numeric loopback peer with the exact launch `Host`; POST and any supplied `Origin` must match the exact origin. Responses use no-store caching, local assets, and a restrictive content security policy with self-only script, style, and connection sources and no inline or unsafe execution. The client polls every two seconds by default with bounded backoff, and while a selected node is running it re-fetches the selected stream's bounded tail on that cadence. A Refresh control in the top bar runs one cycle at once and restarts the backoff. A failed stream read renders a Retry control that re-requests the selected stream, and Refresh re-requests it too, independently of the poll cycle. After the first successful poll the client selects the most relevant stored run — a waiting approval first, then a running run, then the newest finished run — and the node that explains the run status; with no stored runs it keeps the definition view. While the open run waits on an approval gate, a decision-needed banner appears beside the connection status with the gate's live deadline countdown; clicking it selects the waiting gate and focuses the decision dock. Run history and lineage rows show the waiting label from the run summary's `waitingForApproval` flag. After the launch token is redeemed and stripped, the selected run, node, stream, and rendered/raw view persist in the URL hash; that selection fragment is never sent to the server and carries no credentials, and unknown run or node identifiers in it fall back to that default selection. There are no other mutation routes and no raw-path queries, WebSockets, daemon mode, public-API guarantee, or Codex invocation.
+The cancellation route accepts an empty object, carries no actor and no note, is scoped like run detail, and latches the request through the same application transition as `kilin runs cancel`. It returns the recorded `cancelRequestedAt`; a run that is no longer cancellable is refused with `RUN_NOT_CANCELLABLE`. Both routes are guarded identically, and any other method or path remains rejected.
+
+Every request must arrive from the numeric loopback peer with the exact launch `Host`; POST and any supplied `Origin` must match the exact origin. Responses use no-store caching, local assets, and a restrictive content security policy with self-only script, style, and connection sources and no inline or unsafe execution. The client polls every two seconds by default with bounded backoff, and while the tab is visible and a selected node is running it re-fetches the selected stream's bounded tail on that cadence. A hidden tab keeps polling run state at a reduced fifteen-second cadence instead of stopping and fetches no evidence while hidden; it returns to the session cadence and resumes the stream tail with one immediate poll when it becomes visible again. A Refresh control in the top bar runs one cycle at once and restarts the backoff. Beside it, a notification control appears only where the browser exposes the Notifications API; it requests permission on click, and while permission is granted a run that starts waiting for approval while the tab is hidden raises a notification for that run. A failed stream read renders a Retry control that re-requests the selected stream, and Refresh re-requests it too, independently of the poll cycle. After the first successful poll the client selects the most relevant stored run — a waiting approval first, then a running run, then the newest finished run — and the node that explains the run status; with no stored runs it keeps the definition view. While the open run waits on an approval gate, a decision-needed banner appears beside the connection status with the gate's live deadline countdown; clicking it selects the waiting gate and focuses the decision dock. Run history and lineage rows show the waiting label from the run summary's `waitingForApproval` flag. After the launch token is redeemed and stripped, the selected run, node, stream, and rendered/raw view persist in the URL hash; that selection fragment is never sent to the server and carries no credentials, and unknown run or node identifiers in it fall back to that default selection. A running scoped run offers a Cancel run control beside its copyable `kilin runs cancel` command, and selecting a node scrolls the graph strip to that node. There are no mutation routes beyond those two, and no raw-path queries, WebSockets, daemon mode, public-API guarantee, or Codex invocation.
 
 ## Human output
 
@@ -772,4 +775,4 @@ An internal Kilin failure after a run starts uses exit code `1` and persists an 
 - A run ID is printed or emitted as soon as a run record exists.
 - `rerun` never silently switches to the current workflow package.
 - Unknown commands and flags fail rather than being ignored.
-- `ui` never invokes a runtime or exposes runs outside its exact launch scope; its only recorded-state change is the guarded approval-decision route.
+- `ui` never invokes a runtime or exposes runs outside its exact launch scope; its recorded-state changes are the closed set of two guarded routes, the approval decision and the run cancellation.

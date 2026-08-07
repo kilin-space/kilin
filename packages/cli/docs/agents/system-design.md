@@ -164,7 +164,7 @@ kilin runs approve <run-id> <node-id> --actor agent --json
 kilin runs reject <run-id> <node-id> --actor agent --json
 ```
 
-The attached viewer is primarily an inspection surface, with exactly one authenticated and CSRF-protected approval-decision route. Operational success means the graph completed; it is not evidence of user satisfaction or workflow quality.
+The attached viewer is primarily an inspection surface, with a closed set of two authenticated and CSRF-protected run-scoped mutation routes: the approval decision and the run cancellation. Operational success means the graph completed; it is not evidence of user satisfaction or workflow quality.
 
 ## Avoiding Over-Engineering
 

@@ -14,8 +14,9 @@ OpenCode adapters and may return `text`, `json`, `artifact`, `choice`, or Decisi
 outputs. Kilin validates and compiles the graph, records an immutable scope-aware revision,
 executes its ready frontier under a caller-selected concurrency bound that defaults to one, and
 preserves enough history to rerun the exact stored revision. Execution stays in the foreground
-CLI. Its only local-server surface is the attached, authenticated Viewer, whose only mutation is
-approving or rejecting an eligible waiting approval.
+CLI. Its only local-server surface is the attached, authenticated Viewer, whose mutations are a
+closed set of two: approving or rejecting an eligible waiting approval, and cancelling a run it
+already scopes.
 
 Full documentation, including guides and the command reference, is at
 [docs.kilin.space](https://docs.kilin.space/en).
@@ -239,7 +240,7 @@ truthful outcome while still-active work settles cancelled, and a run that alrea
 
 `run` executes a deterministic dependency plan. `--max-parallel N` (1 through 8, default 1) bounds how many independent `read_only` agents overlap; writers and approvals stay exclusive barriers, and the default bound is exactly the original sequential fail-fast behavior. Above it, a failure skips only its transitive descendants while independent branches settle, and the run's primary failure is the lowest compiled ordinal. An agent may declare `timeoutMs`; otherwise `--node-timeout` supplies that run's process fallback. `--approval-timeout` independently bounds approval waits. Both run-level timeouts default to 30 minutes and accept one second through 24 hours. An approval keeps the foreground run attached and the exact working-directory lock held. An automated controller records its decision from a second local CLI process; a human may use either the guarded Viewer controls or a second terminal. `rerun` uses the stored normalized workflow definition, canonical working directory, and persisted execution options from the selected run; it requires fresh approvals and does not reopen the current package definition or restore prior workspace contents.
 
-The Viewer shows the current non-editable DAG, validation/order, typed declarations and bindings, the newest 50 runs for the exact full workflow identity and canonical working directory, lineage, node states, approval metadata, failures, bounded captured output, and structured Decision Packets. It binds only numeric `127.0.0.1` on an operating-system-selected port, never invokes a provider runtime, and stops with the attached CLI process. A scoped waiting approval shows guarded Approve and Reject buttons plus fallback CLI commands. On load it opens the most relevant stored run — waiting for approval first, then running, then the newest finished run — and selects the node that explains the run status; with no stored runs it keeps the current definition view. The selected run, node, stream, and rendered or raw view persist in the URL hash and are restored after a reload. That decision route is the Viewer's only mutation; it cannot edit workflows, run providers, schedule work, execute Proposed Actions, or perform any other recorded-state change. Use `--no-open` to avoid opening a browser and `--json` to emit one machine-readable `viewer.started` document before the process waits.
+The Viewer shows the current non-editable DAG, validation/order, typed declarations and bindings, the newest 50 runs for the exact full workflow identity and canonical working directory, lineage, node states, approval metadata, failures, bounded captured output, and structured Decision Packets. It binds only numeric `127.0.0.1` on an operating-system-selected port, never invokes a provider runtime, and stops with the attached CLI process. A scoped waiting approval shows guarded Approve and Reject buttons plus fallback CLI commands, and a running run shows a guarded Cancel run button beside its fallback command. On load it opens the most relevant stored run — waiting for approval first, then running, then the newest finished run — and selects the node that explains the run status; with no stored runs it keeps the current definition view. The selected run, node, stream, and rendered or raw view persist in the URL hash and are restored after a reload. The decision and cancellation routes are the Viewer's whole mutation surface, a closed set of two; it cannot edit workflows, run providers, schedule work, execute Proposed Actions, or perform any other recorded-state change. Use `--no-open` to avoid opening a browser and `--json` to emit one machine-readable `viewer.started` document before the process waits.
 
 ## Agent skills
 
@@ -348,15 +349,16 @@ Code/OpenCode adapters, typed output binding, declared run parameters, one conta
 feedback loop, Decision Packet V1 outputs, foreground approval gates, optional named Git worktree
 lanes, deterministic sequential-by-default execution, bounded retry, continuation recovery,
 immutable revisions, host-owned cron invocation, SQLite history, bounded file capture, three agent
-skills, and the attached Viewer with its single guarded approval-decision route. Codex
+skills, and the attached Viewer with its two guarded run-scoped mutation routes. Codex
 and Claude Code support `read_only` and `workspace_write`; OpenCode fails closed for `read_only`
 and supports only `workspace_write`.
 
 It does not include an editable Canvas, daemon, public HTTP API, WebSocket, built-in scheduler or
 schedule store, crontab management, transcript database or watcher, embedded LLM, dynamic runtime
 plugins, authored input schemas, multiple outputs, nested or unbounded loops, parallel writable
-branches, automatic worktree merge, browser mutation beyond the approval decision, automatic
-action, Case/owner/ETA management, cloud/team execution, or a plugin marketplace.
+branches, automatic worktree merge, browser mutation beyond the approval decision and run
+cancellation, automatic action, Case/owner/ETA management, cloud/team execution, or a plugin
+marketplace.
 
 ## Toolchain and verification
 
