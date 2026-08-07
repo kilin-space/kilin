@@ -3017,6 +3017,39 @@ test("an external cancellation keeps approval command focus in the dock", async 
   expect(await keepsDomFocus(page.locator("#decision-dock"))).toBe(true);
 });
 
+test("a submitting decision moves focus from its disabled action to the dock", async ({
+  page,
+  viewer,
+}) => {
+  const runId = "run-decision-submitting";
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  const heldDecisionRoute = deferred<Route>();
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([waitingGateSummary(runId)]),
+    runDetail: (selectedRunId) =>
+      selectedRunId === runId
+        ? gateRunDetail(waitingGateSummary(runId), waitingGateNodes("gate-execution-1", deadlineAt))
+        : undefined,
+  });
+  await page.route(
+    `${viewer.origin}/api/runs/${runId}/nodes/gate-execution-1/decision`,
+    (route) => {
+      heldDecisionRoute.resolve(route);
+    },
+  );
+  await openViewer(page, viewer.launchUrl);
+
+  await page.locator("#decision-approve").click();
+  const heldDecision = await heldDecisionRoute.promise;
+
+  await expect(page.locator("#decision-approve")).toBeDisabled();
+  expect(await keepsDomFocus(page.locator("#decision-dock"))).toBe(true);
+
+  await fulfillJson(heldDecision, syntheticApprovalDecision(runId, "gate-execution-1"));
+  await expect(page.locator("#decision-approve")).toHaveCount(0);
+});
+
 test("the cancel control keeps focus when the run inspector rebuilds", async ({ page, viewer }) => {
   await installWorldRoutes(page, viewer.origin, {
     currentWorkflow: gateCurrentWorkflow,

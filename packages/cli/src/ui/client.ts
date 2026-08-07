@@ -470,7 +470,11 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
   if (target.type === "decision-action") {
     const identifier = target.decision === "approved" ? "#decision-approve" : "#decision-reject";
     const action = elements.decisionDock.querySelector<HTMLButtonElement>(identifier);
-    (action ?? elements.decisionDock).focus();
+    if (action === null || action.disabled) {
+      elements.decisionDock.focus();
+      return;
+    }
+    action.focus();
     return;
   }
   if (target.type === "run-cancel") {
