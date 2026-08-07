@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
@@ -1244,6 +1245,61 @@ describe("viewer server read-only records and output", () => {
     } finally {
       await lock.release();
     }
+  });
+
+  it("reconciles an ownerless running run before reporting it as not cancellable", async () => {
+    const fixture = await createApprovalFixture();
+    const session = await exchangeSession(fixture.handle);
+
+    const response = await requestViewer(fixture.handle, {
+      method: "POST",
+      path: `/api/runs/${fixture.runId}/cancel`,
+      headers: {
+        ...authenticatedHeaders(session),
+        Origin: fixture.handle.origin,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+
+    expect(response.status).toBe(409);
+    expect((JSON.parse(response.body) as ViewerApiErrorResponse).error.code).toBe(
+      "RUN_NOT_CANCELLABLE",
+    );
+    const detail = await requestViewer(fixture.handle, {
+      path: `/api/runs/${fixture.runId}`,
+      headers: authenticatedHeaders(session),
+    });
+    expect(JSON.parse(detail.body)).toMatchObject({ run: { status: "interrupted" } });
+  });
+
+  it("does not expose filesystem paths when cancellation lock preparation fails", async () => {
+    const fixture = await createApprovalFixture();
+    const session = await exchangeSession(fixture.handle);
+    const lockName = `${createHash("sha256").update(fixture.cwd, "utf8").digest("hex")}.lock`;
+    await mkdir(join(fixture.dataDirectory, "locks", lockName));
+
+    const response = await requestViewer(fixture.handle, {
+      method: "POST",
+      path: `/api/runs/${fixture.runId}/cancel`,
+      headers: {
+        ...authenticatedHeaders(session),
+        Origin: fixture.handle.origin,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+
+    expect(response.status).toBe(500);
+    expect(JSON.parse(response.body)).toEqual({
+      outputVersion: 1,
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "The viewer could not complete the request. Restart Kilin UI and try again.",
+      },
+    });
+    expect(response.body).not.toContain(fixture.dataDirectory);
+    expect(response.body).not.toContain(fixture.cwd);
   });
 
   it("reports cancelling a run that is no longer running as a conflict", async () => {

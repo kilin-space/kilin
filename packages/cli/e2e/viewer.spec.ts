@@ -109,6 +109,7 @@ interface RaisedNotification {
 }
 
 type StubbedPermission = "default" | "granted" | "denied";
+type StubbedPermissionRequest = StubbedPermission | "reject";
 
 /**
  * Replaces the Notification constructor with one that records its constructions and reports a
@@ -119,7 +120,7 @@ type StubbedPermission = "default" | "granted" | "denied";
 const stubNotifications = async (
   page: Page,
   permission: StubbedPermission,
-  requestOutcome?: StubbedPermission,
+  requestOutcome?: StubbedPermissionRequest,
 ): Promise<void> => {
   await page.addInitScript(
     (stub: { readonly permission: string; readonly requestOutcome: string | null }) => {
@@ -135,6 +136,9 @@ const stubNotifications = async (
         static permission = stub.permission;
         static requestPermission(): Promise<string> {
           holder.__permissionRequests += 1;
+          if (stub.requestOutcome === "reject") {
+            return Promise.reject(new Error("Notification permission request rejected."));
+          }
           if (stub.requestOutcome !== null) {
             StubNotification.permission = stub.requestOutcome;
           }
@@ -2535,15 +2539,24 @@ test("the notification control states its permission, requests it on click, and 
   const toggle = page.locator("#notify-toggle");
   await expect(toggle).toBeVisible();
   await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveAttribute("aria-disabled", "false");
   await expect(toggle).toHaveText("Notify me");
   expect(await permissionRequests(page)).toBe(0);
 
+  await toggle.focus();
   await toggle.click();
 
   // A page cannot revoke a granted permission, so the control states the outcome and stops
   // offering an action it could not carry out.
   await expect(toggle).toHaveText("Notifications on");
-  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute("aria-disabled", "true");
+  expect(await keepsDomFocus(toggle)).toBe(true);
+  const announcement = page.locator("#notify-announcement");
+  await expect(announcement).toHaveAttribute("role", "status");
+  await expect(announcement).toHaveAttribute("aria-live", "polite");
+  await expect(announcement).toHaveText("Notifications on.");
+  expect(await permissionRequests(page)).toBe(1);
+  await toggle.dispatchEvent("click");
   expect(await permissionRequests(page)).toBe(1);
 
   // The launch token is stripped after the first exchange, so the reload resumes on the cookie.
@@ -2552,8 +2565,49 @@ test("the notification control states its permission, requests it on click, and 
   await expect(page.locator("#connection-status")).toHaveText("Live");
 
   await expect(toggle).toBeVisible();
-  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute("aria-disabled", "true");
   await expect(toggle).toHaveText("Notifications blocked");
+});
+
+test("a rejected notification permission request stays handled and leaves the control usable", async ({
+  page,
+  viewer,
+}) => {
+  await page.addInitScript(() => {
+    const holder = window as unknown as { __unhandledRejections: number };
+    holder.__unhandledRejections = 0;
+    window.addEventListener("unhandledrejection", () => {
+      holder.__unhandledRejections += 1;
+    });
+  });
+  await stubNotifications(page, "default", "reject");
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([ordinaryRunningSummary("run-notify-rejected")]),
+    runDetail: (runId) =>
+      runId === "run-notify-rejected"
+        ? gateRunDetail(ordinaryRunningSummary(runId), runningNodes())
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const toggle = page.locator("#notify-toggle");
+  await toggle.focus();
+  await toggle.click();
+
+  await expect(page.locator("#notify-announcement")).toHaveText(
+    "Notification permission could not be requested.",
+  );
+  await expect(toggle).toHaveText("Notify me");
+  await expect(toggle).toHaveAttribute("aria-disabled", "false");
+  expect(await keepsDomFocus(toggle)).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as { __unhandledRejections?: number }).__unhandledRejections ?? 0,
+      ),
+    )
+    .toBe(0);
 });
 
 test("a gate arriving while the tab is hidden notifies once and is decidable on return", async ({
@@ -2729,7 +2783,10 @@ test("cancelling a run from the inspector latches before the next poll and holds
 
   await expect(cancel).toHaveCount(0);
   await expect(requested).toBeVisible();
-  await expect(page.locator("#cancel-announcement")).toHaveText("Cancellation requested.");
+  const announcement = page.locator("#cancel-announcement");
+  await expect(announcement).toHaveAttribute("role", "status");
+  await expect(announcement).toHaveAttribute("aria-live", "polite");
+  await expect(announcement).toHaveText("Cancellation requested.");
   expect(listRequests).toBe(pollsAtClick);
   expect(cancelBody).toBe("{}");
 
@@ -2901,6 +2958,63 @@ test("cancelling a gated run clears its approval controls without waiting for a 
   );
   await expect(dock.locator(".approval-commands")).toHaveCount(0);
   expect(listRequests).toBe(pollsAtClick);
+});
+
+test("an external cancellation is announced and keeps decision focus in the dock", async ({
+  page,
+  viewer,
+}) => {
+  const runId = "run-external-cancel-decision";
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let cancelRequested = false;
+  const summary = (): RunSummaryDto =>
+    cancelRequested ? cancelRequestedSummary(runId) : waitingGateSummary(runId);
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([summary()]),
+    runDetail: (selectedRunId) =>
+      selectedRunId === runId
+        ? gateRunDetail(summary(), waitingGateNodes("gate-execution-1", deadlineAt))
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const approve = page.locator("#decision-approve");
+  await approve.focus();
+  cancelRequested = true;
+  await page.locator("#refresh-button").dispatchEvent("click");
+
+  await expect(approve).toHaveCount(0);
+  await expect(page.locator("#cancel-announcement")).toHaveText("Cancellation requested.");
+  expect(await keepsDomFocus(page.locator("#decision-dock"))).toBe(true);
+});
+
+test("an external cancellation keeps approval command focus in the dock", async ({
+  page,
+  viewer,
+}) => {
+  const runId = "run-external-cancel-command";
+  const deadlineAt = new Date(Date.now() + 3_600_000).toISOString();
+  let cancelRequested = false;
+  const summary = (): RunSummaryDto =>
+    cancelRequested ? cancelRequestedSummary(runId) : waitingGateSummary(runId);
+  await installWorldRoutes(page, viewer.origin, {
+    currentWorkflow: gateCurrentWorkflow,
+    runList: () => runListResponse([summary()]),
+    runDetail: (selectedRunId) =>
+      selectedRunId === runId
+        ? gateRunDetail(summary(), waitingGateNodes("gate-execution-1", deadlineAt))
+        : undefined,
+  });
+  await openViewer(page, viewer.launchUrl);
+
+  const copy = page.locator("#decision-dock .approval-commands .copy-button").first();
+  await copy.focus();
+  cancelRequested = true;
+  await page.locator("#refresh-button").dispatchEvent("click");
+
+  await expect(copy).toHaveCount(0);
+  expect(await keepsDomFocus(page.locator("#decision-dock"))).toBe(true);
 });
 
 test("the cancel control keeps focus when the run inspector rebuilds", async ({ page, viewer }) => {

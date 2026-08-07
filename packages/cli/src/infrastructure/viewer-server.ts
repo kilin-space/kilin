@@ -808,9 +808,16 @@ export const startViewerServer = async (
         return;
       }
       if (error instanceof KilinError) {
+        const status = errorCodeStatuses.get(error.code) ?? 500;
         sendError(
           response,
-          new HttpError(errorCodeStatuses.get(error.code) ?? 500, error.code, error.message),
+          new HttpError(
+            status,
+            error.code,
+            status === 500
+              ? "The viewer could not complete the request. Restart Kilin UI and try again."
+              : error.message,
+          ),
         );
         return;
       }

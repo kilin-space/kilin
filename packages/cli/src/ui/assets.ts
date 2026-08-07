@@ -27,6 +27,7 @@ export const viewerHtml = `<!doctype html>
         <p id="selection-announcement" class="sr-only" role="status" aria-live="polite"></p>
         <p id="approval-status" class="sr-only" role="status" aria-live="polite"></p>
         <p id="cancel-announcement" class="sr-only" role="status" aria-live="polite"></p>
+        <p id="notify-announcement" class="sr-only" role="status" aria-live="polite"></p>
       </header>
 
       <div class="viewer-layout">
@@ -82,7 +83,7 @@ export const viewerHtml = `<!doctype html>
             <div id="output-panel" class="evidence-body" role="tabpanel" tabindex="0"></div>
             <p id="output-meta" class="output-meta"></p>
           </section>
-          <section id="decision-dock" class="decision-dock" aria-labelledby="decision-heading" hidden></section>
+          <section id="decision-dock" class="decision-dock" aria-labelledby="decision-heading" tabindex="-1" hidden></section>
           <p id="evidence-placeholder" class="empty-copy evidence-placeholder">Select a stored run to inspect its evidence.</p>
         </main>
 
@@ -187,6 +188,10 @@ button:focus-visible,
 }
 
 button:disabled {
+  cursor: default;
+}
+
+button[aria-disabled="true"] {
   cursor: default;
 }
 

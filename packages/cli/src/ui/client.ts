@@ -133,6 +133,7 @@ const elements = {
   appShell: requiredElement("#app-shell", HTMLElement),
   appTitle: requiredElement("#app-title", HTMLElement),
   cancelAnnouncement: requiredElement("#cancel-announcement", HTMLElement),
+  notifyAnnouncement: requiredElement("#notify-announcement", HTMLElement),
   connectionStatus: requiredElement("#connection-status", HTMLElement),
   currentWorkflowButton: requiredElement("#current-workflow-button", HTMLButtonElement),
   diagnostics: requiredElement("#diagnostics", HTMLElement),
@@ -215,7 +216,11 @@ type ViewerFocusTarget =
     }
   | { readonly type: "decision-action"; readonly decision: ViewerApprovalDecision }
   | { readonly type: "run-cancel" }
-  | { readonly type: "command-copy"; readonly command: string }
+  | {
+      readonly type: "command-copy";
+      readonly command: string;
+      readonly fallback: "decision-dock" | "run-inspector";
+    }
   | { readonly type: "decision-needed"; readonly runId: string; readonly graphNodeId: string };
 
 class ViewerRequestError extends Error {
@@ -337,7 +342,14 @@ const captureViewerFocus = (): ViewerFocusTarget | undefined => {
   }
   const copyCommand = focusedAttribute(activeElement, "copy-button", "data-copy-command");
   if (copyCommand !== undefined) {
-    return { type: "command-copy", command: copyCommand };
+    return {
+      type: "command-copy",
+      command: copyCommand,
+      fallback:
+        activeElement?.closest("#decision-dock") === elements.decisionDock
+          ? "decision-dock"
+          : "run-inspector",
+    };
   }
   return undefined;
 };
@@ -457,7 +469,8 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
   }
   if (target.type === "decision-action") {
     const identifier = target.decision === "approved" ? "#decision-approve" : "#decision-reject";
-    elements.decisionDock.querySelector<HTMLButtonElement>(identifier)?.focus();
+    const action = elements.decisionDock.querySelector<HTMLButtonElement>(identifier);
+    (action ?? elements.decisionDock).focus();
     return;
   }
   if (target.type === "run-cancel") {
@@ -500,7 +513,11 @@ const restoreViewerFocus = (target: ViewerFocusTarget | undefined): void => {
   const copyButton = matchingElement(document, ".copy-button", "data-copy-command", target.command);
   if (copyButton instanceof HTMLButtonElement) {
     copyButton.focus();
+    return;
   }
+  const fallback =
+    target.fallback === "decision-dock" ? elements.decisionDock : elements.runInspector;
+  fallback.focus();
 };
 
 const formatTimestamp = (timestamp: string): string =>
@@ -3135,6 +3152,9 @@ const cancelCommand = (runId: string): HTMLElement => {
 };
 
 const cancelStatusMessage = (): string => {
+  if (state.runDetail?.run.cancelRequestedAt !== undefined) {
+    return "Cancellation requested.";
+  }
   if (state.cancelError !== undefined) {
     return state.cancelError;
   }
@@ -4197,6 +4217,12 @@ const notifyToggleLabels: Record<NotificationPermission, string> = {
   denied: "Notifications blocked",
 };
 
+const notifyPermissionAnnouncements: Record<NotificationPermission, string> = {
+  default: "Notification permission was not changed.",
+  granted: "Notifications on.",
+  denied: "Notifications blocked.",
+};
+
 const renderNotifyToggle = (): void => {
   if (!("Notification" in window)) {
     elements.notifyToggle.hidden = true;
@@ -4204,8 +4230,23 @@ const renderNotifyToggle = (): void => {
   }
   const permission = Notification.permission;
   elements.notifyToggle.hidden = false;
-  elements.notifyToggle.disabled = permission !== "default";
+  elements.notifyToggle.disabled = false;
+  elements.notifyToggle.setAttribute("aria-disabled", String(permission !== "default"));
   setText(elements.notifyToggle, notifyToggleLabels[permission]);
+};
+
+const requestNotificationPermission = async (): Promise<void> => {
+  if (!("Notification" in window) || Notification.permission !== "default") {
+    return;
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    renderNotifyToggle();
+    setText(elements.notifyAnnouncement, notifyPermissionAnnouncements[permission]);
+  } catch {
+    renderNotifyToggle();
+    setText(elements.notifyAnnouncement, "Notification permission could not be requested.");
+  }
 };
 
 const clearPollTimer = (): void => {
@@ -4341,7 +4382,7 @@ renderNotifyToggle();
 elements.currentWorkflowButton.addEventListener("click", selectCurrentWorkflow);
 elements.refreshButton.addEventListener("click", refreshNow);
 elements.notifyToggle.addEventListener("click", () => {
-  void Notification.requestPermission().then(renderNotifyToggle);
+  void requestNotificationPermission();
 });
 elements.decisionNeededBanner.addEventListener("click", () => {
   const waitingNode = waitingApprovalNodeRun();
