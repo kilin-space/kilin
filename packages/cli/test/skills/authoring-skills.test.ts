@@ -13,6 +13,7 @@ import {
   rm,
   stat,
   symlink,
+  truncate,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -676,6 +677,48 @@ describe("generate-kilin-workflow publisher", () => {
     await expect(
       lstat(join(directory, ".agents", "workflows", "schema-missing")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects an oversized sparse json output schema without target or staging residue", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "schema-oversized-candidate.yaml");
+    await mkdir(join(directory, "schemas"));
+    const schemaFile = join(directory, "schemas", "findings.json");
+    await writeFile(schemaFile, "");
+    await truncate(schemaFile, 262_145);
+    await writeFile(
+      candidate,
+      stringify({
+        schemaVersion: 1,
+        workflow: { id: "schema-oversized", name: "Schema oversized" },
+        nodes: [
+          {
+            id: "scan",
+            kind: "agent",
+            runtime: "codex",
+            access: "read_only",
+            prompt: "Scan the workspace.",
+            output: { type: "json", schema: "./schemas/findings.json" },
+          },
+        ],
+        edges: [],
+      }),
+    );
+
+    const result = await runPublisher(directory, candidate, "schema-oversized");
+
+    expect(result).toMatchObject({ exitCode: 1, stdout: "" });
+    expect(result.stderr).toContain(
+      'The json output schema "./schemas/findings.json" exceeds the 262144 byte limit.',
+    );
+    await expect(
+      lstat(join(directory, ".agents", "workflows", "schema-oversized")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      (await readdir(join(directory, ".agents"))).some((entry) =>
+        entry.startsWith(".workflow-stage-"),
+      ),
+    ).toBe(false);
   });
 
   it("rejects a schema path that case-collides with a staged package file", async (context) => {

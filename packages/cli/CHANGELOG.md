@@ -28,7 +28,8 @@ All notable changes to `@kilin-space/cli` are documented here.
   produces a new revision and `rerun` never re-reads it. A returned document that violates the
   schema fails the producing node with `NODE_OUTPUT_INVALID` naming the failing instance path, the
   existing retry policy applies unchanged, and the retry restates the schema in the injected
-  output contract (#39).
+  output contract. Regular-expression keywords are rejected because native JavaScript pattern
+  matching can block execution on hostile output (#39).
 - Terminate the process trees a run spawns, reliably. Forced cleanup now works on macOS: a
   TERM-resistant descendant that outlives its process-group leader is force-terminated on every host
   that exposes a process snapshot, where before macOS declined the escalation and left the process

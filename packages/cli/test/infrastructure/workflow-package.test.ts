@@ -765,6 +765,23 @@ edges: []
     await expect(resolution).rejects.toThrow(message);
   });
 
+  it("maps excessively nested schema data to a package validation failure", async () => {
+    const root = await createTemporaryDirectory();
+    const project = join(root, "project");
+    const packageDirectory = await writeSchemaPackage(
+      project,
+      "schema-nested",
+      schemaDefinition("schema-nested", "      schema: schemas/findings.json\n"),
+    );
+    const nestedSchema = `{"allOf":${"[".repeat(4_000)}{}${"]".repeat(4_000)}}`;
+    await writeFindingsSchema(packageDirectory, nestedSchema);
+
+    await expect(resolvePackage(project, "schema-nested")).rejects.toMatchObject({
+      code: "WORKFLOW_PACKAGE_INVALID",
+      message: expect.stringContaining("is not valid canonical JSON") as string,
+    });
+  });
+
   it.each([
     ["an unknown keyword", '{ "type": "object", "bogusKeyword": true }', "schemas/findings.json"],
     [

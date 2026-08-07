@@ -32,4 +32,19 @@ describe("bundled parallel-change-review workflow", () => {
       { type: "json", schema: findingsSchema },
     ]);
   });
+
+  it("states the schema-valid empty findings value in every scan prompt", async () => {
+    const workflowPackage = await resolveWorkflowPackage("parallel-change-review", {
+      workingDirectory: repositoryRoot,
+      userWorkflowsDirectory: join(repositoryRoot, "user-workflows"),
+    });
+    const prompts = workflowPackage.definition.nodes
+      .filter((node) => scanNodeIds.includes(node.id))
+      .map((node) => (node.kind === "agent" ? node.prompt : undefined));
+
+    expect(prompts).toHaveLength(scanNodeIds.length);
+    for (const prompt of prompts) {
+      expect(prompt).toContain('{"findings":[]}');
+    }
+  });
 });

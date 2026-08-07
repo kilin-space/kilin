@@ -107,8 +107,10 @@ to a JSON file in the same package (see [Workflow Package Contract](workflow-pac
 The schema is a JSON Schema 2020-12 object; the boolean schema form is not supported, and every
 other output type rejects `schema`. Validation is strict: unknown keywords, unknown `format`
 values (`ajv-formats` is not shipped), strict type, tuple, and `required` rules, and external or
-unresolvable `$ref` references are all rejected. Schemas are inert data; Kilin never fetches
-anything remote. A malformed schema fails package loading with `WORKFLOW_SCHEMA_INVALID` and an
+unresolvable `$ref` references are all rejected. The `pattern` and `patternProperties` keywords
+are not supported because JavaScript regular expressions can block the runtime on hostile input.
+Schemas are inert data; Kilin never fetches anything remote. A malformed schema fails package
+loading with `WORKFLOW_SCHEMA_INVALID` and an
 unresolvable schema file with `WORKFLOW_PACKAGE_INVALID`, each naming the declared source, so
 `kilin workflow validate` reports both without invoking a provider. At run time, a returned
 document that does not satisfy the declared schema fails the producing node with

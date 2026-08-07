@@ -58,7 +58,8 @@ run 核准逾時。
 檔案的 package 相對路徑，例如 `schema: ./schemas/findings.json`。Kilin 在讀取 package 時編譯
 schema，因此 `workflow validate` 會在不呼叫 provider 的情況下拒絕無效的 schema 或無法解析的
 檔案。回傳的 JSON 文件不滿足 schema 時，產出節點會以 `NODE_OUTPUT_INVALID` 失敗並指出失敗
-路徑；現有重試策略不變。
+路徑；現有重試策略不變。Kilin 會拒絕 `pattern` 與 `patternProperties`，因為 JavaScript
+正規表示式可能被惡意輸出長時間阻塞。
 
 邊表示相依關係。當目標 Agent 必須使用來源輸出時，需要具名 input binding。
 

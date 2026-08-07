@@ -2,7 +2,8 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -20,6 +21,7 @@ const expectedOptions = new Set([
   "--target",
 ]);
 const workflowNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const maximumOutputSchemaBytes = 262_144;
 
 const fail = (message) => {
   throw new Error(message);
@@ -89,6 +91,34 @@ const requireRegularFile = async (file, label) => {
   const status = await lstat(file);
   if (status.isSymbolicLink() || !status.isFile()) {
     fail(`${label} must be a regular file: ${file}`);
+  }
+};
+
+const readBoundedRegularFile = async (file, label, maximumBytes) => {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const status = await handle.stat();
+    if (!status.isFile()) {
+      fail(`${label} must be a regular file: ${file}`);
+    }
+    if (status.size > maximumBytes) {
+      fail(`${label} exceeds the ${String(maximumBytes)} byte limit.`);
+    }
+    const bytes = Buffer.alloc(maximumBytes + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const result = await handle.read(bytes, offset, bytes.byteLength - offset, null);
+      if (result.bytesRead === 0) {
+        break;
+      }
+      offset += result.bytesRead;
+    }
+    if (offset > maximumBytes) {
+      fail(`${label} exceeds the ${String(maximumBytes)} byte limit.`);
+    }
+    return bytes.subarray(0, offset);
+  } finally {
+    await handle.close();
   }
 };
 
@@ -196,8 +226,11 @@ const stageDeclaredSchemaFiles = async (definitionBytes, definitionCandidate, st
     if (containment === ".." || containment.startsWith(`..${sep}`) || isAbsolute(containment)) {
       fail(`The json output schema "${declared}" resolves outside the candidate directory.`);
     }
-    await requireRegularFile(schemaFile, `The json output schema "${declared}"`);
-    const schemaBytes = await readFile(schemaFile);
+    const schemaBytes = await readBoundedRegularFile(
+      schemaFile,
+      `The json output schema "${declared}"`,
+      maximumOutputSchemaBytes,
+    );
     const stagedFile = join(stagePackage, ...relativePath.split("/"));
     await mkdir(dirname(stagedFile), { recursive: true, mode: 0o700 });
     try {

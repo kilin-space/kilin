@@ -62,7 +62,9 @@ package-relative path to a JSON file inside the package, for example
 `schema: ./schemas/findings.json`. Kilin compiles the schema when it loads the package, so
 `workflow validate` rejects a malformed schema or an unresolvable file without invoking a
 provider. A returned JSON document that does not satisfy the schema fails the producing node with
-`NODE_OUTPUT_INVALID`, naming the failing path; the existing retry policy is unchanged.
+`NODE_OUTPUT_INVALID`, naming the failing path; the existing retry policy is unchanged. Kilin
+rejects `pattern` and `patternProperties` because JavaScript regular expressions can block on
+hostile output.
 
 Edges express dependencies. A named input binding is required when a target agent must consume a
 source output.

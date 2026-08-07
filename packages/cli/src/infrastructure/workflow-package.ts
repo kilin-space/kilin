@@ -349,12 +349,11 @@ const resolveDeclaredSchema = async (
   try {
     parsed = parseCanonicalJson(decoder.decode(bytes));
   } catch (error: unknown) {
-    if (error instanceof TypeError || error instanceof SyntaxError) {
-      throw packageError(
-        `The json output schema "${declared}" is not valid canonical JSON. ${error.message}`,
-      );
-    }
-    throw error;
+    throw packageError(
+      `The json output schema "${declared}" is not valid canonical JSON. ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
   if (!isRecord(parsed)) {
     throw packageError(`The json output schema "${declared}" must contain a JSON object.`);
