@@ -683,6 +683,7 @@ describe("generate-kilin-workflow publisher", () => {
     const directory = await createTemporaryDirectory();
     const candidate = join(directory, "schema-oversized-candidate.yaml");
     await mkdir(join(directory, "schemas"));
+    await mkdir(join(directory, ".agents"));
     const schemaFile = join(directory, "schemas", "findings.json");
     await writeFile(schemaFile, "");
     await truncate(schemaFile, 262_145);
