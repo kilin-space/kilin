@@ -56,7 +56,7 @@ Discovers manifests from the nearest project root and `~/.agents/workflows`, app
 
 ## `workflow validate`
 
-Resolves the named package for `--cwd`, then safely parses, structurally validates, semantically validates, normalizes, and compiles its definition. Without `--scope`, resolution keeps normal project-over-user precedence. `--scope project` selects only the nearest project package; `--scope user` selects only `~/.agents/workflows` and neither explicit selection falls back. Success reports the selected scope, workflow ID, content hash, node count, edge count, and deterministic execution order.
+Resolves the named package for `--cwd`, then safely parses, structurally validates, semantically validates, normalizes, and compiles its definition. Declared `json` output schemas are resolved and validated as part of this: a malformed schema fails with `WORKFLOW_SCHEMA_INVALID` and an unresolvable schema file with `WORKFLOW_PACKAGE_INVALID`, each naming the declared source. Without `--scope`, resolution keeps normal project-over-user precedence. `--scope project` selects only the nearest project package; `--scope user` selects only `~/.agents/workflows` and neither explicit selection falls back. Success reports the selected scope, workflow ID, content hash, node count, edge count, and deterministic execution order.
 
 Validation has no persistent side effects and does not probe authentication. It does verify that every named runtime is supported by the installed Kilin build.
 
@@ -729,7 +729,7 @@ V1 uses this closed top-level vocabulary:
 | `WORKFLOW_SCOPE_INVALID`     | a project workflow was asked to run outside its owning project tree                             |
 | `WORKFLOW_SOURCE_NOT_FOUND`  | the requested workflow file cannot be read                                                      |
 | `WORKFLOW_PARSE_FAILED`      | YAML bytes or safe parsing rules are invalid                                                    |
-| `WORKFLOW_SCHEMA_INVALID`    | the parsed definition does not match the structural schema                                      |
+| `WORKFLOW_SCHEMA_INVALID`    | the parsed definition fails the structural schema, or a declared output schema is invalid       |
 | `WORKFLOW_GRAPH_INVALID`     | node identity, edge, ordering, or DAG semantics are invalid                                     |
 | `WORKING_DIRECTORY_INVALID`  | `--cwd` or a stored cwd cannot resolve to an existing directory                                 |
 | `WORKSPACE_BUSY`             | another Kilin process holds the canonical cwd lock                                              |

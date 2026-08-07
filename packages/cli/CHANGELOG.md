@@ -19,6 +19,17 @@ All notable changes to `@kilin-space/cli` are documented here.
   Selecting a node also scrolls the graph to it, so a node outside the visible area of a large
   workflow comes into view on its own, including from the Loop iterations list, and a background
   refresh no longer moves the graph out from under you (#40).
+- Validate `json` node outputs against a declared schema. A `json` output may declare `schema` as
+  an inline JSON object or as a package-relative path to a JSON file holding a JSON Schema 2020-12
+  object; `kilin workflow validate` resolves and compiles it without invoking a provider,
+  rejecting a malformed schema with `WORKFLOW_SCHEMA_INVALID` and an unresolvable file with
+  `WORKFLOW_PACKAGE_INVALID`, each naming the declared source. The resolved schema is embedded in
+  the normalized definition and covered by the revision content hash, so editing a schema file
+  produces a new revision and `rerun` never re-reads it. A returned document that violates the
+  schema fails the producing node with `NODE_OUTPUT_INVALID` naming the failing instance path, the
+  existing retry policy applies unchanged, and the retry restates the schema in the injected
+  output contract. Regular-expression keywords are rejected because native JavaScript pattern
+  matching can block execution on hostile output (#39).
 - Terminate the process trees a run spawns, reliably. Forced cleanup now works on macOS: a
   TERM-resistant descendant that outlives its process-group leader is force-terminated on every host
   that exposes a process snapshot, where before macOS declined the escalation and left the process

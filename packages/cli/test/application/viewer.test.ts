@@ -333,6 +333,56 @@ describe("ViewerApplication workflow and run projections", () => {
     });
   });
 
+  it("resolves a file-referenced json output schema relative to the definition file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kilin-viewer-application-"));
+    temporaryDirectories.push(root);
+    const cwd = join(root, "project", "workspace");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(join(root, "schemas"));
+    await writeFile(
+      join(root, "schemas", "findings.json"),
+      JSON.stringify({
+        type: "object",
+        required: ["findings"],
+        properties: { findings: { type: "array" } },
+      }),
+      "utf8",
+    );
+    const workflowFile = join(root, "workflow.yaml");
+    const definition = {
+      schemaVersion: 1,
+      workflow: { id: "viewer-workflow", name: "Viewer workflow" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Scan the change",
+          output: { type: "json", schema: "schemas/findings.json" },
+        },
+      ],
+      edges: [],
+    };
+    await writeFile(workflowFile, JSON.stringify(definition), "utf8");
+    const application = new ViewerApplication({
+      definitionFile: workflowFile,
+      identity: {
+        scope: { kind: "project", root: join(root, "project") },
+        workflowId: "viewer-workflow",
+      },
+      canonicalCwd: cwd,
+      dataDirectory: join(root, "state"),
+    });
+
+    const current = await application.currentWorkflow();
+
+    expect(current).toMatchObject({
+      state: "valid",
+      workflow: { workflowId: "viewer-workflow", executionOrder: ["scan"] },
+    });
+  });
+
   it("presents top-level nodes in dependency order regardless of authored order", async () => {
     const definition: WorkflowDefinitionV1 = {
       schemaVersion: 1,

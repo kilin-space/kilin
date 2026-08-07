@@ -1,12 +1,12 @@
 import { open } from "node:fs/promises";
 
-import type { ErrorObject, SchemaObject } from "ajv";
-import Ajv2020Module from "ajv/dist/2020.js";
+import type { SchemaObject } from "ajv";
 import { isScalar, LineCounter, parseAllDocuments, visit } from "yaml";
 import type { ErrorCode as YamlErrorCode } from "yaml";
 
 import { KilinError } from "../domain/errors.js";
 import type { WorkflowCompilationInput } from "../domain/workflow.js";
+import { createAjv, schemaErrorPath } from "./json-schema.js";
 import workflowSchema from "./workflow-v1.schema.json" with { type: "json" };
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -28,38 +28,7 @@ const parseSchema = (schema: unknown): SchemaObject => {
   return schema;
 };
 
-const validateWorkflow = new Ajv2020Module.default({
-  allErrors: false,
-  strict: true,
-}).compile<WorkflowCompilationInput>(parseSchema(workflowSchema));
-
-const pointerSegments = (pointer: string): string[] =>
-  pointer
-    .split("/")
-    .slice(1)
-    .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
-
-const appendPathSegment = (path: string, segment: string): string => {
-  if (/^(?:0|[1-9]\d*)$/u.test(segment)) {
-    return `${path}[${segment}]`;
-  }
-  return path.length === 0 ? segment : `${path}.${segment}`;
-};
-
-const schemaErrorPath = (error: ErrorObject): string | undefined => {
-  let path = pointerSegments(error.instancePath).reduce(appendPathSegment, "");
-  const params: Record<string, unknown> = error.params;
-  let property: unknown;
-  if (error.keyword === "required") {
-    property = params.missingProperty;
-  } else if (error.keyword === "additionalProperties") {
-    property = params.additionalProperty;
-  }
-  if (typeof property === "string") {
-    path = appendPathSegment(path, property);
-  }
-  return path.length === 0 ? undefined : path;
-};
+const validateWorkflow = createAjv().compile<WorkflowCompilationInput>(parseSchema(workflowSchema));
 
 const sourcePosition = (lineCounter: LineCounter, offset: number | undefined): string => {
   if (offset === undefined || offset < 0) {
@@ -180,7 +149,7 @@ export const parseWorkflowBytes = (
   const value: unknown = document.toJS({ maxAliasCount: 0 });
   if (!validateWorkflow(value)) {
     const schemaError = validateWorkflow.errors?.[0];
-    const path = schemaError === undefined ? undefined : schemaErrorPath(schemaError);
+    const path = schemaError === undefined ? undefined : schemaErrorPath(schemaError, value);
     const location = path === undefined ? "the workflow root" : `"${path}"`;
     const reason =
       schemaError?.message ?? "the definition does not match workflow schema version 1";

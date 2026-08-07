@@ -989,6 +989,117 @@ describe("compileWorkflow", () => {
     expectError(definition, "WORKFLOW_GRAPH_INVALID", path);
   });
 
+  it("embeds a declared json output schema in the semantic plan and revision hash", () => {
+    const legacy = workflow([{ ...node("scan"), output: { type: "json" } }]);
+    const definition = {
+      ...legacy,
+      nodes: [
+        {
+          ...node("scan"),
+          output: {
+            type: "json",
+            schema: {
+              type: "object",
+              required: ["findings"],
+              properties: { findings: { type: "array" } },
+            },
+          },
+        },
+      ],
+    } as WorkflowDefinitionInput;
+
+    const plan = compileWorkflow(definition);
+
+    expect(plan.definition.nodes[0]).toMatchObject({
+      output: { type: "json", schema: { required: ["findings"] } },
+    });
+    expect(plan.normalizedDefinition).toContain(
+      '"output":{"schema":{"properties":{"findings":{"type":"array"}},"required":["findings"],' +
+        '"type":"object"},"type":"json"}',
+    );
+    expect(plan.contentHash).not.toBe(compileWorkflow(legacy).contentHash);
+  });
+
+  it("canonicalizes a declared json output schema identically regardless of key order", () => {
+    const build = (schema: Record<string, unknown>): WorkflowDefinitionInput =>
+      ({
+        ...workflow([node("scan")]),
+        nodes: [{ ...node("scan"), output: { type: "json", schema } }],
+      }) as WorkflowDefinitionInput;
+
+    const forward = compileWorkflow(
+      build({
+        type: "object",
+        properties: { severity: { type: "string" } },
+        required: ["severity"],
+      }),
+    );
+    const reordered = compileWorkflow(
+      build({
+        required: ["severity"],
+        properties: { severity: { type: "string" } },
+        type: "object",
+      }),
+    );
+
+    expect(reordered.normalizedDefinition).toBe(forward.normalizedDefinition);
+    expect(reordered.contentHash).toBe(forward.contentHash);
+  });
+
+  it.each([
+    ["a string", "schemas/findings.json"],
+    ["an array", [{ type: "object" }]],
+    ["a number", 42],
+  ] as const)("rejects a json output schema that is %s", (_name, schema) => {
+    const definition = {
+      ...workflow([node("scan")]),
+      nodes: [{ ...node("scan"), output: { type: "json", schema } }],
+    } as WorkflowDefinitionInput;
+
+    expectError(definition, "WORKFLOW_GRAPH_INVALID", "nodes[0].output.schema", "is not an object");
+  });
+
+  it.each([
+    ["a non-finite number", { maximum: Number.POSITIVE_INFINITY }],
+    ["an unsafe integer", { maximum: Number.MAX_SAFE_INTEGER + 1 }],
+  ] as const)("rejects a json output schema with %s", (_name, schema) => {
+    const definition = {
+      ...workflow([node("scan")]),
+      nodes: [{ ...node("scan"), output: { type: "json", schema } }],
+    } as WorkflowDefinitionInput;
+
+    expectError(
+      definition,
+      "WORKFLOW_GRAPH_INVALID",
+      "nodes[0].output.schema",
+      "is not canonical JSON",
+    );
+  });
+
+  it.each([
+    ["text", "read_only", { type: "text" }],
+    ["decision_packet", "read_only", { type: "decision_packet" }],
+    ["choice", "read_only", { type: "choice", choices: ["pass", "revise"] }],
+    ["artifact", "workspace_write", { type: "artifact", path: "report.md" }],
+  ] as const)("rejects a schema declared on a %s output", (type, access, output) => {
+    const definition = {
+      ...workflow([node("typed", access as AgentNode["access"])]),
+      nodes: [
+        {
+          ...node("typed", access as AgentNode["access"]),
+          output: { ...output, schema: { type: "object" } },
+        },
+      ],
+    } as WorkflowDefinitionInput;
+
+    expectError(
+      definition,
+      "WORKFLOW_GRAPH_INVALID",
+      "nodes[0].output.schema",
+      `declares a schema for ${type} output`,
+    );
+  });
+
   it.each([
     ["codex", "read_only"],
     ["codex", "workspace_write"],

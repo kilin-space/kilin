@@ -102,6 +102,25 @@ A `choice` node must answer with exactly one JSON object `{"choice":"<value>"}` 
 choice, and a `json` node must answer with exactly one JSON document and no surrounding text; the
 injected output contract states these requirements to the runtime, and a violation fails the
 attempt with `NODE_OUTPUT_INVALID`.
+A `json` output may also declare `schema`, as an inline JSON object or as a package-relative path
+to a JSON file in the same package (see [Workflow Package Contract](workflow-packages.md#package-layout)).
+The schema is a JSON Schema 2020-12 object; the boolean schema form is not supported, and every
+other output type rejects `schema`. Validation is strict: unknown keywords, unknown `format`
+values (`ajv-formats` is not shipped), strict type, tuple, and `required` rules, and external or
+unresolvable `$ref` references are all rejected. The `pattern` and `patternProperties` keywords
+are not supported because JavaScript regular expressions can block the runtime on hostile input.
+Schemas are inert data; Kilin never fetches anything remote. A malformed schema fails package
+loading with `WORKFLOW_SCHEMA_INVALID` and an
+unresolvable schema file with `WORKFLOW_PACKAGE_INVALID`, each naming the declared source, so
+`kilin workflow validate` reports both without invoking a provider. At run time, a returned
+document that does not satisfy the declared schema fails the producing node with
+`NODE_OUTPUT_INVALID` naming the failing instance path (for example `findings[0].severity`, or
+the document root); the existing retry policy is unchanged, and the retry attempt's prompt
+restates the schema. The resolved schema is serialized into the producer's injected output
+contract on every attempt. Kilin does not enforce a prompt-size limit; the 256 KiB
+(262,144-byte) schema-file cap at package load is the only bound Kilin enforces on schema files
+(inline schemas are bounded by the 1,048,576-byte definition cap), and a provider can still
+reject an oversized prompt at run time, so keep schemas small.
 Artifacts are live workspace-relative references and require `workspace_write`; Kilin does not
 copy them into managed storage. Bound text, JSON, Decision Packets, choices, and run parameters
 reach only declared consumers through the `KILIN_RESOLVED_INPUTS_V1` untrusted-data envelope.
@@ -274,11 +293,11 @@ Before a run starts, Kilin converts the validated YAML to normalized JSON:
 5. Strings and array values are preserved exactly after YAML decoding.
 6. The result is serialized as UTF-8 JSON without insignificant whitespace.
 
-The revision content hash is the lowercase hexadecimal SHA-256 hash of those bytes. YAML comments, indentation, key order, and edge order do not change the hash. Node order, prompts, access, model, and graph structure do.
+The revision content hash is the lowercase hexadecimal SHA-256 hash of those bytes. YAML comments, indentation, key order, and edge order do not change the hash. Node order, prompts, access, model, and graph structure do. A declared `json` output schema is resolved and embedded in the definition as an object before normalization, so the hash covers it: editing a referenced schema file produces a new revision.
 
 `kilin workflow validate` performs package and normalization checks but stores nothing. `kilin run` resolves the requested package, reads its definition once, then creates or reuses the immutable scope-aware revision after parsing, validation, compilation, and runtime preflight succeed, immediately before it creates the run record. The executor uses that in-memory definition rather than reopening the file. Every run references one revision.
 
-`kilin rerun <run-id>` loads the stored normalized definition. It does not read the original YAML file, even if that file still exists.
+`kilin rerun <run-id>` loads the stored normalized definition. It reads neither the original YAML file nor any schema file the definition referenced, even if they still exist.
 
 ## Versioning rule
 

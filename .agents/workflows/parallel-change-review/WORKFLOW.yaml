@@ -14,11 +14,11 @@ nodes:
       the code directly and do not open interactive tools, workspaces, or
       MCP setup flows, and never wait for user input. Report only
       security findings: injection, unsafe file or path handling, secret
-      exposure, and trust-boundary violations. Return JSON with a
-      findings array where each finding has severity, file, line, and
-      summary. Return an empty findings array when nothing is wrong.
+      exposure, and trust-boundary violations. Return {"findings":[]}
+      when nothing is wrong.
     output:
       type: json
+      schema: ./schemas/findings.json
   - id: performance-scan
     kind: agent
     runtime: codex
@@ -30,11 +30,11 @@ nodes:
       the code directly and do not open interactive tools, workspaces, or
       MCP setup flows, and never wait for user input. Report only
       performance findings: unnecessary I/O, blocking work on hot paths,
-      quadratic algorithms, and avoidable allocations. Return JSON with a
-      findings array where each finding has severity, file, line, and
-      summary. Return an empty findings array when nothing is wrong.
+      quadratic algorithms, and avoidable allocations. Return
+      {"findings":[]} when nothing is wrong.
     output:
       type: json
+      schema: ./schemas/findings.json
   - id: maintainability-scan
     kind: agent
     runtime: codex
@@ -46,11 +46,11 @@ nodes:
       the code directly and do not open interactive tools, workspaces, or
       MCP setup flows, and never wait for user input. Report only
       maintainability findings: dead code, duplicated logic, unclear
-      naming, missing tests, and layer-boundary violations. Return JSON
-      with a findings array where each finding has severity, file, line,
-      and summary. Return an empty findings array when nothing is wrong.
+      naming, missing tests, and layer-boundary violations. Return
+      {"findings":[]} when nothing is wrong.
     output:
       type: json
+      schema: ./schemas/findings.json
   - id: summarize
     kind: agent
     runtime: codex

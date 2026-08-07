@@ -191,6 +191,12 @@ edges:
   - { from: implement, to: approve }
 ```
 
+A `json` output may declare a `schema` — an inline JSON Schema 2020-12 object or a
+package-relative path to a schema file in the package — and Kilin then validates the node's
+returned document against it, failing the producing node with `NODE_OUTPUT_INVALID` on a
+violation. The `pattern` and `patternProperties` keywords are not supported because JavaScript
+regular expressions can block on hostile output.
+
 A V1 workflow may declare required run parameters and name their consumers:
 
 ```yaml

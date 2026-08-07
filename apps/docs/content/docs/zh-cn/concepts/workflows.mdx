@@ -54,6 +54,13 @@ Agent 节点声明固定运行时、访问模式、prompt，以及可选的类�
 附着式执行，直到符合条件的第二个进程或本地 Viewer 记录决策；其截止时间使用独立的
 run 审批超时。
 
+`json` 输出可以声明 `schema`：内联的 JSON Schema 2020-12 对象，或指向 package 内 JSON
+文件的 package 相对路径，例如 `schema: ./schemas/findings.json`。Kilin 在读取 package 时编译
+schema，因此 `workflow validate` 会在不调用 provider 的情况下拒绝无效的 schema 或无法解析的
+文件。返回的 JSON 文档不满足 schema 时，产出节点会以 `NODE_OUTPUT_INVALID` 失败并指出失败
+路径；现有重试策略不变。Kilin 会拒绝 `pattern` 和 `patternProperties`，因为 JavaScript
+正则表达式可能被恶意输出长时间阻塞。
+
 边表示依赖关系。当目标 Agent 必须使用来源输出时，需要命名 input binding。
 
 ## 访问模式与并发

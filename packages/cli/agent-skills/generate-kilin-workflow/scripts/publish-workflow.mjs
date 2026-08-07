@@ -2,10 +2,13 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+
+import { parse } from "yaml";
 
 const execFileAsync = promisify(execFile);
 const expectedOptions = new Set([
@@ -18,6 +21,7 @@ const expectedOptions = new Set([
   "--target",
 ]);
 const workflowNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const maximumOutputSchemaBytes = 262_144;
 
 const fail = (message) => {
   throw new Error(message);
@@ -90,6 +94,34 @@ const requireRegularFile = async (file, label) => {
   }
 };
 
+const readBoundedRegularFile = async (file, label, maximumBytes) => {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const status = await handle.stat();
+    if (!status.isFile()) {
+      fail(`${label} must be a regular file: ${file}`);
+    }
+    if (status.size > maximumBytes) {
+      fail(`${label} exceeds the ${String(maximumBytes)} byte limit.`);
+    }
+    const bytes = Buffer.alloc(maximumBytes + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const result = await handle.read(bytes, offset, bytes.byteLength - offset, null);
+      if (result.bytesRead === 0) {
+        break;
+      }
+      offset += result.bytesRead;
+    }
+    if (offset > maximumBytes) {
+      fail(`${label} exceeds the ${String(maximumBytes)} byte limit.`);
+    }
+    return bytes.subarray(0, offset);
+  } finally {
+    await handle.close();
+  }
+};
+
 const requirePhysicalDirectory = async (directory, label) => {
   let canonicalDirectory;
   try {
@@ -104,6 +136,112 @@ const requirePhysicalDirectory = async (directory, label) => {
     fail(`${label} must be a physical directory.`);
   }
   return canonicalDirectory;
+};
+
+const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isNormalizedRelativePath = (value) => {
+  const segments = value.split("/");
+  const byteLength = Buffer.byteLength(value, "utf8");
+  const hasControlCharacter = Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
+  return (
+    byteLength >= 1 &&
+    byteLength <= 1_024 &&
+    !value.startsWith("/") &&
+    !value.endsWith("/") &&
+    !value.includes("\\") &&
+    !hasControlCharacter &&
+    !segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
+  );
+};
+
+const collectDeclaredSchemaPaths = (definition) => {
+  const declared = [];
+  const collectFromNodes = (nodes) => {
+    if (!Array.isArray(nodes)) {
+      return;
+    }
+    for (const node of nodes) {
+      if (!isRecord(node)) {
+        continue;
+      }
+      if (node.kind === "loop") {
+        collectFromNodes(isRecord(node.body) ? node.body.nodes : undefined);
+        continue;
+      }
+      if (isRecord(node.output) && typeof node.output.schema === "string") {
+        declared.push(node.output.schema);
+      }
+    }
+  };
+  collectFromNodes(isRecord(definition) ? definition.nodes : undefined);
+  return declared;
+};
+
+const stageDeclaredSchemaFiles = async (definitionBytes, definitionCandidate, stagePackage) => {
+  let definition;
+  try {
+    definition = parse(definitionBytes.toString("utf8"), {
+      maxAliasCount: 0,
+      schema: "core",
+      strict: true,
+      uniqueKeys: true,
+    });
+  } catch (error) {
+    fail(
+      `Candidate workflow definition is not valid YAML: ${error instanceof Error ? error.message : "parse failure"}`,
+    );
+  }
+  const candidateDirectory = await realpath(dirname(definitionCandidate));
+  const staged = new Set();
+  for (const declared of collectDeclaredSchemaPaths(definition)) {
+    const relativePath = declared.startsWith("./") ? declared.slice(2) : declared;
+    if (!isNormalizedRelativePath(relativePath)) {
+      fail(
+        `The json output schema path "${declared}" is invalid. Use 1 through 1,024 UTF-8 bytes in normalized POSIX-relative form with no leading or trailing "/", non-empty segments, "/" separators, and no ".", "..", backslash, or control characters.`,
+      );
+    }
+    if (relativePath === "WORKFLOW.md" || relativePath === "WORKFLOW.yaml") {
+      fail(
+        `The json output schema "${declared}" collides with the reserved workflow package file "${relativePath}".`,
+      );
+    }
+    if (staged.has(relativePath)) {
+      continue;
+    }
+    staged.add(relativePath);
+    let schemaFile;
+    try {
+      schemaFile = await realpath(resolve(candidateDirectory, relativePath));
+    } catch (error) {
+      if (isErrorCode(error, "ENOENT") || isErrorCode(error, "ENOTDIR")) {
+        fail(`The json output schema "${declared}" does not exist or is unreadable.`);
+      }
+      throw error;
+    }
+    const containment = relative(candidateDirectory, schemaFile);
+    if (containment === ".." || containment.startsWith(`..${sep}`) || isAbsolute(containment)) {
+      fail(`The json output schema "${declared}" resolves outside the candidate directory.`);
+    }
+    const schemaBytes = await readBoundedRegularFile(
+      schemaFile,
+      `The json output schema "${declared}"`,
+      maximumOutputSchemaBytes,
+    );
+    const stagedFile = join(stagePackage, ...relativePath.split("/"));
+    await mkdir(dirname(stagedFile), { recursive: true, mode: 0o700 });
+    try {
+      await writeFile(stagedFile, schemaBytes, { mode: 0o600, flag: "wx" });
+    } catch (error) {
+      if (isErrorCode(error, "EEXIST")) {
+        fail(`The json output schema "${declared}" collides with another staged package file.`);
+      }
+      throw error;
+    }
+  }
 };
 
 const validationFailure = (error) => {
@@ -210,6 +348,7 @@ const publish = async () => {
         flag: "wx",
       }),
     ]);
+    await stageDeclaredSchemaFiles(definitionBytes, definitionCandidate, stagePackage);
     await validatePackage(cliFile, workflowName, stageProject, "project");
 
     await ensurePhysicalDirectory(agentsDirectory);

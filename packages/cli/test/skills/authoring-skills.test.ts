@@ -13,6 +13,7 @@ import {
   rm,
   stat,
   symlink,
+  truncate,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -597,6 +598,318 @@ describe("generate-kilin-workflow publisher", () => {
         (entry) => entry.startsWith(".workflow-init-") || entry.startsWith(".workflow-stage-"),
       ),
     ).toBe(false);
+  });
+
+  it("stages one copy of a json output schema shared by two nodes and validates clean", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "schema-review-candidate.yaml");
+    const schemaSource = `${JSON.stringify({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      additionalProperties: false,
+      required: ["findings"],
+      properties: { findings: { type: "array" } },
+    })}\n`;
+    await mkdir(join(directory, "schemas"));
+    await writeFile(join(directory, "schemas", "findings.json"), schemaSource);
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "schema-review", name: "Schema review" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Scan the workspace.",
+          output: { type: "json", schema: "./schemas/findings.json" },
+        },
+        {
+          id: "rescan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Rescan the workspace.",
+          output: { type: "json", schema: "./schemas/findings.json" },
+        },
+      ],
+      edges: [{ from: "scan", to: "rescan", input: "first" }],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "schema-review");
+    const packageDirectory = join(directory, ".agents/workflows/schema-review");
+    const stagedSchema = join(packageDirectory, "schemas/findings.json");
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ validation: { valid: true } });
+    await expect(readFile(stagedSchema, "utf8")).resolves.toBe(schemaSource);
+    expect((await stat(stagedSchema)).mode & 0o777).toBe(0o600);
+    await expect(readdir(join(packageDirectory, "schemas"))).resolves.toEqual(["findings.json"]);
+  });
+
+  it("fails loudly when a referenced json output schema file is missing", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "schema-missing-candidate.yaml");
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "schema-missing", name: "Schema missing" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Scan the workspace.",
+          output: { type: "json", schema: "./schemas/findings.json" },
+        },
+      ],
+      edges: [],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "schema-missing");
+
+    expect(result).toMatchObject({ exitCode: 1, stdout: "" });
+    expect(result.stderr).toContain(
+      'The json output schema "./schemas/findings.json" does not exist or is unreadable.',
+    );
+    await expect(
+      lstat(join(directory, ".agents", "workflows", "schema-missing")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects an oversized sparse json output schema without target or staging residue", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "schema-oversized-candidate.yaml");
+    await mkdir(join(directory, "schemas"));
+    await mkdir(join(directory, ".agents"));
+    const schemaFile = join(directory, "schemas", "findings.json");
+    await writeFile(schemaFile, "");
+    await truncate(schemaFile, 262_145);
+    await writeFile(
+      candidate,
+      stringify({
+        schemaVersion: 1,
+        workflow: { id: "schema-oversized", name: "Schema oversized" },
+        nodes: [
+          {
+            id: "scan",
+            kind: "agent",
+            runtime: "codex",
+            access: "read_only",
+            prompt: "Scan the workspace.",
+            output: { type: "json", schema: "./schemas/findings.json" },
+          },
+        ],
+        edges: [],
+      }),
+    );
+
+    const result = await runPublisher(directory, candidate, "schema-oversized");
+
+    expect(result).toMatchObject({ exitCode: 1, stdout: "" });
+    expect(result.stderr).toContain(
+      'The json output schema "./schemas/findings.json" exceeds the 262144 byte limit.',
+    );
+    await expect(
+      lstat(join(directory, ".agents", "workflows", "schema-oversized")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      (await readdir(join(directory, ".agents"))).some((entry) =>
+        entry.startsWith(".workflow-stage-"),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a schema path that case-collides with a staged package file", async (context) => {
+    const directory = await createTemporaryDirectory();
+    const probe = join(directory, "CaseProbe");
+    await writeFile(probe, "");
+    const caseInsensitive = await lstat(join(directory, "caseprobe")).then(
+      () => true,
+      () => false,
+    );
+    await rm(probe);
+    if (!caseInsensitive) {
+      context.skip();
+    }
+    const candidate = join(directory, "schema-collision-candidate.yaml");
+    await writeFile(
+      join(directory, "Workflow.yaml"),
+      `${JSON.stringify({
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        additionalProperties: false,
+        required: ["findings"],
+        properties: { findings: { type: "array" } },
+      })}\n`,
+    );
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "schema-collision", name: "Schema collision" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Scan the workspace.",
+          output: { type: "json", schema: "./Workflow.yaml" },
+        },
+      ],
+      edges: [],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "schema-collision");
+
+    expect(result).toMatchObject({ exitCode: 1, stdout: "" });
+    expect(result.stderr).toContain(
+      'The json output schema "./Workflow.yaml" collides with another staged package file.',
+    );
+    expect(result.stderr).not.toContain("already exists");
+    await expect(
+      lstat(join(directory, ".agents", "workflows", "schema-collision")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("stages a json output schema referenced from a loop body and validates clean", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "loop-schema-candidate.yaml");
+    const schemaSource = `${JSON.stringify({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      additionalProperties: false,
+      required: ["summary"],
+      properties: { summary: { type: "string" } },
+    })}\n`;
+    await mkdir(join(directory, "schemas"));
+    await writeFile(join(directory, "schemas", "summary.json"), schemaSource);
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "loop-schema", name: "Loop schema" },
+      nodes: [
+        {
+          id: "refinement",
+          kind: "loop",
+          maxIterations: 2,
+          body: {
+            nodes: [
+              {
+                id: "worker",
+                kind: "agent",
+                runtime: "codex",
+                access: "read_only",
+                prompt: "Revise the work.",
+                output: { type: "json", schema: "./schemas/summary.json" },
+              },
+              {
+                id: "review",
+                kind: "agent",
+                runtime: "codex",
+                access: "read_only",
+                prompt: "Review the work.",
+                output: { type: "text" },
+              },
+              {
+                id: "check",
+                kind: "agent",
+                runtime: "codex",
+                access: "read_only",
+                prompt: "Decide.",
+                output: { type: "choice", choices: ["pass", "revise"] },
+              },
+            ],
+            edges: [
+              { from: "worker", to: "review", input: "draft" },
+              { from: "review", to: "check", input: "feedback" },
+            ],
+          },
+          decision: { node: "check", passChoice: "pass", reviseChoice: "revise" },
+          feedback: { from: "review", to: "worker", input: "feedback" },
+          result: { node: "worker" },
+        },
+      ],
+      edges: [],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "loop-schema");
+    const stagedSchema = join(directory, ".agents/workflows/loop-schema/schemas/summary.json");
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ validation: { valid: true } });
+    await expect(readFile(stagedSchema, "utf8")).resolves.toBe(schemaSource);
+  });
+
+  it("rejects a definition containing a YAML alias during collection", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "alias-guard-candidate.yaml");
+    const source = [
+      "schemaVersion: 1",
+      "workflow: { id: alias-guard, name: Alias guard }",
+      "nodes:",
+      "  - id: first",
+      "    kind: agent",
+      "    runtime: codex",
+      "    access: read_only",
+      "    prompt: &shared Review the code.",
+      "  - id: second",
+      "    kind: agent",
+      "    runtime: codex",
+      "    access: read_only",
+      "    prompt: *shared",
+      "edges: [{ from: first, to: second }]",
+      "",
+    ].join("\n");
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "alias-guard");
+
+    expect(result).toMatchObject({ exitCode: 1, stdout: "" });
+    expect(result.stderr).toContain("Candidate workflow definition is not valid YAML");
+    expect(result.stderr).not.toContain("Candidate validation failed");
+    await expect(
+      lstat(join(directory, ".agents", "workflows", "alias-guard")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("stages a json output schema beneath a directory whose name starts with two dots", async () => {
+    const directory = await createTemporaryDirectory();
+    const candidate = join(directory, "dotdot-schema-candidate.yaml");
+    const schemaSource = `${JSON.stringify({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      additionalProperties: false,
+      required: ["findings"],
+      properties: { findings: { type: "array" } },
+    })}\n`;
+    await mkdir(join(directory, "..foo"));
+    await writeFile(join(directory, "..foo", "findings.json"), schemaSource);
+    const source = stringify({
+      schemaVersion: 1,
+      workflow: { id: "dotdot-schema", name: "Dotdot schema" },
+      nodes: [
+        {
+          id: "scan",
+          kind: "agent",
+          runtime: "codex",
+          access: "read_only",
+          prompt: "Scan the workspace.",
+          output: { type: "json", schema: "./..foo/findings.json" },
+        },
+      ],
+      edges: [],
+    });
+    await writeFile(candidate, source);
+
+    const result = await runPublisher(directory, candidate, "dotdot-schema");
+    const stagedSchema = join(directory, ".agents/workflows/dotdot-schema/..foo/findings.json");
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ validation: { valid: true } });
+    await expect(readFile(stagedSchema, "utf8")).resolves.toBe(schemaSource);
   });
 });
 
